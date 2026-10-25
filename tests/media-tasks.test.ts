@@ -54,7 +54,14 @@ test('connection concurrency bounds submissions and a released slot starts the n
   await settle(f.service,a.id,t=>t.remoteStatus==='running');await new Promise(r=>setTimeout(r,30));assert.equal(f.gateway.requests.filter(r=>r.method==='POST'&&r.path==='/v1/media/jobs').length,1);assert.equal((await f.service.get(b.id)).phase,'pending');await f.service.pause(a.id);await settle(f.service,b.id,t=>t.remoteStatus==='running');assert.equal(f.gateway.requests.filter(r=>r.method==='POST'&&r.path==='/v1/media/jobs').length,2);
 });
 test('poll and cancel resolve rotated keys, and shutdown does not cancel the remote job',async t=>{
-  const f=await fixture(t,{queued:true});const task=await f.service.generate({projectId:'film',expectedRevision:3,operation:'text-to-video',prompt:'test'});await settle(f.service,task.id,t=>t.remoteStatus==='running');await f.registry.saveConnection({id:'video',apiKey:'rotated-key'});await new Promise(r=>setTimeout(r,50));assert.ok(f.gateway.requests.some(r=>r.method==='GET'&&r.authorization==='Bearer rotated-key'));
+  const f=await fixture(t,{queued:true});const task=await f.service.generate({projectId:'film',expectedRevision:3,operation:'text-to-video',prompt:'test'});const running=await settle(f.service,task.id,t=>t.remoteStatus==='running');
+  await f.registry.saveConnection({id:'video',apiKey:'rotated-key'});const afterRotation=f.gateway.requests.length,pollPath='/v1/media/jobs/'+encodeURIComponent(running.remoteJobId!);
+  // Wait for an actual post-rotation poll: Windows journal writes can delay it beyond a fixed sleep.
+  await settle(f.service,task.id,()=>f.gateway.requests.slice(afterRotation).some(r=>r.method==='GET'&&r.path===pollPath&&r.authorization==='Bearer rotated-key')).catch(async cause=>{
+    const current=await f.service.get(task.id);
+    throw new Error(`Rotated-key GET not observed for ${pollPath}; task phase=${current.phase}, observation=${current.observation}, remoteStatus=${current.remoteStatus??'unknown'}, error=${current.error??'none'}`,{cause});
+  });
+  assert.ok(f.gateway.requests.slice(afterRotation).some(r=>r.method==='GET'&&r.path===pollPath&&r.authorization==='Bearer rotated-key'));
   await f.service.dispose();assert.equal(f.gateway.requests.filter(r=>r.path.endsWith('/cancel')).length,0);await f.restart();await settle(f.service,task.id,t=>t.observation==='active');const result=await f.service.cancel(task.id);assert.equal(result.remoteStatus,'cancelled');assert.equal(result.phase,'cancelled');assert.equal(f.gateway.requests.find(r=>r.path.endsWith('/cancel'))?.authorization,'Bearer rotated-key');
 });
 

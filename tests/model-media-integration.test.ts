@@ -19,7 +19,15 @@ function host(values=new Map<string,string>()):HostContext{return {llm:{listProv
 function execution(sessionId:string):ToolRunContext{return {name:'video_media',callId:'media-test',rootCallId:'media-test',arguments:{},token:Symbol(),agent:{id:sessionId,options:{provider:'host',model:'host-model'}},signal:new AbortController().signal};}
 async function listen(server:Server){await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));return 'http://127.0.0.1:'+(server.address() as {port:number}).port;}
 async function finish(server:Server){server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
-async function until<T>(read:()=>Promise<T>,matches:(value:T)=>boolean):Promise<T>{for(let attempt=0;attempt<150;attempt++){const value=await read();if(matches(value))return value;await new Promise(resolve=>setTimeout(resolve,20));}throw new Error('Timed out waiting for local fixture');}
+async function until<T>(read:()=>Promise<T>,matches:(value:T)=>boolean,options:{timeoutMs?:number;label?:string;diagnostics?:(last:T|undefined)=>unknown|Promise<unknown>}={}):Promise<T>{
+  const started=performance.now();let last:T|undefined;
+  for(let attempt=0;options.timeoutMs===undefined?attempt<150:performance.now()-started<options.timeoutMs;attempt++){
+    last=await read();if(matches(last))return last;
+    await new Promise(resolve=>setTimeout(resolve,20));
+  }
+  const details=options.diagnostics?await options.diagnostics(last):last;
+  throw new Error(`Timed out waiting for ${options.label??'local fixture'} after ${Math.round(performance.now()-started)}ms; last state: ${JSON.stringify(details)}`);
+}
 async function configure(hub:ProjectHub,baseUrl:string){const connection=await hub.call<{id:string}>('models.connection.save',{id:'images',name:'本地协议测试',protocol:'images',baseUrl,auth:'none'});const model=await hub.call<{id:string}>('models.model.save',{id:'image-model',connectionId:connection.id,model:'fixture-image',inputModalities:['text'],outputModalities:['image']});await hub.call('models.role.bind',{role:'image',modelId:model.id});return model.id;}
 
 test('plugin credentials resolve the current host service and status never reads secret values',async()=>{
@@ -98,7 +106,12 @@ test('DSH workflow stages generated media and commits one revision without repea
     await configure(hub,await listen(server));const snapshot=await hub.call<StudioSnapshot>('create',{sessionId:'workflow-owner',title:'协作图像'}),project=snapshot.project!;
     await assert.rejects(hub.call('workflows.run',{projectId:project.id,expectedRevision:project.revision,prompt:'生成图片',visual:'image',textRoute:{provider:'host',model:'fixture'}},{callerSessionId:'unrelated'}),/未关联此工程/);
     const workflow=await hub.call<WorkflowRecord>('workflows.run',{projectId:project.id,expectedRevision:project.revision,prompt:'生成图片',visual:'image',shotIds:[project.shots[0]!.id],textRoute:{provider:'host',model:'fixture'},maxTasks:4},{callerSessionId:'workflow-owner'});
-    const finished=await until(()=>hub.call<WorkflowRecord>('workflows.get',{id:workflow.id},{callerSessionId:'workflow-owner'}),item=>['complete','failed','awaiting-apply'].includes(item.status));assert.equal(finished.status,'complete',finished.error);
+    // This crosses real media journaling and a project commit. Wait for its terminal
+    // state rather than asserting completion within 150 timer ticks on a busy disk.
+    const finished=await until(()=>hub.call<WorkflowRecord>('workflows.get',{id:workflow.id},{callerSessionId:'workflow-owner'}),item=>item.status!=='running',{
+      timeoutMs:30_000,label:'DSH media workflow completion',
+      diagnostics:async last=>({workflow:last&&{id:last.id,status:last.status,message:last.message,error:last.error,committedRevision:last.committedRevision,steps:last.steps.map(step=>({kind:step.kind,status:step.status,message:step.message,taskId:step.taskId}))},mediaTasks:(await hub.media.list(project.id)).map(task=>({id:task.id,phase:task.phase,observation:task.observation,message:task.message,error:task.error}))}),
+    });assert.equal(finished.status,'complete',finished.error??finished.message);
     const current=(await hub.call<StudioSnapshot>('current',{projectId:project.id})).project!;assert.equal(current.revision,project.revision+1);assert.equal(current.assets.length,1);assert.equal(current.shots[0]!.assetIds.length,1);
     const tasks=await hub.media.list(project.id);assert.equal(tasks.length,1);assert.equal(tasks[0]!.phase,'complete');assert.equal(textCalls,1);assert.equal(submits,1);
     await hub.call('workflows.retry',{id:workflow.id},{callerSessionId:'workflow-owner'});assert.equal(submits,1);assert.equal(textCalls,1);
