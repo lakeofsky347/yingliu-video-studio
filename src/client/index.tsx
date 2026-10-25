@@ -1,9 +1,11 @@
 import type { ClientRpc } from '../shared/types.ts';
 import { RpcStudioApi, StudioController } from './controller.ts';
-import { FilmMark, Studio } from './Studio.tsx';
+import { Studio } from './Studio.tsx';
+import { VideoStudioIcon } from './VideoStudioIcon.tsx';
 import css from './styles.css?inline';
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { sessionDirectory, sessionTarget, type HostSessionList, type HostWorkspaceList, type Observable, type SessionTarget } from './session-host-adapter.ts';
+import {assertClientContract} from '../shared/host-contract.ts';
 
 type RecordValue=Record<string,unknown>;
 function object(value:unknown):RecordValue{return value!==null&&typeof value==='object'&&!Array.isArray(value)?value as RecordValue:{};}
@@ -23,6 +25,7 @@ interface ClientContext {
 }
 export const inject=['slots','locale','connection','theme','layout','uiWorkspace','sessions','workspaces'];
 export function apply(ctx:ClientContext):void {
+  assertClientContract(ctx);
   const abort=new AbortController();
   const controller=new StudioController(new RpcStudioApi(ctx.connection.rpc,abort.signal));
   let directEntry=false;
@@ -89,7 +92,7 @@ export function apply(ctx:ClientContext):void {
     </section>;
   }
   ctx.slots.inject('main',()=>ctx.slots.register({name:'main',key:'video-studio',locale:'video-studio'},SessionStudio));
-  ctx.slots.inject('sidebar.panellist',()=>ctx.slots.register({name:'sidebar.panellist',id:'video-studio',order:35,label:()=>t('panel'),locale:'video-studio'},FilmMark));
+  ctx.slots.inject('sidebar.panellist',()=>ctx.slots.register({name:'sidebar.panellist',id:'video-studio',order:35,label:()=>t('panel'),locale:'video-studio'},VideoStudioIcon));
   ctx.slots.inject('tool.call.toolview',function*(){for(const key of ['video_project','video_update','video_inspect','video_render','video_audio'])yield ctx.slots.register({name:'tool.call.toolview',key,locale:'video-studio'},VideoCard);});
   ctx.effect(()=>ctx.on('connection/reset',()=>{void controller.load();}),'video-studio: reconnect');
   void controller.load();

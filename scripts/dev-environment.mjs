@@ -1,5 +1,6 @@
 import {accessSync,constants,lstatSync,mkdirSync,readFileSync,realpathSync,statSync,symlinkSync,unlinkSync} from 'node:fs';
 import path from 'node:path';
+import semver from 'semver';
 
 function isFile(file,executable=false){
   try{if(!statSync(file).isFile())return false;accessSync(file,executable?constants.X_OK:constants.R_OK);return true;}
@@ -76,10 +77,8 @@ export function linkHostDependencies(root,hostNodeModules){
   const peers=Object.entries(manifest.peerDependencies??{}).map(([name,expected])=>{
     const target=path.join(hostNodeModules,name),peer=JSON.parse(readFileSync(path.join(target,'package.json'),'utf8'));
     if(peer.name!==name)throw new Error(`Unexpected host package at ${target}`);
-    // Current peers use exact DSH versions and a stable-major Cordis caret range.
-    const match=expected.match(/^\^(\d+)\.(\d+)\.(\d+)$/);
-    const installed=peer.version?.match(/^(\d+)\.(\d+)\.(\d+)$/);
-    const compatible=match&&installed?installed[1]===match[1]&&(Number(installed[2])>Number(match[2])||(installed[2]===match[2]&&Number(installed[3])>=Number(match[3]))):peer.version===expected;
+    // Match DSH's prerelease-aware loader without tying development to a host release.
+    const compatible=typeof peer.version==='string'&&semver.satisfies(peer.version,expected,{includePrerelease:true});
     if(!compatible)throw new Error(`Host peer ${name}@${peer.version} does not satisfy ${expected}`);
     return {target,link:path.join(root,'node_modules',name)};
   });

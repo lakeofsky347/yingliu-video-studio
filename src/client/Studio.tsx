@@ -17,10 +17,10 @@ import { WorkflowPanel } from './WorkflowPanel.tsx';
 import { ModelCenter } from './ModelCenter.tsx';
 import { TaskPanel, HistoryPanel } from './TaskPanel.tsx';
 import { SourceEditor } from './SourceEditor.tsx';
+import { VideoStudioIcon } from './VideoStudioIcon.tsx';
 
 type DockTab='workflow'|'media'|'preview'|'audio'|'spec'|'source'|'environment'|'exports'|'tasks'|'history';
 export interface StudioProps extends SessionDirectoryProps { controller:StudioController }
-export function FilmMark(){return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3" stroke="currentColor" strokeWidth="1.6"/><path d="M8 4v16M16 4v16M3 9h5M3 15h5M16 9h5M16 15h5" stroke="currentColor" strokeWidth="1.4"/><path d="m11 9 4 3-4 3V9Z" fill="currentColor"/></svg>;}
 function Icon({name}:{name:string}){const paths:Record<string,ReactNode>={
   plus:<path d="M12 5v14M5 12h14"/>,upload:<><path d="M12 16V4m-5 5 5-5 5 5M4 15v5h16v-5"/></>,
   spark:<><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Z"/><path d="m20 2 .5 1.5L22 4l-1.5.5L20 6l-.5-1.5L18 4l1.5-.5L20 2Z"/></>,
@@ -95,7 +95,7 @@ export function Studio({controller,currentSessionId,onOpenSession,sessions=[],se
   const coverUrls=project&&coverAsset?{[project.id]:assetUrl(coverAsset)}:{};
   return <main className={`vs-studio ${isHome?'vs-home-shell':''}`} data-scheme={state.scheme}>
     <header className="vs-topbar">
-      <button className="vs-brand vs-brand-home" onClick={()=>void controller.showProjects()} aria-label="返回影片首页"><span className="vs-brandmark"><FilmMark/></span><span><strong>映流</strong><small>{isHome?'DSH 影片首页':'DSH 视频工作台'}</small></span><span className="vs-version">STUDIO 04</span></button>
+      <button className="vs-brand vs-brand-home" onClick={()=>void controller.showProjects()} aria-label="返回影片首页"><span className="vs-brandmark"><VideoStudioIcon/></span><span><strong>映流</strong><small>{isHome?'DSH 影片首页':'DSH 视频工作台'}</small></span><span className="vs-version">STUDIO 04</span></button>
       <div className="vs-top-actions">{!isHome&&<><Button icon="folder" onClick={()=>void controller.showProjects()}>影片首页</Button><Button icon="plus" onClick={()=>setNewOpen(true)} disabled={busy}>新建影片</Button></>}<Button icon="spark" onClick={()=>setTab('media')}>媒体模型</Button><Button icon="settings" onClick={()=>setTab('environment')}>{isHome?'环境设置':'环境'}</Button></div>
     </header>
     {!isHome&&<section className="vs-projectbar">

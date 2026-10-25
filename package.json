@@ -2,7 +2,7 @@
   "name": "dsh-video-studio",
   "version": "0.6.0",
   "type": "module",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "description": "DSH 视频工作台：图文分镜、前端代码生成与编辑、本地 MP4 导出",
   "main": "lib/index.js",
   "exports": {
@@ -16,6 +16,7 @@
     "cordis.patch.yml",
     "README.md",
     "LICENSE",
+    "NOTICE",
     "THIRD_PARTY_NOTICES.md"
   ],
   "dsh": {
@@ -40,20 +41,20 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",
-    "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-connection": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-layout": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-sidebar": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-locale": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-theme": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-jobs": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-attachment": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-tool": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-workspace": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-session": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-api-session-controller": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-api-workspace-controller": "0.2.1-rc.2"
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-client-connection": "*",
+    "@deepseek-ai/dsh-client-ui-layout": "*",
+    "@deepseek-ai/dsh-client-ui-sidebar": "*",
+    "@deepseek-ai/dsh-client-locale": "*",
+    "@deepseek-ai/dsh-client-ui-theme": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-jobs": "*",
+    "@deepseek-ai/dsh-attachment": "*",
+    "@deepseek-ai/dsh-client-ui-tool": "*",
+    "@deepseek-ai/dsh-client-ui-workspace": "*",
+    "@deepseek-ai/dsh-client-ui-session": "*",
+    "@deepseek-ai/dsh-api-session-controller": "*",
+    "@deepseek-ai/dsh-api-workspace-controller": "*"
   },
   "dependencies": {
     "fflate": "0.8.3",
@@ -71,13 +72,18 @@
     "react-dom": "18.3.1",
     "tsdown": "0.22.2",
     "tsx": "4.22.4",
-    "typescript": "6.0.3"
+    "typescript": "6.0.3",
+    "semver": "7.8.5"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "node scripts/build.mjs",
     "test": "node --import tsx --test tests/*.test.ts",
     "preview": "node scripts/preview.mjs",
-    "prepack": "npm run typecheck && npm run build"
+    "prepack": "npm run typecheck && npm run build",
+    "verify:compat": "npm run typecheck && npm test && npm run build && node scripts/check-host-compatibility.mjs"
+  },
+  "engines": {
+    "dsh": "*"
   }
 }

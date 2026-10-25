@@ -2,9 +2,11 @@ import type {HostContext} from './platform.ts';
 import {ProjectHub} from './project-hub.ts';
 import {registerSessionTools} from './session-tools.ts';
 import {clientRequestSchema} from '@deepseek-ai/dsh-client-connection';
+import {assertHostContract} from '../shared/host-contract.ts';
 export const name='video-studio';
 export const inject=['connection','llm','tools','jobs','attachments','sessionController'];
 export function apply(ctx:HostContext,config:{baseDirectory?:string}={}):void{
+  assertHostContract(ctx);
   const service=new ProjectHub(ctx,config);
   ctx.effect(()=>()=>service.dispose(),'video-studio lifetime');
   registerSessionTools(ctx,service);

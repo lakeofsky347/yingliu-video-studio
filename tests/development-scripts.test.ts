@@ -8,7 +8,7 @@ import {promisify} from 'node:util';
 import {ensureDirectoryLink,linkHostDependencies,resolveDshCli} from '../scripts/dev-environment.mjs';
 
 const exec=promisify(execFile);
-async function directory(){return fs.mkdtemp(path.join(os.tmpdir(),'dsh-dev 空格-'));}
+async function directory(){return fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'dsh-dev 空格-')));}
 async function file(root:string,name:string,text='fixture'){const location=path.join(root,name);await fs.mkdir(path.dirname(location),{recursive:true});await fs.writeFile(location,text);return location;}
 async function officialShim(root:string,global=false){
   const packageRoot=path.join(root,global?'node_modules/@deepseek-ai/dsh':'@deepseek-ai/dsh');
@@ -34,7 +34,8 @@ test('PATH is searched before the macOS app fallback, and other platforms have n
   try{
     const executable=await file(root,'dsh','#!/usr/bin/env node\n');await fs.chmod(executable,0o755);
     const app=await file(root,'macOS-fallback.mjs','');
-    assert.equal(resolveDshCli({platform:'darwin',env:{PATH:root},macDefault:app}).command,executable);
+    // A simulated Unix PATH must not contain a Windows drive colon.
+    assert.equal(resolveDshCli({platform:'darwin',cwd:root,env:{PATH:'.'},macDefault:app}).command,executable);
     assert.equal(resolveDshCli({platform:'darwin',env:{PATH:''},macDefault:app}).prefixArgs[0],app);
     assert.throws(()=>resolveDshCli({platform:'linux',env:{PATH:''},macDefault:app}),/not found on PATH/);
   }finally{await fs.rm(root,{recursive:true,force:true});}
@@ -97,6 +98,21 @@ test('host peers are preflighted for names and versions before linking, preservi
     await file(host,'@deepseek-ai/dsh-llm/package.json',JSON.stringify({name:'@deepseek-ai/dsh-llm',version:'0.2.0-rc.2'}));
     assert.equal(linkHostDependencies(plugin,host),2);assert.equal(await fs.readFile(lock,'utf8'),'untouched-lock');
     assert.equal(await fs.realpath(path.join(plugin,'node_modules/@deepseek-ai/dsh-llm')),await fs.realpath(path.join(host,'@deepseek-ai/dsh-llm')));
+  }finally{await fs.rm(root,{recursive:true,force:true});}
+});
+
+test('release-independent DSH peers accept prereleases and future releases while the Cordis kernel range is enforced',async()=>{
+  const root=await directory();
+  try{
+    const plugin=path.join(root,'plugin'),host=path.join(root,'host/node_modules');
+    await file(plugin,'package.json',JSON.stringify({peerDependencies:{'@deepseek-ai/cordis':'^4.0.4','@deepseek-ai/dsh-llm':'*'}}));
+    await file(host,'@deepseek-ai/cordis/package.json',JSON.stringify({name:'@deepseek-ai/cordis',version:'4.0.5'}));
+    for(const version of ['0.2.1-rc.2','0.2.1-rc.3','0.2.2-alpha.1','0.3.0','1.0.0-rc.1','2.0.0']){
+      await file(host,'@deepseek-ai/dsh-llm/package.json',JSON.stringify({name:'@deepseek-ai/dsh-llm',version}));
+      assert.equal(linkHostDependencies(plugin,host),2,version);
+    }
+    await file(host,'@deepseek-ai/cordis/package.json',JSON.stringify({name:'@deepseek-ai/cordis',version:'5.0.0'}));
+    assert.throws(()=>linkHostDependencies(plugin,host),/does not satisfy \^4.0.4/);
   }finally{await fs.rm(root,{recursive:true,force:true});}
 });
 

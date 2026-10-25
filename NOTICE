@@ -1,0 +1,21 @@
+DSH Video Studio
+Copyright (c) 2026 DSH Video Studio contributors
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the
+Free Software Foundation, version 3 only (SPDX: GPL-3.0-only).
+See LICENSE for the complete license text.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+for more details.
+
+Earlier revisions were distributed under the MIT License and the Apache
+License, Version 2.0. Their complete historical license texts are retained
+in licenses/Legacy-MIT.txt and licenses/Legacy-Apache-2.0.txt (distributed
+under lib/licenses/ in the plugin package). These records preserve the
+licenses and attribution accompanying those earlier revisions.
+
+Third-party components retain their original licenses and notices.
+See THIRD_PARTY_NOTICES.md for component attribution and license locations.

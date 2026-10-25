@@ -14,13 +14,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        host: [0.2.1-rc.2, latest, next]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     defaults:
       run:
         shell: pwsh
     env:
-      DSH_RUNTIME: ${{ runner.temp }}/dsh-video-host
       DSH_REQUIRE_SYMLINK_TESTS: '1'
       DSH_TELEMETRY_DISABLED: '1'
     steps:
@@ -29,6 +29,8 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+      - name: Configure the isolated host directory
+        run: '"DSH_RUNTIME=$env:RUNNER_TEMP/dsh-video-host" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append'
       - name: Enable real Windows symlinks
         if: runner.os == 'Windows'
         run: |
@@ -40,7 +42,7 @@ jobs:
       - name: Install locked plugin dependencies
         run: npm ci --legacy-peer-deps --ignore-scripts --no-audit --no-fund
       - name: Install the official host outside the checkout
-        run: npm install --prefix "$env:DSH_RUNTIME" --ignore-scripts --no-audit --no-fund --save-exact @deepseek-ai/dsh@0.2.0-rc.2
+        run: npm install --prefix "$env:DSH_RUNTIME" --ignore-scripts --no-audit --no-fund --save-exact @deepseek-ai/dsh@${{ matrix.host }}
       - name: Link matching host peers
         run: node scripts/link-host-dependencies.mjs "$env:DSH_RUNTIME/node_modules"
       - name: Record runtime and local media availability
@@ -51,3 +53,5 @@ jobs:
         run: npm test
       - name: Build
         run: npm run build
+      - name: Check official host compatibility policy
+        run: node scripts/check-host-compatibility.mjs "$env:DSH_RUNTIME/node_modules"

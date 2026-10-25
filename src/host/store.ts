@@ -10,6 +10,7 @@ import { createProject, defaultSceneSource, validateProject, migrateProject } fr
 import {probeAudio} from './audio.js';
 import {importVideoFile,MAX_VIDEO_BYTES} from '../media/video.js';
 import {syncDirectory} from './directory-sync.js';
+import {atomicRename} from './atomic-rename.js';
 import {inspectProjectPaths,portableProjectPathReason,safeRelativeProjectPath} from '../core/project-paths.js';
 
 export interface StoreOptions {
@@ -52,7 +53,7 @@ async function atomicWrite(file:string,data:string|Buffer):Promise<void> {
   const temporary=file+'.tmp-'+randomUUID();
   try {
     const handle=await fs.open(temporary,'w');try{await handle.writeFile(data);await handle.sync();}finally{await handle.close();}
-    await fs.rename(temporary,file);
+    await atomicRename(temporary,file);
     await syncDirectory(path.dirname(file));
   }
   finally { await fs.rm(temporary,{force:true}); }
