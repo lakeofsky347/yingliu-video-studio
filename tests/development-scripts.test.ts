@@ -137,9 +137,9 @@ else console.log(JSON.stringify({args,home:process.env.DSH_HOME,projects:process
     const launched=JSON.parse(result.stdout.trim().split('\n').at(-1)!);
     assert.deepEqual(launched,{args:['--profile',profile,'--no-open','--port','19699'],home,projects});
     const location=path.join(home,'profiles',profile),manifest=JSON.parse(await fs.readFile(path.join(location,'package.json'),'utf8'));
-    assert.equal(manifest.dependencies['dsh-video-studio'],`link:${plugin}`);
-    assert.deepEqual(manifest.dsh.profile.bundles,['@deepseek-ai/dsh-base','@deepseek-ai/dsh-web-app','dsh-video-studio']);
-    assert.equal(await fs.realpath(path.join(location,'node_modules/dsh-video-studio')),await fs.realpath(plugin));
+    assert.equal(manifest.dependencies['yingliu-video-studio'],`link:${plugin}`);
+    assert.deepEqual(manifest.dsh.profile.bundles,['@deepseek-ai/dsh-base','@deepseek-ai/dsh-web-app','yingliu-video-studio']);
+    assert.equal(await fs.realpath(path.join(location,'node_modules/yingliu-video-studio')),await fs.realpath(plugin));
     const patch=await fs.readFile(path.join(location,'cordis.patch.yml'),'utf8');
     assert.match(patch,/video-studio-session-offline/);assert.match(patch,/preference: zh/);
   }finally{await fs.rm(root,{recursive:true,force:true});}

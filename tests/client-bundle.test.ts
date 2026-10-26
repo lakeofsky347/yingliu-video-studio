@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {checkClientBundle} from '../scripts/check-client-bundle.mjs';
 
-const factory=(body:string)=>`window.__ModuleLoader__.load({id:'dsh-video-studio',factory:(require)=>{${body};return {inject:[],apply(){}};}});`;
+const factory=(body:string)=>`window.__ModuleLoader__.load({id:'yingliu-video-studio',factory:(require)=>{${body};return {inject:[],apply(){}};}});`;
 test('client factory imports only the real React modules supplied by the host',()=>{
   const result=checkClientBundle(factory(`const React=require('react');const jsx=require('react/jsx-runtime');if(typeof React.createElement!=='function'||typeof jsx.jsx!=='function')throw Error('Bad seeds')`));
   assert.deepEqual(result.externals,['react','react/jsx-runtime']);
@@ -19,7 +19,7 @@ test('dynamic dependencies and extra chunks cannot bypass the factory boundary',
 });
 test('strict factory execution catches top-level browser import failures and invalid exports',()=>{
   assert.throws(()=>checkClientBundle(factory(`throw Error('Import failed')`)),/Import failed/);
-  assert.throws(()=>checkClientBundle(`window.__ModuleLoader__.load({id:'dsh-video-studio',factory:()=>({})});`),/export apply and inject/);
+  assert.throws(()=>checkClientBundle(`window.__ModuleLoader__.load({id:'yingliu-video-studio',factory:()=>({})});`),/export apply and inject/);
   assert.throws(()=>checkClientBundle(factory('')+factory('')),/Unexpected client factory/);
   assert.throws(()=>checkClientBundle('const unused=1;'),/did not register/);
 });

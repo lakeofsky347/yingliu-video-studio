@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/lakeofsky347/yingliu-video-studio",
+  "upstreamMergeCommit": "9d7b2fdd1c06c357b2f5b040f13d7bd81c70e7de",
+  "package": "yingliu-video-studio",
+  "version": "0.6.0",
+  "releaseChanges": [
+    "Rename npm package and DSH client/Cordis module references",
+    "Add registry metadata and installation/upgrade documentation",
+    "Include corresponding source and build inputs"
+  ],
+  "compatibility": "Keep project directories and existing source-draft storage keys unchanged"
+}

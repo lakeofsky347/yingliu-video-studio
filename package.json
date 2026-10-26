@@ -1,5 +1,5 @@
 {
-  "name": "dsh-video-studio",
+  "name": "yingliu-video-studio",
   "version": "0.6.0",
   "type": "module",
   "license": "GPL-3.0-only",
@@ -17,7 +17,20 @@
     "README.md",
     "LICENSE",
     "NOTICE",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "src",
+    "types",
+    "tests",
+    "licenses",
+    "tsconfig.json",
+    "SOURCE.json",
+    "scripts/build.mjs",
+    "scripts/check-client-bundle.mjs",
+    "scripts/check-host-compatibility.mjs",
+    "scripts/link-host-dependencies.mjs",
+    "scripts/dev-environment.mjs",
+    "scripts/prepare-local.mjs",
+    "scripts/preview.mjs"
   ],
   "dsh": {
     "bundle": {
@@ -85,5 +98,17 @@
   },
   "engines": {
     "dsh": "*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lakeofsky347/yingliu-video-studio.git"
+  },
+  "homepage": "https://github.com/lakeofsky347/yingliu-video-studio#readme",
+  "bugs": {
+    "url": "https://github.com/lakeofsky347/yingliu-video-studio/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }

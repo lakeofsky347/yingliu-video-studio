@@ -33,7 +33,7 @@ export function checkClientBundle(source,filename='lib/client.js'){
   visit(syntax);
   let count=0;
   const loader={load(definition){
-    if(++count!==1||definition.id!=='dsh-video-studio'||typeof definition.factory!=='function')throw new Error('Unexpected client factory registration');
+    if(++count!==1||definition.id!=='yingliu-video-studio'||typeof definition.factory!=='function')throw new Error('Unexpected client factory registration');
     const exports=definition.factory(name=>{
       if(!seeds.has(name))throw new Error(`client-modules: require(${JSON.stringify(name)}) missed the module table`);
       return nodeRequire(name);
@@ -42,7 +42,7 @@ export function checkClientBundle(source,filename='lib/client.js'){
   }};
   runInNewContext(source,{window:{__ModuleLoader__:loader},TextEncoder,TextDecoder,Event,EventTarget,CustomEvent,console},{filename,timeout:5000});
   if(count!==1)throw new Error('Client bundle did not register its DSH factory');
-  return {id:'dsh-video-studio',externals:[...externals].sort(),bytes:Buffer.byteLength(source)};
+  return {id:'yingliu-video-studio',externals:[...externals].sort(),bytes:Buffer.byteLength(source)};
 }
 
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href){

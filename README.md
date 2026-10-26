@@ -2,7 +2,7 @@
 
 **在对话中构思影片，在工作台里调整镜头，最后导出本地 MP4。**
 
-映流（`dsh-video-studio`）是 DSH Desktop 的视频制作插件。你可以把图片、文字、音频和视频交给工作台，使用 DSH 模型编排分镜、编写动画；也可以单独接入生图、生视频和配音服务，把生成的素材加入影片，再自己修改文案、安排声音、逐帧检查画面。分镜、素材、前端源码和修改历史都保存在本地工程中，方便继续编辑。
+映流（`yingliu-video-studio`）是 DSH Desktop 的视频制作插件。你可以把图片、文字、音频和视频交给工作台，使用 DSH 模型编排分镜、编写动画；也可以单独接入生图、生视频和配音服务，把生成的素材加入影片，再自己修改文案、安排声音、逐帧检查画面。分镜、素材、前端源码和修改历史都保存在本地工程中，方便继续编辑。
 
 当前代码版本：**0.6.0**，新增模型与素材生成、视频片段和协作制作。插件按所需的宿主接口检查兼容性，不再绑定 DSH 发布版本号，详见[宿主兼容机制](docs/COMPATIBILITY.md)。本轮多模态测试和历史 Desktop 验收的范围见 [0.6.0 验收说明](docs/ACCEPTANCE-MULTIMODAL.md)。
 
@@ -67,8 +67,8 @@
 
 ### 2. 安装并启用插件
 
-1. 准备与当前版本对应的安装包，例如 `dsh-video-studio-0.6.0.tgz`。可使用维护者提供的包，或按[开发与扩展](#development)中的步骤自行构建。
-2. 打开 DSH 的 **插件管理 → 添加插件**，填写 `.tgz` 文件的绝对路径。
+1. 在 DSH 插件管理中使用 npm 包名 `yingliu-video-studio@0.6.0` 安装；也可准备与当前版本对应的安装包，例如 `yingliu-video-studio-0.6.0.tgz`。可使用维护者提供的包，或按[开发与扩展](#development)中的步骤自行构建。
+2. 打开 DSH 的 **插件管理 → 添加插件**，填写 `yingliu-video-studio@0.6.0`；使用本地包时填写 `.tgz` 文件的绝对路径。
 3. 安装完成后启用插件。安装与启用是两个步骤，请确认插件已处于运行状态。
 4. 点击 DSH 侧栏带胶片图标的 **映流 · 视频工作台**，进入影片首页；侧栏收起时可点击相同图标。
 
@@ -510,7 +510,7 @@ API Key 通过 DSH 凭据服务保存，不写入工程或模型参数。密钥�
 <a id="development"></a>
 ## 开发与扩展
 
-以下命令在 **`dsh-video-studio` 插件目录**中执行，面向需要构建、调试或扩展插件的开发者。按当前锁文件的依赖要求，使用 Node.js **22.18+（22.x）或 24.11+**。
+以下命令在 **`yingliu-video-studio` 插件目录**中执行，面向需要构建、调试或扩展插件的开发者。按当前锁文件的依赖要求，使用 Node.js **22.18+（22.x）或 24.11+**。
 
 先安装锁文件中的开发依赖：
 
@@ -539,7 +539,7 @@ npm pack --pack-destination artifacts
 
 `scripts/prepare-local.mjs` 供维护者复用已有本地依赖，必须明确设置 `DSH_REFERENCE_PLUGIN`，指向已安装本插件全部开发与运行依赖的参考插件目录；宿主依赖默认来自参考目录的 `.local/runtime/node_modules`，也可用 `DSH_HOST_NODE_MODULES` 指定。脚本先检查来源，缺失时会停止并给出标准 npm 流程指引。新机器优先使用上述 npm 流程，无需个人目录、父仓库 Playwright 或本地 tar 包。
 
-`npm run preview` 使用官方 DSH 运行库和独立 profile，默认端口为 `19405`。CLI 搜索顺序为显式 `DSH_CLI`、`PATH` 中的 `dsh`，最后是 macOS 的默认 `.app` 路径。显式路径无效时会报错；Windows npm 的 `dsh.cmd` 会转换为已核对官方包的 JS 入口，由 Node 直接执行。其他 `.cmd`/`.bat` 启动器请将 `DSH_CLI` 指向官方 `lib/bin.js`。目录链接在 Windows 使用 junction。预览脚本中的固定响应模型用于本地测试，不随插件发布；它不能用于判断真实模型的生成质量。
+`npm run preview` 使用官方 DSH 运行库和独立 profile，默认端口为 `19405`。CLI 搜索顺序为显式 `DSH_CLI`、`PATH` 中的 `dsh`，最后是 macOS 的默认 `.app` 路径。显式路径无效时会报错；Windows npm 的 `dsh.cmd` 会转换为已核对官方包的 JS 入口，由 Node 直接执行。其他 `.cmd`/`.bat` 启动器请将 `DSH_CLI` 指向官方 `lib/bin.js`。目录链接在 Windows 使用 junction。预览脚本中的固定响应模型只用于源码测试，不参与已安装插件的运行；它不能用于判断真实模型的生成质量。
 
 `.github/workflows/platform-checks.yml` 定义 Windows、macOS 和 Linux 的类型检查、测试与构建，分别使用固定基线宿主、npm `latest` 与 `next` 宿主，并调用官方兼容性判定器做版本矩阵回归。基础 CI 会记录媒体工具是否可用，媒体测试的跳过不能作为该平台导出通过的证据。Windows CI 先启用 Developer Mode 并实测文件及目录 symlink 权限；权限不足即失败。普通本地测试若缺少该权限会明确跳过真实 symlink 测试，也可设置 `DSH_REQUIRE_SYMLINK_TESTS=1` 要求失败。工作流定义不代表三平台已实际运行或原生界面已验收。
 
@@ -561,3 +561,9 @@ npm pack --pack-destination artifacts
 详细验证范围以对应版本的验收文档为准。0.6.0 多模态功能已记录本地测试网关、受控 DSH 接口与真实本地媒体检查；这些结果不等同于真实供应商生成成功，也不代表新增了原生 Desktop 或 Windows/macOS 安装验收。README 配图保留其原版本范围，真实服务的协议兼容、生成质量、费用和最终成片需要分别确认。
 
 本项目采用 **GPL-3.0-only**，许可证与第三方组件声明见上表。
+
+### npm 包与源码
+
+公开 npm 包名为 [`yingliu-video-studio`](https://www.npmjs.com/package/yingliu-video-studio)，当前版本 `0.6.0`。在 DSH 插件管理中填写 `yingliu-video-studio@0.6.0`，或使用同版本 `.tgz` 文件安装。包名、客户端模块注册和 Cordis 引用已保持一致。升级原 `dsh-video-studio` 插件时，先停用旧包，再启用新包，避免同一宿主同时注册两套视频工作台；工程默认目录和既有编辑草稿的存储标识保持兼容。
+
+发布包同时包含对应的 `src/`、`types/`、`tests/`、构建脚本和许可证。完整锁文件在本仓库中；源码检出使用上面的 `npm ci` 流程，直接从 npm 包源码重建时先运行 `npm install --legacy-peer-deps --ignore-scripts`，再链接官方宿主并执行构建。发布来源见 `SOURCE.json` 与 npm 的 `gitHead`。
