@@ -158,6 +158,11 @@ TTS 是独立能力，不把 ctx.llm 当作音频接口。本地适配为 macOS 
 ### 精确帧与预览
 
 `inspect` 使用当前项目源码在 Playwright 中调用同一 `ready()` / `renderFrame({frame,fps})`，保存真实 PNG。frame 为全片零起始帧，输出包含对应 shotId、文件路径、URL 与 SHA-256。工作台关键帧也运行同一代码。实时播放含音轨时使用音频 currentTime 作为时钟；任意帧定位、冷启动和导出仍使用帧号确定画面。
+
+`thumbnails` 接收 `{projectId, expectedRevision, frames}`，`frames` 为 1–3 个有效的全片整数帧，返回 `{projectId, revision, frames:[{frame, shotId, path, url, sha256}]}`。它在同一个短时浏览器中生成尺寸不超过 320 × 180 的 PNG；场景仍按完整目标尺寸计算。缓存键包括项目规格、内容版本、所请求帧和 runtime，相同批次的并发请求共用任务，版本过期返回 `REVISION_CONFLICT`。工作台只保留主预览 iframe，关键帧使用静态图片；生成结束即关闭对应浏览器。完整帧 PNG 仍使用 `inspect`。
+
+runtime 只解码当前镜头绑定的图片和视频，切镜释放不再使用的视频解码器。HTML 预解析为模板，CSS 仅在变化时更新；每帧仍提供新的 DOM、Canvas 状态和参数副本，并调用轻量、可重复的场景 `ready(ctx)`。离线导出通过 Chromium CDP 无损 PNG 捕获，等待布局与字体就绪，不等待显示器刷新。FFmpeg 的 PNG 解码和像素转换各使用一个线程，H.264 编码最多使用四个线程；画面尺寸、帧率、CRF、编码 preset 和音频规格保持原有约定。性能验证方法见 [渲染性能](RENDERING.md)。
+
 # 0.3.0 工程管理与制作记录
 
 既有视频工具保持原有职责，当前 Session 的模型仍直接提交分镜和源码。写入支持 `expectedRevision`；提供时在实际提交前检查，过期请求返回 `REVISION_CONFLICT`。`video_update` 在导入素材后继续使用本次已确认 revision 提交，不会跳过服务侧冲突检查。

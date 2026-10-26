@@ -2,15 +2,15 @@
   "repository": "https://github.com/lakeofsky347/yingliu-video-studio",
   "upstreamMergeCommit": "9d7b2fdd1c06c357b2f5b040f13d7bd81c70e7de",
   "package": "yingliu-video-studio",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "releaseChanges": [
-    "Rename npm package and DSH client/Cordis module references",
-    "Add registry metadata and installation/upgrade documentation",
-    "Include corresponding source and build inputs"
+    "Optimize lossless Chromium frame capture and offline scheduling",
+    "Cache static keyframe thumbnails in one short-lived browser",
+    "Load media per shot and release unused video decoders",
+    "Bound FFmpeg threading and optimize immutable snapshot copies",
+    "Include rendering benchmarks and real-browser regression checks"
   ],
   "compatibility": "Keep project directories and existing source-draft storage keys unchanged",
-  "baseReleaseCommit": "3598f48d2618c0e5635940219ca92861f3210781",
-  "patchChanges": [
-    "Add npm discovery keywords for DSH market collectors"
-  ]
+  "baseReleaseCommit": "28a1953b8c12d922c31fba30b112554e49f6cd34",
+  "previousRelease": "0.6.1"
 }

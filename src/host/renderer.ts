@@ -5,7 +5,7 @@ import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { chromium, type Browser, type Page } from 'playwright-core';
+import { chromium, type Browser, type CDPSession, type Page } from 'playwright-core';
 import type { Asset, EnvironmentInfo, EnvironmentSettings, ExportResult, SceneSource, VideoProject, VideoSpec } from '../shared/types.js';
 import { compileSpec } from '../core/index.js';
 import {hashMediaFile} from '../media/video.js';
@@ -13,6 +13,7 @@ import { ProjectStore, projectPath } from './store.js';
 import { browserRuntime, runtimeHtml } from '../runtime/browser.js';
 import {AudioMixer, type AudioMix} from './audio.js';
 import {inspectToolEnvironment, type ToolEnvironmentOptions} from './tool-environment.js';
+import {atomicRename} from './atomic-rename.js';
 
 export interface FrameCapture { frame:number; shotId:string; path:string; sha256:string }
 export interface RenderIssue { shotId?:string; frame?:number; message:string }
@@ -84,6 +85,8 @@ export class VideoRenderer {
   private servers=new Map<string,ProjectServer>();
   private pendingServers=new Map<string,Promise<ProjectServer>>();
   private browsers=new Set<Browser>();
+  private captureSessions=new WeakMap<Page,CDPSession>();
+  private pendingThumbnails=new Map<string,Promise<(FrameCapture&{url:string})[]>>();
   private children=new Set<ChildProcess>();
   private audioMixer=new AudioMixer();
   private readonly store:ProjectStore;
@@ -131,7 +134,7 @@ export class VideoRenderer {
     // 逐帧契约要求同一帧可复现：GPU 光栅的 2D canvas 在不同页面状态下会出现 ±1 的采样差异，
     // 会让逆序 seek / 冷启动的字节比对偶发失败。固定用 Skia 软件光栅画 2D canvas，
     // 合成与 WebGL 仍走原路径，渲染结果与截图因此稳定可复现。
-    const browser=await chromium.launch({executablePath:env.browserPath,headless:true,args:['--disable-background-timer-throttling','--disable-renderer-backgrounding','--disable-accelerated-2d-canvas','--disable-accelerated-video-decode']});this.browsers.add(browser);
+    const browser=await chromium.launch({executablePath:env.browserPath,headless:true,args:['--disable-background-timer-throttling','--disable-renderer-backgrounding','--disable-accelerated-2d-canvas','--disable-accelerated-video-decode','--disable-frame-rate-limit','--renderer-process-limit=1']});this.browsers.add(browser);
     const cancel=()=>{void browser.close().catch(()=>{});};signal?.addEventListener('abort',cancel,{once:true});
     try {
       const context=await browser.newContext({viewport:{width:spec.target.width,height:spec.target.height},deviceScaleFactor:1,serviceWorkers:'block'});
@@ -146,26 +149,67 @@ export class VideoRenderer {
       page.on('pageerror',error=>issues.push({message:error.message}));
       page.on('console',message=>{if(message.type()==='error')issues.push({message:message.text()});});
       page.on('response',response=>{if(response.status()>=400)issues.push({message:'HTTP '+response.status()+': '+new URL(response.url()).pathname});});
-      await page.goto(url,{waitUntil:'load',timeout:30_000});
+      // The host requests every frame explicitly; do not race an automatic frame-zero render.
+      const renderUrl=new URL(url);renderUrl.searchParams.set('render','manual');
+      await page.goto(renderUrl.href,{waitUntil:'load',timeout:30_000});
       await page.waitForFunction(()=>!!(window as any).__VIDEO_WORKPACK__);
       const ready=await deadline(page.evaluate(async()=>{
         try{await (window as any).__VIDEO_WORKPACK__.ready();return {ok:true};}
         catch(error){const e=error as any;return {ok:false,message:e.message,shotId:e.shotId};}
       }),'Scene ready');
       if(!ready.ok){issues.push({shotId:ready.shotId,message:ready.message??'Renderer ready failed'});throw new Error(ready.message);}
+      this.captureSessions.set(page,await context.newCDPSession(page));
       return {browser,page,removeAbort:()=>signal?.removeEventListener('abort',cancel)};
     }catch(error){signal?.removeEventListener('abort',cancel);await browser.close().catch(()=>{});this.browsers.delete(browser);throw error;}
   }
-  private async frame(page:Page,spec:VideoSpec,frame:number):Promise<{buffer:Buffer;shotId:string}> {
+  private async frame(page:Page,spec:VideoSpec,frame:number,scale=1):Promise<{buffer:Buffer;shotId:string}> {
     const result=await deadline(page.evaluate(async input=>{
       try{
         const info=await (window as any).__VIDEO_WORKPACK__.renderFrame(input);
-        await new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve())));
+        // Layout discovers fonts introduced by render(). CDP capture commits the resulting
+        // compositor surface; waiting for two display refreshes here throttles offline export.
+        void document.body.offsetHeight;await document.fonts.ready;
         return {ok:true,info};
       }catch(error){const e=error as any;return {ok:false,message:e.message,shotId:e.shotId,frame:e.frame};}
     },{frame,fps:spec.target.fps}),'Frame '+frame);
     if(!result.ok){const error=new Error(result.message) as Error&RenderIssue;error.shotId=result.shotId;error.frame=result.frame;throw error;}
-    return {buffer:await page.screenshot({type:'png',clip:{x:0,y:0,width:spec.target.width,height:spec.target.height},timeout:30_000}),shotId:result.info.sceneId};
+    const session=this.captureSessions.get(page);if(!session)throw new Error('Frame capture session unavailable');
+    // Lossless PNG with fast compression. The viewport and scale are fixed at openPage(),
+    // so repeated caret/style/font preparation and viewport probes are unnecessary.
+    const capture=await deadline(session.send('Page.captureScreenshot',{format:'png',optimizeForSpeed:true,
+      clip:{x:0,y:0,width:spec.target.width,height:spec.target.height,scale},captureBeyondViewport:false}),'Screenshot '+frame);
+    return {buffer:Buffer.from(capture.data,'base64'),shotId:result.info.sceneId};
+  }
+  /** Static previews share one short-lived browser and are cached against the render inputs. */
+  async thumbnails(root:string,project:VideoProject,settings:EnvironmentSettings,requested:number[],signal?:AbortSignal):Promise<(FrameCapture&{url:string})[]>{
+    aborted(signal);const spec=compileSpec(project);
+    if(!Array.isArray(requested)||requested.length<1||requested.length>3||requested.some(frame=>!Number.isSafeInteger(frame)||frame<0||frame>=spec.durationFrames))throw new Error('Thumbnails require 1–3 valid project frames');
+    const frames=[...new Set(requested)],key=hash(JSON.stringify({runtime:browserRuntime,revision:project.revision,spec,frames}));
+    const pendingKey=path.resolve(root)+':'+key;let pending=this.pendingThumbnails.get(pendingKey);
+    if(!pending){pending=this.makeThumbnails(root,project,spec,settings,frames,key,signal);this.pendingThumbnails.set(pendingKey,pending);}
+    try{return await pending;}finally{if(this.pendingThumbnails.get(pendingKey)===pending)this.pendingThumbnails.delete(pendingKey);}
+  }
+  private async makeThumbnails(root:string,project:VideoProject,spec:VideoSpec,settings:EnvironmentSettings,frames:number[],key:string,signal?:AbortSignal):Promise<(FrameCapture&{url:string})[]>{
+    const server=await this.server(root),captures=[];
+    for(const frame of frames){
+      const relative='.studio/thumbnails/'+key+'/'+frame+'.png';
+      captures.push({frame,shotId:spec.shots.find(shot=>frame>=shot.startFrame&&frame<shot.endFrame)!.id,path:await projectPath(root,relative),url:server.origin+'/'+relative});
+    }
+    const cached=await Promise.all(captures.map(capture=>fs.readFile(capture.path).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return null;throw error;})));
+    if(cached.every(bytes=>bytes!==null))return captures.map((capture,index)=>({...capture,sha256:hash(cached[index]!)}));
+    const errors:RenderIssue[]=[];let connection:Awaited<ReturnType<VideoRenderer['openPage']>>|undefined;
+    try{
+      await this.prepare(root,project);connection=await this.openPage(server.origin+'/index.html',spec,settings,errors,signal);
+      const scale=Math.min(1,320/spec.target.width,180/spec.target.height),results=[];
+      for(const capture of captures){
+        aborted(signal);const result=await this.frame(connection.page,spec,capture.frame,scale);aborted(signal);
+        if(errors.length)throw new Error(errors.map(error=>error.message).join('; '));
+        await fs.mkdir(path.dirname(capture.path),{recursive:true});const temporary=capture.path+'.tmp-'+randomUUID();
+        try{await fs.writeFile(temporary,result.buffer);await atomicRename(temporary,capture.path);}finally{await fs.rm(temporary,{force:true});}
+        results.push({...capture,sha256:hash(result.buffer)});
+      }
+      return results;
+    }finally{if(connection){connection.removeAbort();await connection.browser.close().catch(()=>{});this.browsers.delete(connection.browser);}}
   }
   async capture(root:string,project:VideoProject,settings:EnvironmentSettings,frame:number,signal?:AbortSignal):Promise<FrameCapture&{url:string}>{
     const spec=await this.prepare(root,project),errors:RenderIssue[]=[];aborted(signal);
@@ -188,7 +232,7 @@ export class VideoRenderer {
       await fs.writeFile(path.join(snapshotRoot,'project.json'),json(snapshot));
       for(const asset of snapshot.assets)if(asset.path){
         aborted(signal);const input=await projectPath(root,asset.path),output=await projectPath(snapshotRoot,asset.path);
-        await fs.mkdir(path.dirname(output),{recursive:true});await fs.copyFile(input,output);
+        await fs.mkdir(path.dirname(output),{recursive:true});await fs.copyFile(input,output,constants.COPYFILE_FICLONE);
       }
       for(const shot of snapshot.shots){
         aborted(signal);const source=sources[shot.id]??await this.store.readSource(root,shot,project.revision);
@@ -240,7 +284,7 @@ export class VideoRenderer {
     const inputHashes:{path:string;sha256:string}[]=[];
     for(const asset of snapshot.assets)if(asset.path){
       const source=await projectPath(root,asset.path),destination=await projectPath(snapshotRoot,asset.path);await fs.mkdir(path.dirname(destination),{recursive:true});
-      await fs.copyFile(source,destination);inputHashes.push({path:asset.path,sha256:await hashMediaFile(destination,signal)});
+      await fs.copyFile(source,destination,constants.COPYFILE_FICLONE);inputHashes.push({path:asset.path,sha256:await hashMediaFile(destination,signal)});
     }
     for(const shot of snapshot.shots){
       const source=await this.store.readSource(root,shot,project.revision);await this.store.writeSource(snapshotRoot,shot,source);
@@ -258,7 +302,10 @@ export class VideoRenderer {
       connection=await this.openPage(snapshotServer.origin+'/index.html',spec,env,errors,signal);
       const audioArgs=audioMix?['-i',audioMix.path,'-map','0:v:0','-map','1:a:0','-c:a','aac','-b:a','192k','-ar','48000','-ac','2','-t',String(spec.durationSeconds)]:['-an'];
       const crf=spec.target.quality==='high'?'16':spec.target.quality==='small'?'23':'18';
-      encoder=spawn(env.ffmpegPath,['-hide_banner','-loglevel','warning','-y','-f','image2pipe','-vcodec','png','-framerate',spec.target.fps.num+'/'+spec.target.fps.den,'-i','pipe:0',...audioArgs,'-c:v','libx264','-preset','medium','-crf',crf,'-pix_fmt','yuv420p','-movflags','+faststart',mp4Path],{stdio:['pipe','ignore','pipe']});this.children.add(encoder);
+      // PNG is fed one frame at a time. FFmpeg's automatic frame-thread decoder can
+      // otherwise retain many full-resolution images and oversubscribe the machine.
+      const encoderThreads=String(Math.max(1,Math.min(4,os.availableParallelism())));
+      encoder=spawn(env.ffmpegPath,['-hide_banner','-loglevel','warning','-y','-filter_threads','1','-f','image2pipe','-vcodec','png','-threads','1','-probesize','32','-analyzeduration','0','-fpsprobesize','0','-framerate',spec.target.fps.num+'/'+spec.target.fps.den,'-i','pipe:0',...audioArgs,'-c:v','libx264','-threads',encoderThreads,'-preset','medium','-crf',crf,'-pix_fmt','yuv420p','-movflags','+faststart',mp4Path],{stdio:['pipe','ignore','pipe']});this.children.add(encoder);
       encoder.stderr?.on('data',chunk=>{log+=String(chunk);if(log.length>2_000_000)log=log.slice(-2_000_000);});
       encoder.stdin?.on('error',()=>{});
       encoderResult=new Promise<void>((resolve,reject)=>{

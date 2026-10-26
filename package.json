@@ -1,6 +1,6 @@
 {
   "name": "yingliu-video-studio",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "type": "module",
   "license": "GPL-3.0-only",
   "description": "DSH 视频工作台：图文分镜、前端代码生成与编辑、本地 MP4 导出",
@@ -30,7 +30,8 @@
     "scripts/link-host-dependencies.mjs",
     "scripts/dev-environment.mjs",
     "scripts/prepare-local.mjs",
-    "scripts/preview.mjs"
+    "scripts/preview.mjs",
+    "scripts/benchmark-render.mjs"
   ],
   "dsh": {
     "bundle": {
@@ -93,6 +94,7 @@
     "build": "node scripts/build.mjs",
     "test": "node --import tsx --test tests/*.test.ts",
     "preview": "node scripts/preview.mjs",
+    "bench:render": "node --import tsx scripts/benchmark-render.mjs",
     "prepack": "npm run typecheck && npm run build",
     "verify:compat": "npm run typecheck && npm test && npm run build && node scripts/check-host-compatibility.mjs"
   },

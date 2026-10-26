@@ -2,7 +2,8 @@
 export const browserRuntime = String.raw`
 const stage = document.getElementById('stage');
 const sceneStyle = document.getElementById('scene-style');
-let data, modules, images, videos, readyPromise, renderChain = Promise.resolve();
+let data, modules, images, videos, sources, templates, readyPromise, renderChain = Promise.resolve();
+let frameCanvases=[],loadedShot;
 let pendingMessage, messageRendering=false;
 function hash(value) { let n=2166136261; for(const c of String(value)){n^=c.charCodeAt(0);n=Math.imul(n,16777619)}return n>>>0; }
 function helpers(seed) { return {
@@ -20,36 +21,45 @@ function assetUrl(asset){return asset.path?new URL('../'+asset.path.split('/').m
 async function init() {
   const response=await fetch('./runtime/spec.json');
   if(!response.ok)throw new Error('Unable to read project runtime: '+response.status);
-  data=await response.json();modules=new Map();images=new Map();videos=new Map();
+  data=await response.json();modules=new Map();images=new Map();videos=new Map();templates=new Map();
+  sources=new Map(data.sources.map(source=>[source.id,source]));
   document.documentElement.style.setProperty('--video-width',data.spec.target.width+'px');
   document.documentElement.style.setProperty('--video-height',data.spec.target.height+'px');
   stage.style.width=data.spec.target.width+'px';stage.style.height=data.spec.target.height+'px';
   const fit=()=>{const scale=Math.min(window.innerWidth/data.spec.target.width,window.innerHeight/data.spec.target.height);stage.style.transform='translate(-50%,-50%) scale('+scale+')';};fit();window.addEventListener('resize',fit);
-  await Promise.all(data.sources.map(async source=>{
-    try{
-      const module=await import(source.moduleUrl);
-      if(typeof module.render!=='function')throw new Error('Scene module must export render(ctx)');
-      if(module.ready!==undefined&&typeof module.ready!=='function')throw new Error('Scene ready export must be a function');
-      modules.set(source.id,module);
-    }catch(error){throw decorateError(error,{id:source.id});}
-  }));
-  const imageAssets=new Map();
-  for(const shot of data.spec.shots)for(const asset of shot.assets)if(asset.kind==='image')imageAssets.set(asset.id,asset);
-  await Promise.all([...imageAssets.values()].map(async asset=>{
+  await document.fonts.ready;
+  return {contractVersion:'1.0.0',frameCount:data.spec.durationFrames,shots:data.spec.shots.length};
+}
+async function loadShot(shot) {
+  if(loadedShot===shot.id)return;
+  // A preview (including each thumbnail) needs only its current shot's decoded assets.
+  // Release old decoders on a cut; a backwards seek loads them again deterministically.
+  const wanted=new Set(shot.assets.filter(asset=>asset.kind==='image').map(asset=>asset.id));
+  for(const id of images.keys())if(!wanted.has(id))images.delete(id);
+  for(const [id,entry] of videos)if(id!==shot.videoClip?.assetId){entry.video.removeAttribute('src');entry.video.load();videos.delete(id);}
+  const source=sources.get(shot.id);
+  if(!modules.has(shot.id)){
+    const module=await import(source.moduleUrl);
+    if(typeof module.render!=='function')throw new Error('Scene module must export render(ctx)');
+    if(module.ready!==undefined&&typeof module.ready!=='function')throw new Error('Scene ready export must be a function');
+    modules.set(shot.id,module);
+  }
+  // Parse in the same div context as the original runtime. A <template> would change
+  // fragment parsing (e.g. tables) and could activate scripts when its content is cloned.
+  if(!templates.has(shot.id)){const template=document.createElement('div');template.className='scene-root';template.innerHTML=source.html;templates.set(shot.id,template);}
+  await Promise.all(shot.assets.filter(asset=>asset.kind==='image'&&!images.has(asset.id)).map(async asset=>{
     if(!asset.path)throw new Error('Image has no path: '+asset.id);
     const image=new Image();image.decoding='sync';image.src=assetUrl(asset);
-    try{await image.decode();}catch{throw decorateError(new Error('Image cannot be decoded: '+asset.id+' ('+asset.name+')'),data.spec.shots.find(shot=>shot.assets.some(a=>a.id===asset.id)));}
+    try{await image.decode();}catch{throw new Error('Image cannot be decoded: '+asset.id+' ('+asset.name+')');}
     images.set(asset.id,image);
   }));
-  const videoAssets=new Map();
-  for(const shot of data.spec.shots)if(shot.videoClip){const asset=shot.assets.find(asset=>asset.id===shot.videoClip.assetId);if(!asset||asset.kind!=='video')throw new Error('Video asset missing');videoAssets.set(asset.id,asset);}
-  await Promise.all([...videoAssets.values()].map(async asset=>{
+  if(shot.videoClip&&!videos.has(shot.videoClip.assetId)){
+    const asset=shot.assets.find(asset=>asset.id===shot.videoClip.assetId);if(!asset||asset.kind!=='video')throw new Error('Video asset missing');
     const video=document.createElement('video');video.preload='auto';video.muted=true;video.playsInline=true;
     const pending=mediaEvent(video,'loadeddata',()=>video.readyState>=2);video.src=assetUrl(asset);video.load();await pending;
     videos.set(asset.id,{video,frame:-1,asset});
-  }));
-  await document.fonts.ready;
-  return {contractVersion:'1.0.0',frameCount:data.spec.durationFrames,shots:data.spec.shots.length};
+  }
+  loadedShot=shot.id;
 }
 function ready(){return readyPromise??=(init());}
 function mediaEvent(video,event,ready) {
@@ -104,14 +114,19 @@ async function draw(input) {
   if(!Number.isSafeInteger(frame)||frame<0||frame>=data.spec.durationFrames)throw new Error('Frame outside project: '+frame);
   const shot=data.spec.shots.find(s=>frame>=s.startFrame&&frame<s.endFrame);
   if(!shot)throw new Error('No shot owns frame '+frame);
-  const source=data.sources.find(s=>s.id===shot.id);
+  const source=sources.get(shot.id);
   try {
+    await loadShot(shot);
     // Recreate the stage each frame: DOM and Canvas state never leak across seek order.
-    stage.replaceChildren();sceneStyle.textContent=source.css;
-    let videoInfo;if(shot.videoClip){const layer=document.createElement('canvas');layer.className='video-background';layer.width=data.spec.target.width;layer.height=data.spec.target.height;stage.append(layer);videoInfo=await videoFrame(shot,frame,layer);}
+    // Retire the owned backing stores now rather than leaving full-resolution surfaces
+    // alive until a later DOM/GC cycle during a fast offline export.
+    for(const canvas of frameCanvases){canvas.width=0;canvas.height=0;}frameCanvases=[];
+    stage.replaceChildren();if(sceneStyle.textContent!==source.css)sceneStyle.textContent=source.css;
+    let videoInfo;if(shot.videoClip){const layer=document.createElement('canvas');frameCanvases.push(layer);layer.className='video-background';layer.width=data.spec.target.width;layer.height=data.spec.target.height;stage.append(layer);videoInfo=await videoFrame(shot,frame,layer);}
     const canvas=document.createElement('canvas');canvas.width=data.spec.target.width;canvas.height=data.spec.target.height;
+    frameCanvases.push(canvas);
     canvas.className='video-canvas';canvas.setAttribute('aria-hidden','true');stage.append(canvas);
-    const root=document.createElement('div');root.className='scene-root';root.innerHTML=source.html;stage.append(root);
+    const root=templates.get(shot.id).cloneNode(true);stage.append(root);
     const context=contextFor(shot,frame,root,canvas);context.video=videoInfo;
     const module=modules.get(shot.id);
     if(module.ready)await module.ready(context);
@@ -152,14 +167,14 @@ window.addEventListener('message',event=>{
     }finally{messageRendering=false;}
   })();
 });
-ready().then(async metadata=>{await renderFrame({frame:0});post({type:'video-studio/ready',...metadata});}).catch(error=>{
+ready().then(async metadata=>{if(new URL(location.href).searchParams.get('render')!=='manual')await renderFrame({frame:0});post({type:'video-studio/ready',...metadata});}).catch(error=>{
   console.error(error);post({type:'video-studio/error',message:error.message,shotId:error.shotId,frame:error.frame});
 });
 `;
 
 export function runtimeHtml(width:number,height:number):string {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><title>DSH 视频预览</title><style>
-  :root{color-scheme:dark}*{box-sizing:border-box}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000}
+  :root{color-scheme:dark}*{box-sizing:border-box;caret-color:transparent!important}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000}
   body{position:relative}#stage{position:absolute;top:50%;left:50%;width:${width}px;height:${height}px;overflow:hidden;background:#101016;isolation:isolate;transform:translate(-50%,-50%)}
   .video-background,.video-canvas,.scene-root{position:absolute;inset:0;width:100%;height:100%}.scene-root{overflow:hidden}canvas{display:block}
   </style><style id="scene-style"></style></head><body><main id="stage"></main><script type="module" src="./runtime/frame.mjs"></script></body></html>`;

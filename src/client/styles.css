@@ -42,3 +42,7 @@
 
 /* Model settings share the same responsive layout as the workbench panel. */
 .yl-modal.yl-provider-modal{width:min(1000px,100%)}.vs-model-center-grid>div,.vs-media-create-grid>div,.vs-model-roles>*{min-width:0}.vs-model-center .vs-field-pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.vs-model-center input,.vs-model-center select,.vs-model-center textarea{min-width:0}.vs-model-center .vs-media-heading>h4{min-width:0}.vs-model-center .vs-media-heading>button{flex-shrink:0}
+
+.vs-keyframe img,.vs-keyframe-placeholder{display:block;width:100%;height:62px;object-fit:contain;background:#080d14}
+.vs-keyframe-placeholder{display:grid;place-items:center;font-size:10px;color:var(--vs-muted)}
+.vs-preview.is-expanded .vs-keyframe img,.vs-preview.is-expanded .vs-keyframe-placeholder{height:85px}

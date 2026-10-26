@@ -11,11 +11,9 @@ export function frameShotRange(project:VideoProject,frame:number):{shot?:Shot;st
   return {start:0,end:0,localFrame:0};
 }
 export function keyframeNumbers(start:number,end:number):number[]{return [...new Set([start,start+Math.floor(Math.max(0,end-start-1)/2),Math.max(start,end-1)])];}
-function FrameThumb({url,frame,onSelect,label}:{url:string;frame:number;onSelect:(frame:number)=>void;label:string}){
-  const ref=useRef<HTMLIFrameElement>(null),[failed,setFailed]=useState(false);
-  const origin=new URL(url).origin;
-  useEffect(()=>{setFailed(false);const listener=(event:MessageEvent)=>{if(event.source!==ref.current?.contentWindow||event.origin!==origin)return;if(event.data?.type==='video-studio/ready')ref.current?.contentWindow?.postMessage({type:'video-studio/render',frame},origin);if(event.data?.type==='video-studio/error')setFailed(true);};window.addEventListener('message',listener);return()=>window.removeEventListener('message',listener);},[url,frame,origin]);
-  return <button className="vs-keyframe" aria-label={`${label} · 第 ${frame} 帧`} onClick={()=>onSelect(frame)}>{failed?<span>画面加载失败</span>:<iframe ref={ref} src={url} title={`${label}缩略帧`} sandbox="allow-scripts allow-same-origin" tabIndex={-1}/>}<span>{label} <b>F{frame}</b></span></button>;
+function FrameThumb({url,frame,onSelect,label,failed}:{url?:string;frame:number;onSelect:(frame:number)=>void;label:string;failed:boolean}){
+  const [imageFailed,setImageFailed]=useState(false);
+  return <button className="vs-keyframe" aria-label={`${label} · 第 ${frame} 帧`} onClick={()=>onSelect(frame)}>{url&&!imageFailed?<img src={url} alt={`${label}缩略帧`} onError={()=>setImageFailed(true)}/>:<div className="vs-keyframe-placeholder">{failed||imageFailed?'画面加载失败':'正在生成缩略帧…'}</div>}<span>{label} <b>F{frame}</b></span></button>;
 }
 
 export function Preview({snapshot,project,selectedShot,controller,focusFrame,focusSerial,busy=false}:{snapshot:StudioSnapshot;project:VideoProject;selectedShot?:Shot;controller:StudioController;focusFrame?:number|null;focusSerial?:number;busy?:boolean}){
@@ -27,6 +25,15 @@ export function Preview({snapshot,project,selectedShot,controller,focusFrame,foc
   const range=useMemo(()=>shotFrameRange(project,selectedShot?.id),[project.shotOrder,project.shots,selectedShot?.id]);
   const currentRange=useMemo(()=>frameShotRange(project,frame),[project.shotOrder,project.shots,frame]);
   const marks=useMemo(()=>keyframeNumbers(range.start,range.end),[range.start,range.end]);
+  const thumbnailKey=JSON.stringify([snapshot.previewUrl,marks]);
+  const [thumbnails,setThumbnails]=useState<{key:string;urls:Record<number,string>;failed:boolean}>({key:'',urls:{},failed:false});
+  useEffect(()=>{
+    if(!snapshot.previewUrl||!ready||showOutput||busy)return;
+    let active=true;const timer=setTimeout(()=>{
+      void controller.api.call<{frames:{frame:number;url:string}[]}>('thumbnails',{projectId:project.id,expectedRevision:snapshot.previewRevision,frames:marks}).then(result=>{if(active)setThumbnails({key:thumbnailKey,urls:Object.fromEntries(result.frames.map(capture=>[capture.frame,capture.url])),failed:false});}).catch(()=>{if(active)setThumbnails({key:thumbnailKey,urls:{},failed:true});});
+    },150);
+    return()=>{active=false;clearTimeout(timer);};
+  },[thumbnailKey,ready,showOutput,busy,controller,project.id,snapshot.previewRevision]);
   const seek=(value:number)=>{setPlaying(false);setShowOutput(false);setFrame(Math.max(0,Math.min(maxFrame,Math.round(value))));};
   useEffect(()=>{setReady(false);setCapture(null);},[snapshot.previewUrl]);
   useEffect(()=>{const listener=(e:MessageEvent)=>{if(e.source!==iframe.current?.contentWindow||e.origin!==origin)return;const data=e.data;if(data?.type==='video-studio/ready'){setReady(true);iframe.current?.contentWindow?.postMessage({type:'video-studio/render',frame:currentFrame.current},origin);}if(data?.type==='video-studio/frame')setSceneId(typeof data.sceneId==='string'?data.sceneId:'');if(data?.type==='video-studio/error'){controller.notify(`预览错误：${data.message||'渲染失败'}`);setPlaying(false);}};window.addEventListener('message',listener);return()=>window.removeEventListener('message',listener);},[origin,controller]);
@@ -51,7 +58,7 @@ export function Preview({snapshot,project,selectedShot,controller,focusFrame,foc
     {snapshot.audioUrl&&project.target.audioMode==='mixed'&&<audio ref={audio} src={snapshot.audioUrl} preload="auto" onError={()=>setAudioError('混音预览加载失败，可刷新预览后重试。')}/>}
     <div className="vs-player"><button aria-label={playing?'暂停':'播放'} disabled={disabled} onClick={()=>{setAudioError('');if(frame>=maxFrame)setFrame(0);setPlaying(v=>!v);}}>{playing?'Ⅱ':'▶'}</button><button aria-label="上一帧" disabled={disabled||frame===0} onClick={()=>seek(frame-1)}>◀|</button><button aria-label="下一帧" disabled={disabled||frame===maxFrame} onClick={()=>seek(frame+1)}>&gt;|</button><span>{(frame/fps).toFixed(3)}s</span><input type="range" aria-label="影片播放位置" min="0" max={maxFrame} step="1" value={frame} disabled={disabled} onChange={e=>seek(Number(e.target.value))}/><span>{(duration/fps).toFixed(3)}s</span></div>
     <div className="vs-frame-jump"><span>F<span data-testid="current-frame">{frame}</span> / {maxFrame}</span>{currentRange.shot&&<span data-testid="current-shot-local-frame">镜头 F{localFrame} · {(localFrame/fps).toFixed(3)}s</span>}<label>跳转帧 <input aria-label="跳转帧" type="number" min="0" max={maxFrame} value={jump} disabled={disabled} onChange={e=>setJump(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&Number.isFinite(Number(jump)))seek(Number(jump));}}/></label><button disabled={disabled||!Number.isFinite(Number(jump))} onClick={()=>seek(Number(jump))}>定位</button><button disabled={disabled||busy||capturing} onClick={()=>void capturePng()}>{capturing?'正在保存…':'导出当前帧 PNG'}</button><span>{snapshot.audioUrl&&project.target.audioMode==='mixed'?'声音已同步':'无声预览'}</span></div>{capture&&<div className="vs-captured-frame"><a href={capture.url} target="_blank" rel="noreferrer">查看已保存 PNG ↗</a><button onClick={()=>void controller.action('reveal',{path:capture.path})}>打开 PNG 文件</button></div>}
-    {snapshot.previewUrl&&ready&&!showOutput&&<><div className="vs-eyebrow" data-testid="keyframe-scope">{selectedShot?`选中「${selectedShot.title}」的关键帧`:'全片关键帧'}</div><div className="vs-keyframes" aria-label="镜头关键帧">{marks.map((number,index)=><FrameThumb key={`${snapshot.previewUrl}:${number}`} url={snapshot.previewUrl!} frame={number} label={index===0?'首帧':index===marks.length-1?'末帧':'中帧'} onSelect={seek}/>)}</div></>}
+    {snapshot.previewUrl&&ready&&!showOutput&&<><div className="vs-eyebrow" data-testid="keyframe-scope">{selectedShot?`选中「${selectedShot.title}」的关键帧`:'全片关键帧'}</div><div className="vs-keyframes" aria-label="镜头关键帧">{marks.map((number,index)=><FrameThumb key={`${thumbnailKey}:${number}`} url={thumbnails.key===thumbnailKey?thumbnails.urls[number]:undefined} failed={thumbnails.key===thumbnailKey&&thumbnails.failed} frame={number} label={index===0?'首帧':index===marks.length-1?'末帧':'中帧'} onSelect={seek}/>)}</div></>}
     {audioError&&<p className="vs-inline-error">{audioError}</p>}
     <div className="vs-preview-foot"><span>{showOutput?'已导出 MP4':sceneId?project.shots.find(s=>s.id===sceneId)?.title||sceneId:'逐帧预览'}</span>{output?.url&&<button onClick={()=>{setPlaying(false);setReady(false);setShowOutput(value=>!value);}}>{showOutput?'返回逐帧':'播放成片'}</button>}{output&&<button onClick={()=>void controller.action('reveal',{path:output.path})}>打开成片 →</button>}</div>
   </div>;
