@@ -27,16 +27,22 @@ function plainObject(value:unknown):value is Record<string,unknown> {
   return typeof value==='object' && value!==null && !Array.isArray(value);
 }
 
+/** Migrate in memory: stable IDs, revision and historical snapshots are not rewritten. */
+export function migrateProject(project:VideoProject):VideoProject {
+  if(!project||![1,2].includes(project.schemaVersion))throw new Error('不支持的项目版本');
+  const migrated=copy(project);migrated.schemaVersion=2;migrated.videoClips??=[];return migrated;
+}
+
 /** New projects have three editable ten-second scenes; media is never invented. */
 export function createProject(title:string,topic=''):VideoProject {
   const now=new Date().toISOString();
   const shots=Array.from({length:3},(_,i)=>defaultShot(i));
-  return {schemaVersion:1,id:id('film'),title:title.trim()||'未命名视频',topic,
+  return {schemaVersion:2,id:id('film'),title:title.trim()||'未命名视频',topic,
     targetDuration:30,createdAt:now,updatedAt:now,revision:0,
     target:{width:1920,height:1080,fps:{num:30,den:1},audioMode:'none'},
     assets:[],shots,shotOrder:shots.map(s=>s.id),
     graph:{positions:Object.fromEntries(shots.map((s,i)=>[s.id,[i*370,120] as [number,number]])),groups:[]},
-    outputs:[],audioClips:[],sessionIds:[],extensions:{}};
+    outputs:[],audioClips:[],videoClips:[],sessionIds:[],extensions:{}};
 }
 
 export function defaultShot(index=0,fps={num:30,den:1}):Shot {
@@ -55,7 +61,7 @@ export function defaultShot(index=0,fps={num:30,den:1}):Shot {
 export function validateProject(project:VideoProject,options:{portablePaths?:boolean}={}):ValidationResult {
   const errors:string[]=[],warnings:string[]=[];
   if(!plainObject(project))return {ok:false,errors:['项目必须是对象'],warnings};
-  if(project.schemaVersion!==1)errors.push('不支持的项目版本');
+  if(project.schemaVersion!==1&&project.schemaVersion!==2)errors.push('不支持的项目版本');
   if(typeof project.id!=='string'||!project.id.trim())errors.push('项目 ID 不能为空');
   if(typeof project.title!=='string'||!project.title.trim())errors.push('项目标题不能为空');
   if(typeof project.topic!=='string')errors.push('主题必须是文字');
@@ -80,10 +86,18 @@ export function validateProject(project:VideoProject,options:{portablePaths?:boo
   assertUnique(project.shotOrder,'镜头顺序',errors);
   const assetIds=new Set(project.assets.map(a=>a.id)),shotIds=new Set(project.shots.map(s=>s.id));
   for(const asset of project.assets) {
-    if(!['image','text','audio'].includes(asset.kind))errors.push(`资产 ${asset.id} 类型不支持`);
+    if(!['image','text','audio','video'].includes(asset.kind))errors.push(`资产 ${asset.id} 类型不支持`);
     if(typeof asset.name!=='string'||!asset.name.trim())errors.push(`资产 ${asset.id} 缺少名称`);
     if(asset.kind==='image' && (typeof asset.path!=='string'||!safeRelativePath(asset.path)))errors.push(`图片 ${asset.id} 需要项目内相对路径`);
     if(asset.kind==='text' && typeof asset.text!=='string')errors.push(`文字资产 ${asset.id} 缺少文本`);
+    if(asset.kind==='video'){
+      if(asset.originalPath!==undefined&&(!safeRelativePath(asset.originalPath)||asset.originalPath===asset.path))errors.push(`视频 ${asset.id} 原始文件路径无效`);
+      if(typeof asset.path!=='string'||!safeRelativePath(asset.path)||!Number.isFinite(asset.duration)||asset.duration!<=0)errors.push(`视频 ${asset.id} 需要有效路径和时长`);
+      if(!Number.isInteger(asset.width)||!Number.isInteger(asset.height)||asset.width!<1||asset.height!<1||asset.width!>8192||asset.height!>8192)errors.push(`视频 ${asset.id} 尺寸无效`);
+      if(!asset.fps||!Number.isInteger(asset.fps.num)||!Number.isInteger(asset.fps.den)||asset.fps.num<=0||asset.fps.den<=0||asset.fps.num/asset.fps.den>120)errors.push(`视频 ${asset.id} FPS 无效`);
+      if(asset.frameCount!==undefined&&(!Number.isSafeInteger(asset.frameCount)||asset.frameCount<=0))errors.push(`视频 ${asset.id} 帧数无效`);
+      if(typeof asset.hasAudio!=='boolean')errors.push(`视频 ${asset.id} 音轨信息无效`);
+    }
     if(asset.kind==='audio'&&(typeof asset.path!=='string'||!safeRelativePath(asset.path)||!Number.isFinite(asset.duration)||asset.duration!<=0))errors.push(`音频 ${asset.id} 需要有效路径和时长`);
   }
   for(const shot of project.shots) {
@@ -121,6 +135,21 @@ export function validateProject(project:VideoProject,options:{portablePaths?:boo
     if(!['voice','music','sfx'].includes(clip.role))errors.push(`音频片段 ${clip.id} 角色无效`);
     for(const key of ['startSeconds','trimStart','volume','fadeIn','fadeOut'] as const)if(!Number.isFinite(clip[key])||clip[key]<0)errors.push(`音频片段 ${clip.id} ${key} 无效`);
     if(clip.trimEnd!==undefined&&(!Number.isFinite(clip.trimEnd)||clip.trimEnd<=clip.trimStart))errors.push(`音频片段 ${clip.id} 裁剪区间无效`);
+  }
+  if(project.videoClips!==undefined&&!Array.isArray(project.videoClips))errors.push('视频片段须为数组');
+  else {
+    const clips=project.videoClips??[];
+    assertUnique(clips.map(clip=>clip?.id),'视频片段',errors);assertUnique(clips.map(clip=>clip?.shotId),'视频镜头绑定',errors);
+    for(const clip of clips){
+      if(!plainObject(clip)){errors.push('视频片段无效');continue;}
+      const asset=project.assets.find(asset=>asset.id===clip.assetId&&asset.kind==='video');
+      if(!asset||!shotIds.has(clip.shotId)){errors.push('视频片段引用的素材或镜头不存在');continue;}
+      if(!Number.isFinite(clip.trimStart)||clip.trimStart<0||clip.trimStart>=asset.duration!)errors.push('视频裁剪起点超出素材时长');
+      if(clip.trimEnd!==undefined&&(!Number.isFinite(clip.trimEnd)||clip.trimEnd<=clip.trimStart||clip.trimEnd>asset.duration!+.000001))errors.push('视频裁剪终点超出素材时长');
+      if(!Number.isFinite(clip.speed)||clip.speed<.25||clip.speed>4)errors.push('视频速度须为 0.25–4 倍');
+      if(!['cover','contain'].includes(clip.fit))errors.push('视频适应方式无效');
+      if(!['mute','keep','extract'].includes(clip.audio))errors.push('视频原声策略无效');
+    }
   }
   const graph=validateGraph(project);warnings.push(...graph.errors.map(e=>`主链草稿：${e}`));
   (options.portablePaths?errors:warnings).push(...inspectProjectPaths(project).map(issue=>issue.message));
@@ -176,7 +205,8 @@ export function compileSpec(project:VideoProject):VideoSpec {
   let frame=0;
   const shots=project.shotOrder.map(sid=>{
     const shot=copy(shotOf(project,sid));const startFrame=frame;frame+=shot.durationFrames;
-    return {...shot,startFrame,endFrame:frame,assets:project.assets.filter(a=>shot.assetIds.includes(a.id)).map(copy)};
+    const videoClip=project.videoClips?.find(clip=>clip.shotId===shot.id);
+    return {...shot,startFrame,endFrame:frame,assets:project.assets.filter(a=>shot.assetIds.includes(a.id)||a.id===videoClip?.assetId).map(copy),...(videoClip?{videoClip:copy(videoClip)}:{})};
   });
   if(frame>1000000)throw new Error('全片超过 1,000,000 帧限制');
   return {projectId:project.id,title:project.title,topic:project.topic,target:copy(project.target),
@@ -209,6 +239,7 @@ export function specMarkdown(spec:VideoSpec):string {
       `进入转场：${shot.transition==='fade'?'淡入':'直接切入'}`,`画面文字：${shot.params.text||'无'}`,
       `字幕／补充文字：${shot.params.subtitle||'无'}`,
       `旁白：${shot.narration||'无'}`,
+      `视频底图：${shot.videoClip?shot.videoClip.assetId+'；源区间 '+shot.videoClip.trimStart+'–'+(shot.videoClip.trimEnd??'结尾')+' 秒；'+shot.videoClip.speed+' 倍速；'+shot.videoClip.fit+'；原声 '+shot.videoClip.audio:'无'}；代码可在其上叠加文字和图形。`,
       `生产资产：${shot.assets.length?shot.assets.map(a=>`${a.name} (${a.id}，${a.kind}${a.description?`，${a.description}`:''})`).join('；'):'尚未绑定'}`,
       `参考资产 ID：${shot.referenceIds.join('、')||'无'}`,`源码目录：${shot.sourcePath}`,
       '', '画面参数：', '', '```json',JSON.stringify(shot.params,null,2),'```','');
@@ -265,13 +296,14 @@ export function addShot(project:VideoProject,shot=defaultShot(project.shots.leng
 }
 export function deleteShot(project:VideoProject,shotId:string):VideoProject {
   shotOf(project,shotId);const next=changed(project);next.shots=next.shots.filter(s=>s.id!==shotId);next.shotOrder=next.shotOrder.filter(s=>s!==shotId);
-  delete next.graph.positions[shotId];next.audioClips=next.audioClips?.filter(c=>c.shotId!==shotId);syncEdges(next);return next;
+  delete next.graph.positions[shotId];next.audioClips=next.audioClips?.filter(c=>c.shotId!==shotId);next.videoClips=next.videoClips?.filter(c=>c.shotId!==shotId);syncEdges(next);return next;
 }
 export function duplicateShot(project:VideoProject,shotId:string):VideoProject {
   const original=shotOf(project,shotId),shot=copy(original);shot.id=id('shot');shot.title+= '（副本）';shot.sourcePath=`shots/${shot.id}`;
   const next=addShot(project,shot,shotId),position=project.graph.positions[shotId];
   const copies=plainObject(next.extensions.sourceCopies)?next.extensions.sourceCopies:{};
   next.extensions.sourceCopies={...copies,[shot.id]:original.sourcePath};
+  const video=project.videoClips?.find(clip=>clip.shotId===shotId);if(video)next.videoClips=[...(next.videoClips??[]),{...copy(video),id:id('video-clip'),shotId:shot.id}];
   if(position)next.graph.positions[shot.id]=[position[0]+60,position[1]+80];return next;
 }
 export function updateShot(project:VideoProject,shotId:string,patch:Partial<Shot>):VideoProject {
@@ -292,7 +324,7 @@ export function deleteAsset(project:VideoProject,assetId:string):VideoProject {
   if(!project.assets.some(a=>a.id===assetId))throw new Error(`找不到资产：${assetId}`);
   const next=changed(project);next.assets=next.assets.filter(a=>a.id!==assetId);delete next.graph.positions[assetId];
   for(const shot of next.shots){shot.assetIds=shot.assetIds.filter(a=>a!==assetId);shot.referenceIds=shot.referenceIds.filter(a=>a!==assetId);}
-  next.audioClips=next.audioClips?.filter(c=>c.assetId!==assetId);
+  next.audioClips=next.audioClips?.filter(c=>c.assetId!==assetId);next.videoClips=next.videoClips?.filter(c=>c.assetId!==assetId);
   return next;
 }
 export function addAsset(project:VideoProject,asset:Asset):VideoProject {

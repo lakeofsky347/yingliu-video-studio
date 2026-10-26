@@ -3,6 +3,7 @@ import type { FileAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-att
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import type { JobOutcome } from '@deepseek-ai/dsh-jobs';
 import type { StudioSnapshot } from '../shared/types.ts';
+import type { MediaTask } from '../jobs/contracts.ts';
 import type { HostContext } from './platform.ts';
 import { ProjectHub, type ProjectRouting } from './project-hub.ts';
 
@@ -75,9 +76,54 @@ function startRender(ctx:HostContext,hub:ProjectHub,projectId:string,sessionId:s
   return json({kind:'video-studio',projectId,...routeMeta(routing),jobId,status:'running',operation:endpoint});
 }
 
+/** The host preflights a session-owned Job before any paid provider submission can start. */
+async function startMedia(ctx:HostContext,hub:ProjectHub,request:Input,exec:ToolRunContext){
+  if(!ctx.jobs)throw new Error('DSH 后台任务服务尚未加载');exec.signal.throwIfAborted();
+  const sessionId=owner(exec),context={callerSessionId:sessionId},controller=new AbortController();let taskId:string|undefined;
+  let acquired!:(task:MediaTask)=>void,rejected!:(error:unknown)=>void;
+  const acquisition=new Promise<MediaTask>((resolve,reject)=>{acquired=resolve;rejected=reject;});
+  const pauseOwned=async()=>{if(taskId)await hub.call('media.pause',{taskId},context);};
+  const jobId=ctx.jobs.start({kind:'video',owner:exec.agent!.id,label:'生成媒体 · '+String(request.projectId),run(job){
+    const done=(async():Promise<JobOutcome>=>{
+      try{
+        controller.signal.throwIfAborted();let task=await hub.call<MediaTask>('media.generate',request,context);taskId=task.id;acquired(task);
+        if(controller.signal.aborted)await pauseOwned();
+        while(!['ready','complete','failed','cancelled','unknown'].includes(task.phase)&&task.observation==='active'){
+          job.updateProgress(`${Math.round(task.progress*100)}% · ${task.message}`);
+          await pause(controller.signal);task=await hub.call<MediaTask>('media.get',{taskId},context);
+        }
+        const value={kind:'video-studio',operation:'media.generate',projectId:task.projectId,taskId:task.id,jobId:job.id,task};job.append(JSON.stringify(value)+'\n');
+        if(task.phase==='failed')return {status:'failed',detail:task.message,result:JSON.stringify(value)};
+        if(controller.signal.aborted||task.phase==='cancelled')return {status:'killed',detail:task.message,result:JSON.stringify(value)};
+        return {status:'completed',detail:task.message,result:JSON.stringify(value)};
+      }catch(error){
+        rejected(error);if(controller.signal.aborted)await pauseOwned().catch(()=>{});
+        return {status:controller.signal.aborted?'killed':'failed',detail:controller.signal.aborted?'已停止本地等待；云端可能仍在执行，请用 video_media get 查询或 cancel 请求云端取消':error instanceof Error?error.message:String(error)};
+      }
+    })();
+    return {done,cancel(reason){controller.abort(new Error(reason??'用户停止等待'));void pauseOwned().catch(()=>{});}};
+  }});
+  const task=await acquisition;
+  return json({kind:'video-studio',operation:'media.generate',projectId:task.projectId,taskId:task.id,jobId,status:task.phase,message:'DSH job_kill 只停止本地等待；video_media cancel 请求云端取消'});
+}
+
 /** Model-facing tools accept the current conversation model's decisions and code; they do not start a second chat. */
 export function createSessionTools(ctx:HostContext,hub:ProjectHub):ToolDefinition[]{
   return [
+    defineTool({name:'video_media',description:'使用工作台已配置的生图/生视频模型生成候选素材，或查询、恢复、停止等待、请求云端取消和采用结果。generate 先注册 DSH 后台 Job，返回稳定 taskId；job_kill 仅停止本地等待，不保证云端取消。retry 仅恢复查询/获取结果，不重新计费提交。apply 必须提供当前 expectedRevision，失败时保留候选素材。仅使用模型注册 ID，不接收接口 URL、密钥、请求头或文件路径。',
+      parameters:{action:{type:'string',enum:['generate','list','get','cancel','pause','retry','apply'],required:true},projectId:projectParameter,taskId:{type:'string'},shotId:{type:'string'},expectedRevision:{type:'integer'},operation:{type:'string',enum:['text-to-image','text-to-video','image-to-video']},prompt:{type:'string'},modelId:{type:'string'},connectionId:{type:'string'},imageAssetIds:{type:'array',items:{type:'string'}},allowImageUpload:{type:'boolean',description:'只有用户明确允许本次上传所选图片时才为 true'},parameters:{type:'object',additionalProperties:true}},output,
+      async execute(args,exec){
+        const sessionId=owner(exec),context={callerSessionId:sessionId};exec.signal.throwIfAborted();
+        if(args.action==='generate'||args.action==='list'){
+          const located=await hub.resolveProject({...args,signal:exec.signal},sessionId);
+          if(args.action==='list')return json({kind:'video-studio',projectId:located.projectId,...await hub.call<Input>('media.list',{projectId:located.projectId},context)});
+          if(!Number.isSafeInteger(args.expectedRevision))throw new Error('生成媒体需要 expectedRevision，请先读取工程');
+          return startMedia(ctx,hub,{projectId:located.projectId,expectedRevision:args.expectedRevision,operation:args.operation,prompt:args.prompt,modelId:args.modelId,connectionId:args.connectionId,shotId:args.shotId,imageAssetIds:args.imageAssetIds,allowImageUpload:args.allowImageUpload,parameters:args.parameters},exec);
+        }
+        if(!['get','cancel','pause','retry','apply'].includes(args.action))throw new Error('媒体任务操作无效');
+        const task=await hub.call<MediaTask>('media.'+args.action,{taskId:args.taskId,...(args.projectId?{projectId:args.projectId}:{}),expectedRevision:args.expectedRevision},context);
+        return json({kind:'video-studio',operation:'media.'+args.action,projectId:task.projectId,taskId:task.id,task});
+      }}),
     defineTool({name:'video_project',description:'在当前 DSH 会话创建、打开、绑定或查看视频工程。对话模型负责导演决策，通过 video_update 提交规范化分镜和前端源码；插件负责保存、渲染和检查。用户可随时从工具卡片打开工作台看镜头与帧，不需要另一个聊天模型。',
       parameters:{action:{type:'string',enum:['create','open','get','list','bind'],required:true},projectId:projectParameter,forceNew:{type:'boolean',description:'子代理已继承工程时，默认 create 返回该工程，防止团队重复创建；明确需要独立工程时设为 true。'},path:{type:'string',description:'open 时的本地工程目录'},title:{type:'string'},topic:{type:'string'},targetDuration:{type:'number'},target:{type:'object',additionalProperties:true,description:'输出 width、height、fps:{num,den}、音频模式等；可在之后更新。'}},output,
       async execute(args,exec){

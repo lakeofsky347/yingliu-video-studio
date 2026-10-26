@@ -1,6 +1,6 @@
 {
   "name": "dsh-video-studio",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "type": "module",
   "license": "GPL-3.0-only",
   "description": "DSH 视频工作台：图文分镜、前端代码生成与编辑、本地 MP4 导出",

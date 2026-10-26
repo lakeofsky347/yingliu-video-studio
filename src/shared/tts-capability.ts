@@ -14,6 +14,7 @@ export function ttsCapability(settings:Pick<TtsSettings,'endpoint'>|undefined,en
 export function validateTtsSettings(settings:TtsSettings,environment:Pick<EnvironmentInfo,'localSpeechAvailable'>):void {
   if(typeof settings.endpoint!=='string'||typeof settings.model!=='string'||typeof settings.voice!=='string'||typeof settings.enabled!=='boolean')throw new Error('配音服务配置无效');
   if(!Number.isFinite(settings.speed)||settings.speed<.25||settings.speed>4)throw new Error('配音速度须为 0.25–4');
+  if(settings.requestTimeoutMs!==undefined&&(!Number.isSafeInteger(settings.requestTimeoutMs)||settings.requestTimeoutMs<1||settings.requestTimeoutMs>900000))throw new Error('配音超时须为 1–900000 毫秒');
   if(!settings.enabled)return;
   const capability=ttsCapability(settings,environment);if(!capability.available)throw new Error(capability.message);
   if(settings.endpoint==='local:say')return;

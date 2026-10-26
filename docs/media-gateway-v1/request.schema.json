@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:yingliu:media-gateway:v1:request",
+  "title": "映流媒体网关 v1 提交请求",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["clientRequestId", "model", "operation", "prompt", "inputs", "parameters"],
+  "properties": {
+    "clientRequestId": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]*$"},
+    "model": {"type": "string", "minLength": 1, "maxLength": 200},
+    "operation": {"enum": ["text-to-video", "image-to-video"]},
+    "prompt": {"type": "string", "minLength": 1, "maxLength": 20000},
+    "inputs": {"type": "array", "maxItems": 3, "items": {"type": "object", "additionalProperties": false, "required": ["type", "dataUrl"], "properties": {"type": {"const": "image"}, "dataUrl": {"type": "string", "pattern": "^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$"}}}},
+    "parameters": {"type": "object", "additionalProperties": false, "properties": {"durationSeconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 120}, "width": {"type": "integer", "minimum": 1, "maximum": 8192}, "height": {"type": "integer", "minimum": 1, "maximum": 8192}, "fps": {"type": "number", "exclusiveMinimum": 0, "maximum": 120}, "aspectRatio": {"type": "string", "maxLength": 32}, "seed": {"type": "integer"}, "negativePrompt": {"type": "string", "maxLength": 4000}}}
+  },
+  "allOf": [
+    {"if": {"properties": {"operation": {"const": "image-to-video"}}}, "then": {"properties": {"inputs": {"minItems": 1}}}, "else": {"properties": {"inputs": {"maxItems": 0}}}}
+  ]
+}

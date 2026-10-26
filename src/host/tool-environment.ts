@@ -79,7 +79,7 @@ export function inspectToolEnvironment(settings:Partial<EnvironmentSettings>={},
   const browserPath=settings.browserPath||findBrowserExecutable(options);
   const ffmpegPath=settings.ffmpegPath||findToolExecutable('ffmpeg',options);
   const ffprobePath=settings.ffprobePath||findToolExecutable('ffprobe',options);
-  return {browserPath,ffmpegPath,ffprobePath,
+  return {browserPath,ffmpegPath,ffprobePath,...(settings.maxVideoBytes!==undefined?{maxVideoBytes:settings.maxVideoBytes}:{}),
     browserAvailable:!!browserPath&&isExecutable(browserPath,platform),
     ffmpegAvailable:!!ffmpegPath&&isExecutable(ffmpegPath,platform),
     ffprobeAvailable:!!ffprobePath&&isExecutable(ffprobePath,platform),

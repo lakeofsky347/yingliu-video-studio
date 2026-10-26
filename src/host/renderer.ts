@@ -8,6 +8,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import type { Asset, EnvironmentInfo, EnvironmentSettings, ExportResult, SceneSource, VideoProject, VideoSpec } from '../shared/types.js';
 import { compileSpec } from '../core/index.js';
+import {hashMediaFile} from '../media/video.js';
 import { ProjectStore, projectPath } from './store.js';
 import { browserRuntime, runtimeHtml } from '../runtime/browser.js';
 import {AudioMixer, type AudioMix} from './audio.js';
@@ -130,7 +131,7 @@ export class VideoRenderer {
     // 逐帧契约要求同一帧可复现：GPU 光栅的 2D canvas 在不同页面状态下会出现 ±1 的采样差异，
     // 会让逆序 seek / 冷启动的字节比对偶发失败。固定用 Skia 软件光栅画 2D canvas，
     // 合成与 WebGL 仍走原路径，渲染结果与截图因此稳定可复现。
-    const browser=await chromium.launch({executablePath:env.browserPath,headless:true,args:['--disable-background-timer-throttling','--disable-renderer-backgrounding','--disable-accelerated-2d-canvas']});this.browsers.add(browser);
+    const browser=await chromium.launch({executablePath:env.browserPath,headless:true,args:['--disable-background-timer-throttling','--disable-renderer-backgrounding','--disable-accelerated-2d-canvas','--disable-accelerated-video-decode']});this.browsers.add(browser);
     const cancel=()=>{void browser.close().catch(()=>{});};signal?.addEventListener('abort',cancel,{once:true});
     try {
       const context=await browser.newContext({viewport:{width:spec.target.width,height:spec.target.height},deviceScaleFactor:1,serviceWorkers:'block'});
@@ -178,6 +179,25 @@ export class VideoRenderer {
       return {frame,shotId:result.shotId,path:file,sha256:hash(result.buffer),url:server.origin+'/'+relative};
     }finally{if(connection){connection.removeAbort();await connection.browser.close().catch(()=>{});this.browsers.delete(connection.browser);}}
   }
+  /** Render an immutable candidate without writing the live project or its runtime. */
+  async captureCandidate(root:string,project:VideoProject,sources:Record<string,SceneSource>,settings:EnvironmentSettings,frame:number,signal?:AbortSignal):Promise<{bytes:Uint8Array;mime:string;sha256:string}>{
+    aborted(signal);const snapshotRoot=await fs.mkdtemp(path.join(os.tmpdir(),'video-studio-candidate-'));
+    const renderer=new VideoRenderer(),snapshot=structuredClone(project);snapshot.outputs=[];
+    try{
+      for(const asset of snapshot.assets)delete asset.originalPath;
+      await fs.writeFile(path.join(snapshotRoot,'project.json'),json(snapshot));
+      for(const asset of snapshot.assets)if(asset.path){
+        aborted(signal);const input=await projectPath(root,asset.path),output=await projectPath(snapshotRoot,asset.path);
+        await fs.mkdir(path.dirname(output),{recursive:true});await fs.copyFile(input,output);
+      }
+      for(const shot of snapshot.shots){
+        aborted(signal);const source=sources[shot.id]??await this.store.readSource(root,shot,project.revision);
+        await this.store.writeSource(snapshotRoot,shot,source);
+      }
+      const capture=await renderer.capture(snapshotRoot,snapshot,settings,frame,signal);
+      return {bytes:await fs.readFile(capture.path),mime:'image/png',sha256:capture.sha256};
+    }finally{await renderer.close();await fs.rm(snapshotRoot,{recursive:true,force:true});}
+  }
   async check(root:string,project:VideoProject,settings:EnvironmentSettings,signal?:AbortSignal):Promise<RenderCheckResult> {
     const errors:RenderIssue[]=[],frames:FrameCapture[]=[];let connection:Awaited<ReturnType<VideoRenderer['openPage']>>|undefined;
     const reportRoot=await projectPath(root,'validation/check-'+randomUUID());await fs.mkdir(reportRoot,{recursive:true});
@@ -214,11 +234,13 @@ export class VideoRenderer {
     const id=randomUUID(),outputRoot=await projectPath(root,'exports/'+id),snapshotRoot=path.join(outputRoot,'snapshot');
     await fs.mkdir(snapshotRoot,{recursive:true});
     const snapshot=structuredClone(project);snapshot.outputs=[];
+    // Rendering consumes the CFR proxy; keep source provenance without duplicating unused originals.
+    for(const asset of snapshot.assets)delete asset.originalPath;
     await fs.writeFile(path.join(snapshotRoot,'project.json'),json(snapshot));
     const inputHashes:{path:string;sha256:string}[]=[];
     for(const asset of snapshot.assets)if(asset.path){
       const source=await projectPath(root,asset.path),destination=await projectPath(snapshotRoot,asset.path);await fs.mkdir(path.dirname(destination),{recursive:true});
-      const bytes=await fs.readFile(source);await fs.writeFile(destination,bytes);inputHashes.push({path:asset.path,sha256:hash(bytes)});
+      await fs.copyFile(source,destination);inputHashes.push({path:asset.path,sha256:await hashMediaFile(destination,signal)});
     }
     for(const shot of snapshot.shots){
       const source=await this.store.readSource(root,shot,project.revision);await this.store.writeSource(snapshotRoot,shot,source);
@@ -278,7 +300,7 @@ export class VideoRenderer {
     const parsed=JSON.parse(output),stream=parsed.streams?.find((item:{codec_type:string})=>item.codec_type==='video');
     const audios=parsed.streams?.filter((item:{codec_type:string})=>item.codec_type==='audio')??[];
     if(audios.length!==(expectedAudio?1:0))throw new Error('FFprobe audio stream count mismatch');
-    if(expectedAudio&&(audios[0].codec_name!=='aac'||audios[0].channels!==2||Number(audios[0].sample_rate)!==48000||Math.abs(Number(audios[0].start_time??0))>.025||Math.abs(Number(audios[0].duration)-spec.durationSeconds)>Math.max(.05,1/(spec.target.fps.num/spec.target.fps.den))))throw new Error('FFprobe audio codec, duration or synchronization mismatch');
+    if(expectedAudio&&(audios[0].codec_name!=='aac'||audios[0].channels!==2||Number(audios[0].sample_rate)!==48000||Math.abs(Number(audios[0].start_time??0))>.025||Math.abs(Number(audios[0].duration)-spec.durationSeconds)>Math.max(.05,1/(spec.target.fps.num/spec.target.fps.den))))throw new Error('FFprobe audio codec, duration or synchronization mismatch: '+JSON.stringify({actual:{codec:audios[0].codec_name,channels:audios[0].channels,sampleRate:audios[0].sample_rate,startTime:audios[0].start_time,duration:audios[0].duration},expected:{codec:'aac',channels:2,sampleRate:48000,startTime:0,duration:spec.durationSeconds},tolerance:{startTime:.025,duration:Math.max(.05,1/(spec.target.fps.num/spec.target.fps.den))}}));
     if(!stream||stream.codec_name!=='h264'||stream.pix_fmt!=='yuv420p'||stream.width!==spec.target.width||stream.height!==spec.target.height||Number(stream.nb_read_frames)!==spec.durationFrames)throw new Error('FFprobe video dimensions, codec, pixel format or frame count mismatch');
     const [num,den]=String(stream.r_frame_rate).split('/').map(Number),actualFps=num/den,expectedFps=spec.target.fps.num/spec.target.fps.den;
     const duration=Number(stream.duration??parsed.format?.duration);

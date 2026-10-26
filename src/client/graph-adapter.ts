@@ -3,7 +3,7 @@ import { deleteAsset, deleteShot, duplicateShot } from '../core/index.ts';
 import type { Asset, GraphEditorAdapter, Shot, VideoProject } from '../shared/types.ts';
 
 export interface GraphEdge { from:string; to:string }
-type NodeKind='image'|'text'|'audio'|'shot'|'film';
+type NodeKind='image'|'text'|'audio'|'video'|'shot'|'film';
 interface NodeData { id:string; kind:NodeKind; asset?:Asset; shot?:Shot; image?:HTMLImageElement; order:number; fps?:number }
 class StudioNode extends LGraphNode {
   static title='视频节点'; static title_text_color='#eef5f7'; data:NodeData={id:'',kind:'film',order:0};
@@ -20,6 +20,9 @@ class StudioNode extends LGraphNode {
       ctx.fillStyle='#a8b7c4';ctx.fillText(ellipsize(ctx,d.asset?.description||d.asset?.name||'',224),14,153);
     }else if(d.kind==='text'){
       ctx.fillStyle='#d2dce4';wrap(ctx,d.asset?.text||d.asset?.description||'文字内容',14,54,220,18,5);
+    }else if(d.kind==='video'){
+      ctx.fillStyle='#bcbbeb';ctx.fillText('▶  视频素材',14,57);ctx.fillStyle='#d2dce4';wrap(ctx,d.asset?.description||d.asset?.name||'',14,86,220,20,2);
+      ctx.fillStyle='#99a7ba';ctx.fillText(ellipsize(ctx,`${(d.asset?.duration||0).toFixed(1)} 秒 · 镜头属性绑定`,220),14,143);
     }else if(d.kind==='audio'){
       ctx.fillStyle='#bcbbeb';ctx.fillText('♫  音频素材',14,57);ctx.fillStyle='#d2dce4';wrap(ctx,d.asset?.description||d.asset?.name||'',14,86,220,20,2);
       ctx.fillStyle='#99a7ba';ctx.fillText(ellipsize(ctx,`${(d.asset?.duration||0).toFixed(1)} 秒 · 声音面板安排`,220),14,143);
@@ -35,7 +38,7 @@ class StudioNode extends LGraphNode {
   }
 }
 let registered=false;
-function register():void{if(registered)return;for(const kind of ['image','text','audio','shot','film'] as NodeKind[])LiteGraph.registerNodeType(`video-studio/${kind}`,StudioNode);registered=true;}
+function register():void{if(registered)return;for(const kind of ['image','text','audio','video','shot','film'] as NodeKind[])LiteGraph.registerNodeType(`video-studio/${kind}`,StudioNode);registered=true;}
 
 /** LiteGraph is a drawing/interaction dependency, never the saved project contract. */
 export class LiteGraphEditor implements GraphEditorAdapter {
@@ -112,7 +115,7 @@ export class LiteGraphEditor implements GraphEditorAdapter {
       project.assets.forEach((asset,index)=>{
         const node=this.add(asset.id,asset.kind,asset.name,project.graph.positions[asset.id]||[assetX,55+index*235]);node.data.asset=asset;
         node.color=asset.kind==='image'?'#315474':'#5f4e77';node.bgcolor='#1d2b3a';
-        if(asset.kind!=='audio'){node.addOutput('使用素材','asset');node.addOutput('仅供参考','reference');}
+        if(asset.kind!=='audio'&&asset.kind!=='video'){node.addOutput('使用素材','asset');node.addOutput('仅供参考','reference');}
         if(asset.kind==='image'){const url=assetUrl(asset);if(url){const image=new Image();image.onload=()=>node.setDirtyCanvas(true,true);image.src=url;node.data.image=image;}}
       });
       project.shots.forEach((shot,index)=>{

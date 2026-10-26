@@ -37,7 +37,7 @@ export function render(ctx) {
   layer.style.opacity = String(motion==='fade'||motion==='slide' ? .12+.88*ease : 1);
   layer.style.transform = 'translateY(-50%) translateX(' + (motion==='slide' ? (1-ease)*w*.035 : 0) + 'px)';
   g.save(); g.setTransform(1,0,0,1,0,0); g.globalAlpha=1;
-  g.fillStyle=String(p.background || '#111827'); g.fillRect(0,0,w,h);
+  if (!ctx.hasVideo) { g.fillStyle=String(p.background || '#111827'); g.fillRect(0,0,w,h); }
   if (imageAsset) {
     const image=imageAsset.image;
     const scale=Math.max(.05,Number(p.imageScale)||1);

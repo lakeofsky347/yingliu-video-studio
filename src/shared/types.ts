@@ -1,8 +1,10 @@
 export interface ModelRoute { provider:string; model:string }
 export interface Asset {
-  id:string; kind:'image'|'text'|'audio'; name:string; description:string;
-  path?:string; text?:string; mime?:string; width?:number; height?:number;
+  id:string; kind:'image'|'text'|'audio'|'video'; name:string; description:string;
+  path?:string; originalPath?:string; text?:string; mime?:string; width?:number; height?:number;
   duration?:number; sampleRate?:number; channels?:number;
+  fps?:{num:number;den:number}; frameCount?:number; hasAudio?:boolean; sha256?:string; sourceSha256?:string;
+  generation?:{taskId:string;connectionId?:string;model:string;operation:string;prompt:string;inputHashes?:{assetId:string;sha256:string}[]};
 }
 export interface ShotParams {
   text:string; subtitle:string; background:string; foreground:string; accent:string;
@@ -25,7 +27,12 @@ export interface AudioClip {
   id:string;assetId:string;role:'voice'|'music'|'sfx';shotId?:string;
   startSeconds:number;trimStart:number;trimEnd?:number;volume:number;fadeIn:number;fadeOut:number;loop?:boolean;
 }
-export interface TtsSettings {endpoint:string;model:string;voice:string;apiKey?:string;speed:number;enabled:boolean}
+/** One deterministic source-video layer per shot; time values are source seconds. */
+export interface VideoClip {
+  id:string; shotId:string; assetId:string; trimStart:number; trimEnd?:number;
+  speed:number; fit:'cover'|'contain'; audio:'mute'|'keep'|'extract';
+}
+export interface TtsSettings {endpoint:string;model:string;voice:string;apiKey?:string;speed:number;enabled:boolean;requestTimeoutMs?:number}
 export interface VideoStyle {
   id:string;name:string;description:string;prompt:string;
   sourceFormat:'markdown'|'json'|'zip'|'folder'|'custom';sourceName:string;
@@ -36,13 +43,13 @@ export interface ExportResult {
   width:number; height:number; frameCount:number; duration:number; qa?:Record<string,unknown>;
 }
 export interface VideoProject {
-  schemaVersion:1; id:string; title:string; topic:string; targetDuration:number;
+  schemaVersion:1|2; id:string; title:string; topic:string; targetDuration:number;
   createdAt:string; updatedAt:string; revision:number; target:VideoTarget;
   assets:Asset[]; shots:Shot[]; shotOrder:string[]; graph:GraphLayout;
   outputs:ExportResult[]; extensions:Record<string,unknown>;
-  sessionIds?:string[];audioClips?:AudioClip[];videoStyle?:VideoStyle;
+  sessionIds?:string[];audioClips?:AudioClip[];videoClips?:VideoClip[];videoStyle?:VideoStyle;
 }
-export interface SpecShot extends Shot { startFrame:number; endFrame:number; assets:Asset[] }
+export interface SpecShot extends Shot { startFrame:number; endFrame:number; assets:Asset[]; videoClip?:VideoClip }
 export interface VideoSpec {
   projectId:string; title:string; topic:string; target:VideoTarget;
   durationFrames:number; durationSeconds:number; shots:SpecShot[];
@@ -68,7 +75,7 @@ export interface SessionBinding {
   currentProjectId?:string;relatedProjectIds:string[];updatedAt:string;
 }
 export type SessionBindings=Record<string,SessionBinding>;
-export interface EnvironmentSettings { browserPath:string; ffmpegPath:string; ffprobePath:string }
+export interface EnvironmentSettings { browserPath:string; ffmpegPath:string; ffprobePath:string; maxVideoBytes?:number }
 export interface EnvironmentInfo extends EnvironmentSettings { browserAvailable:boolean; ffmpegAvailable:boolean; ffprobeAvailable:boolean; platform?:string; localSpeechAvailable?:boolean }
 export interface ProviderGroup { id:string; name:string; models:{id:string;name:string;inputModalities?:string[]}[]; error?:string }
 export interface StudioSnapshot {

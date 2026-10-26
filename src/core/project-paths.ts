@@ -17,7 +17,7 @@ export function portableProjectPathReason(value:unknown):string|undefined {
 
 interface ProjectPaths {
   shots:readonly {id:string;sourcePath:unknown}[];
-  assets:readonly {id:string;path?:unknown}[];
+  assets:readonly {id:string;path?:unknown;originalPath?:unknown}[];
 }
 export interface ProjectPathIssue {
   code:'nonportable'|'conflict';
@@ -32,6 +32,7 @@ export function inspectProjectPaths(project:ProjectPaths):ProjectPathIssue[] {
   const entries:PathEntry[]=[];
   for(const shot of project.shots)if(safeRelativeProjectPath(shot.sourcePath))entries.push({path:shot.sourcePath,label:'镜头 '+shot.id,kind:'source',key:''});
   for(const asset of project.assets)if(safeRelativeProjectPath(asset.path))entries.push({path:asset.path,label:'资产 '+asset.id,kind:'asset',key:''});
+  for(const asset of project.assets)if(safeRelativeProjectPath(asset.originalPath))entries.push({path:asset.originalPath,label:'原始资产 '+asset.id,kind:'asset',key:''});
   const issues:ProjectPathIssue[]=[],conflicts=new Set<string>();
   function conflict(a:PathEntry,b:PathEntry,reason:string){
     const key=[a.label+'\0'+a.path,b.label+'\0'+b.path].sort().join('\n');

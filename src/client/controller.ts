@@ -183,6 +183,30 @@ export class StudioController {
       this.update({notice,conflict:false,error:''});return true;
     }catch(e){this.update({error:message(e),...(isConflict(e)?{conflict:true}:{})});return false;}finally{this.update({pending:false});}
   }
+  /** Background workflow refreshes never follow another project's global selection. */
+  async refreshMediaProject():Promise<boolean>{
+    if(this.state.pending)return false;const projectId=this.state.snapshot?.project?.id,epoch=this.actionEpoch;if(!projectId)return false;
+    const snapshot=await this.api.call<StudioSnapshot>('current',{projectId});
+    if(this.state.pending||this.actionEpoch!==epoch||this.state.snapshot?.project?.id!==projectId||snapshot.project?.id!==projectId)return false;
+    if(this.serverRevision!==null&&snapshot.project.revision<this.serverRevision)return true;
+    if(this.state.sourceDraft&&snapshot.project.revision!==this.serverRevision){this.update({conflict:true,error:'工程已由制作任务更新。前端源码草稿已保留，请先复制草稿，再重新载入已保存版本。'});return true;}
+    this.accept(snapshot,true);await this.refreshHistory();return true;
+  }
+  /** Media jobs return task records, not StudioSnapshot; preserve the editor's CAS boundary. */
+  async mediaCommand<T>(endpoint:string,payload:Record<string,unknown>={},refreshProject=false):Promise<T>{
+    if(this.state.pending)throw new Error('已有界面操作进行中，请稍后重试');
+    const projectId=this.state.snapshot?.project?.id;
+    if(!projectId)throw new Error('请先创建或打开影片工程');
+    const prepares=!['media.cancel','media.pause','workflows.pause'].includes(endpoint);
+    this.actionEpoch++;this.update({pending:true});
+    try{
+      if(prepares){await this.flush();if(this.dirty||this.state.sourceDraft)throw new Error(this.state.error||'工程或源码草稿尚未保存，请保存后继续。');}
+      if(this.state.snapshot?.project?.id!==projectId)throw new Error('工程已切换，请重新发起操作');
+      const result=await this.api.call<T>(endpoint,{...payload,projectId,...(prepares?{expectedRevision:this.serverRevision}:{})});
+      if(refreshProject){const snapshot=await this.api.call<StudioSnapshot>('current',{projectId});if(snapshot.project?.id!==projectId)throw new Error('工程刷新结果不匹配');this.accept(snapshot,true,true);await this.refreshHistory();}
+      this.update({notice:'',...(!this.state.conflict?{error:''}:{})});return result;
+    }catch(error){this.update({error:message(error)});throw error;}finally{this.update({pending:false});}
+  }
   async generate(kind:'storyboard'|'scenes'|'modify',instruction='',shotId?:string):Promise<void>{if(this.busy)return;if(!this.state.route.provider||!this.state.route.model){this.update({error:'先选择一个 DSH 模型，再开始生成。'});return;}await this.action('generate',{kind,instruction,shotId,...this.state.route});}
   async readSource(shotId:string):Promise<SceneSource>{return this.api.call<SceneSource>('source',{shotId,projectId:this.state.snapshot?.project?.id});}
   async saveSource(shotId:string,source:SceneSource,useCurrentRevision=false):Promise<boolean>{
@@ -196,10 +220,13 @@ export class StudioController {
   }
   async restoreSource(shotId:string):Promise<boolean>{const success=await this.action('restoreSource',{shotId},'已恢复上次可用源码。');if(success)this.discardSourceDraft(shotId);return success;}
   async importFile(file:File):Promise<void>{
+    if(file.size>64*1024*1024){this.update({error:'此文件超过浏览器上传大小，请在“模型与素材生成”中通过本地路径导入。'});return;}
+    if((file.type.startsWith('video/')||/\.(mp4|mov|m4v|webm|mkv)$/i.test(file.name))&&file.size>32*1024*1024){this.update({error:'视频文件超过 32 MiB，请在“模型与素材生成”中通过本地路径导入。'});return;}
     if(file.type.startsWith('image/')){const data=await readDataUrl(file);await this.action('import',{name:file.name,mime:file.type,dataBase64:data.slice(data.indexOf(',')+1)});const asset=[...(this.state.snapshot?.project?.assets||[])].reverse().find(a=>a.name===file.name&&a.kind==='image');if(asset)this.update({localImages:{...this.state.localImages,[asset.id]:data}});}
     else if(file.type.startsWith('text/')||/\.(txt|md)$/i.test(file.name))await this.action('import',{name:file.name,mime:'text/plain',text:await file.text()});
     else if(file.type.startsWith('audio/')||/\.(wav|mp3|m4a|aac|flac|ogg|aiff)$/i.test(file.name)){const data=await readDataUrl(file);await this.action('import',{name:file.name,mime:file.type,dataBase64:data.slice(data.indexOf(',')+1)});}
-    else this.update({error:'请选择图片、文字或 WAV、MP3、M4A、AAC、FLAC、OGG 音频。'});
+    else if(file.type.startsWith('video/')||/\.(mp4|mov|m4v|webm|mkv)$/i.test(file.name)){const data=await readDataUrl(file);await this.action('import',{name:file.name,mime:file.type||'video/mp4',dataBase64:data.slice(data.indexOf(',')+1)});}
+    else this.update({error:'请选择图片、文字、音频或 MP4、MOV、WebM 视频。'});
   }
   get busy():boolean{return this.state.pending||this.state.snapshot?.task?.status==='running';}
   async dispose():Promise<void>{clearTimeout(this.saveTimer);clearTimeout(this.pollTimer);this.persistDrafts();await this.flush();this.disposed=true;clearTimeout(this.saveTimer);clearTimeout(this.pollTimer);this.listeners.clear();}

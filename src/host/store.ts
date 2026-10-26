@@ -1,10 +1,14 @@
 import fs from 'node:fs/promises';
+import {createReadStream,createWriteStream} from 'node:fs';
+import {Transform} from 'node:stream';
+import {pipeline} from 'node:stream/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import type { Asset, EnvironmentSettings, SceneSource, Shot, VideoProject } from '../shared/types.js';
-import { createProject, defaultSceneSource, validateProject } from '../core/index.js';
+import { createProject, defaultSceneSource, validateProject, migrateProject } from '../core/index.js';
 import {probeAudio} from './audio.js';
+import {importVideoFile,MAX_VIDEO_BYTES} from '../media/video.js';
 import {syncDirectory} from './directory-sync.js';
 import {atomicRename} from './atomic-rename.js';
 import {inspectProjectPaths,portableProjectPathReason,safeRelativeProjectPath} from '../core/project-paths.js';
@@ -15,7 +19,7 @@ export interface StoreOptions {
   onCommitPhase?:(phase:'staged'|'committed'|'projected')=>Promise<void>|void;
 }
 export interface SourceInput { shotId:string; source:SceneSource }
-export interface AssetFileInput { path:string; dataBase64:string }
+export interface AssetFileInput { path:string; dataBase64?:string; localPath?:string }
 export interface CreateInput { project:VideoProject; sources?:SourceInput[]; assetFiles?:AssetFileInput[] }
 export interface CommitOptions { label?:string; expectedRevision?:number; historyGroup?:string }
 export interface HistoryEntry { id:string; label:string; createdAt:string; revision:number }
@@ -56,7 +60,7 @@ async function atomicWrite(file:string,data:string|Buffer):Promise<void> {
 }
 function json(value:unknown):string { return JSON.stringify(value,null,2)+'\n'; }
 function assertProjectShape(project:VideoProject):void {
-  if(!project||project.schemaVersion!==1||typeof project.id!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(project.id)||!Array.isArray(project.assets)||!Array.isArray(project.shots)||!Array.isArray(project.shotOrder)||!Array.isArray(project.outputs)||!project.target||!project.graph)throw new Error('Unsupported or damaged project.json');
+  if(!project||![1,2].includes(project.schemaVersion)||typeof project.id!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(project.id)||!Array.isArray(project.assets)||!Array.isArray(project.shots)||!Array.isArray(project.shotOrder)||!Array.isArray(project.outputs)||!project.target||!project.graph)throw new Error('Unsupported or damaged project.json');
 }
 function assertSource(source:SceneSource):void {
   if(!source||!['html','css','js'].every(key=>typeof source[key as keyof SceneSource]==='string'))throw new Error('Scene source requires html, css and js strings');
@@ -73,7 +77,7 @@ export function validateStoredProject(project:VideoProject,options:{portablePath
     if(!safeStoragePath(shot.sourcePath,'shots/')||[...folders].some(folder=>folder===shot.sourcePath||folder.startsWith(shot.sourcePath+'/')||shot.sourcePath.startsWith(folder+'/')))throw new Error('镜头源码须使用唯一的 shots/ 子目录');
     folders.add(shot.sourcePath);
   }
-  for(const asset of project.assets)if(asset.path&&!safeStoragePath(asset.path,'assets/'))throw new Error('媒体资产须保存在 assets/ 子目录');
+  for(const asset of project.assets)for(const file of [asset.path,asset.originalPath])if(file&&!safeStoragePath(file,'assets/'))throw new Error('媒体资产须保存在 assets/ 子目录');
 }
 function safeStoragePath(value:string,prefix:string):boolean {
   return safeRelativeProjectPath(value)&&value.startsWith(prefix)&&value.length>prefix.length;
@@ -108,32 +112,37 @@ export class ProjectStore {
   async create(input:VideoProject|CreateInput|{title?:string;topic?:string}={}):Promise<{root:string;project:VideoProject}> {
     const full='project' in input?input:undefined;
     const brief=input as {title?:string;topic?:string};
-    const project:VideoProject=structuredClone(full?full.project:'schemaVersion' in input?input:createProject(brief.title??'未命名视频',brief.topic??''));
+    const project:VideoProject=migrateProject(full?full.project:'schemaVersion' in input?input:createProject(brief.title??'未命名视频',brief.topic??''));
     project.revision=0;project.createdAt=new Date().toISOString();project.updatedAt=project.createdAt;
     validateStoredProject(project);
     const sources=validateSources(project,full?.sources);
     for(const shot of project.shots)if(!sources[shot.id])sources[shot.id]=defaultSceneSource();
-    const files=this.validateAssetFiles(project,full?.assetFiles??[]);
+    const files=await this.validateAssetFiles(project,full?.assetFiles??[]);
     await fs.mkdir(this.baseDirectory,{recursive:true});
     const slug=project.title.replace(/[^\p{L}\p{N}_-]+/gu,'-').replace(/^-|-$/g,'').slice(0,50)||'video';
     const root=path.join(this.baseDirectory,slug+'-'+project.id);
     await fs.mkdir(root,{recursive:false});
     try{
       await fs.mkdir(path.join(root,'assets'),{recursive:true});
-      for(const [relative,bytes] of files)await atomicWrite(await projectPath(root,relative),bytes);
+      for(const [relative,bytes] of files){const destination=await projectPath(root,relative);await fs.mkdir(path.dirname(destination),{recursive:true});if(typeof bytes==='string'){let size=0;await pipeline(createReadStream(bytes),new Transform({transform(chunk,_encoding,callback){size+=chunk.length;callback(size>MAX_VIDEO_BYTES?new Error('工程媒体单文件超过 512 MiB'):null,chunk);}}),createWriteStream(destination,{flags:'wx'}));}else await atomicWrite(destination,bytes);}
       const saved=await this.commit(root,project,sources,{label:'创建工程'});
       return {root,project:saved};
     }catch(error){await fs.rm(root,{recursive:true,force:true});throw error;}
   }
-  private validateAssetFiles(project:VideoProject,inputs:AssetFileInput[]):Map<string,Buffer>{
+  private async validateAssetFiles(project:VideoProject,inputs:AssetFileInput[]):Promise<Map<string,Buffer|string>>{
     if(!Array.isArray(inputs))throw new Error('assetFiles 须为数组');
-    const expected=new Set(project.assets.flatMap(asset=>asset.path?[asset.path]:[])),files=new Map<string,Buffer>();let total=0;
+    const expected=new Set(project.assets.flatMap(asset=>[asset.path,asset.originalPath].filter((file):file is string=>typeof file==='string'))),files=new Map<string,Buffer|string>();let total=0,encodedTotal=0;
     for(const input of inputs){
-      if(!input||typeof input.path!=='string'||!safeStoragePath(input.path,'assets/')||!expected.has(input.path)||files.has(input.path)||typeof input.dataBase64!=='string')throw new Error('工程媒体文件路径无效或重复');
-      if(input.dataBase64.length>90_000_000||!/^[A-Za-z0-9+/]*={0,2}$/.test(input.dataBase64)||input.dataBase64.length%4!==0)throw new Error('工程媒体文件须为有效 base64');
-      const bytes=Buffer.from(input.dataBase64,'base64');total+=bytes.length;
-      if(!bytes.length||total>64*1024*1024)throw new Error('工程导入媒体总量须不超过 64 MB');
-      files.set(input.path,bytes);
+      if(!input||typeof input.path!=='string'||!safeStoragePath(input.path,'assets/')||!expected.has(input.path)||files.has(input.path)||(typeof input.dataBase64==='string')===(typeof input.localPath==='string'))throw new Error('工程媒体文件路径无效或重复');
+      if(typeof input.localPath==='string'){
+        const info=await fs.stat(input.localPath);if(!info.isFile()||!info.size||info.size>MAX_VIDEO_BYTES)throw new Error('工程媒体单文件须不超过 512 MiB');
+        total+=info.size;files.set(input.path,input.localPath);
+      }else{
+        const encoded=input.dataBase64!;if(encoded.length>90_000_000||!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)||encoded.length%4!==0)throw new Error('工程媒体文件须为有效 base64');
+        const bytes=Buffer.from(encoded,'base64');total+=bytes.length;encodedTotal+=bytes.length;
+        if(!bytes.length||encodedTotal>64*1024*1024)throw new Error('内存工程导入媒体总量须不超过 64 MB，请使用文件工程包');files.set(input.path,bytes);
+      }
+      if(total>4*1024*1024*1024)throw new Error('工程导入媒体总量须不超过 4 GiB');
     }
     for(const relative of expected)if(!files.has(relative))throw new Error('工程缺少媒体文件：'+relative);
     return files;
@@ -151,13 +160,13 @@ export class ProjectStore {
     const key=path.resolve(root)+'/'+id,cached=this.versionCache.get(key);if(cached){this.versionCache.delete(key);this.versionCache.set(key,cached);return cached.record;}
     const text=await fs.readFile(await projectPath(root,`.studio/versions/${id}.json`),'utf8'),record=JSON.parse(text) as StoredVersion;
     if(record.version!==1||record.id!==id||!record.sources||typeof record.label!=='string')throw new Error('工程版本快照损坏');
-    validateStoredProject(record.project,{portablePaths:false});
+    record.project=migrateProject(record.project);validateStoredProject(record.project,{portablePaths:false});
     for(const shot of record.project.shots)assertSource(record.sources[shot.id]);
     const bytes=Buffer.byteLength(text);if(bytes<=32*1024*1024){while(this.cachedBytes+bytes>32*1024*1024&&this.versionCache.size){const oldest=this.versionCache.keys().next().value!;this.cachedBytes-=this.versionCache.get(oldest)!.bytes;this.versionCache.delete(oldest);}this.versionCache.set(key,{record,bytes});this.cachedBytes+=bytes;}
     return record;
   }
   private async physicalProject(root:string):Promise<VideoProject>{
-    const project=JSON.parse(await fs.readFile(await projectPath(root,'project.json'),'utf8')) as VideoProject;
+    const project=migrateProject(JSON.parse(await fs.readFile(await projectPath(root,'project.json'),'utf8')) as VideoProject);
     validateStoredProject(project,{portablePaths:false});return project;
   }
   private async physicalSource(root:string,shot:Shot|string):Promise<SceneSource>{
@@ -202,8 +211,8 @@ export class ProjectStore {
       assertSource(source);sources[shot.id]={html:source.html,css:source.css,js:source.js};
       await projectPath(root,shot.sourcePath+'/index.html');
     }
-    for(const asset of project.assets)if(asset.path){const info=await fs.stat(await projectPath(root,asset.path));if(!info.isFile())throw new Error('媒体文件不存在：'+asset.path);}
-    const saved=structuredClone(project);saved.updatedAt=new Date().toISOString();
+    for(const asset of project.assets)for(const file of [asset.path,asset.originalPath])if(file){const info=await fs.stat(await projectPath(root,file));if(!info.isFile())throw new Error('媒体文件不存在：'+file);}
+    const saved=migrateProject(project);saved.updatedAt=new Date().toISOString();
     const record:StoredVersion={version:1,id:randomUUID(),label:options.label??'编辑工程',createdAt:saved.updatedAt,project:saved,sources};
     const stage=await projectPath(root,`.studio/staging/${record.id}.json`);await atomicWrite(stage,json(record));
     try{
@@ -277,7 +286,7 @@ export class ProjectStore {
     const destination=path.join(this.baseDirectory,slug+'-'+project.id);await fs.mkdir(destination,{recursive:false});
     try{
       await fs.mkdir(path.join(destination,'assets'),{recursive:true});
-      for(const relative of new Set(project.assets.flatMap(asset=>asset.path?[asset.path]:[]))){
+      for(const relative of new Set(project.assets.flatMap(asset=>[asset.path,asset.originalPath].filter((file):file is string=>typeof file==='string')))){
         const source=await projectPath(root,relative),file=await projectPath(destination,relative);await fs.mkdir(path.dirname(file),{recursive:true});await fs.copyFile(source,file);
       }
       return {root:destination,project:await this.commit(destination,project,current.sources,{label:'复制工程'})};
@@ -301,8 +310,12 @@ export class ProjectStore {
   }
   async importAsset(root:string,input:ImportAssetInput,settings:Partial<EnvironmentSettings>={},signal?:AbortSignal):Promise<Asset>{
     const extension=path.extname(input.path??input.name??'').toLowerCase();
+    if(input.mime?.startsWith('video/')||['.mp4','.mov','.webm','.mkv','.avi','.m4v','.ts'].includes(extension)||input.dataBase64?.startsWith('data:video/'))return this.importVideo(root,input,settings,signal);
     if(input.mime?.startsWith('audio/')||['.wav','.mp3','.m4a','.aac','.flac','.ogg'].includes(extension)||input.dataBase64?.startsWith('data:audio/'))return this.importAudio(root,input,settings,signal);
     return this.importImageOrText(root,input);
+  }
+  async importVideo(root:string,input:ImportAssetInput,settings:Partial<EnvironmentSettings>={},signal?:AbortSignal):Promise<Asset>{
+    return importVideoFile(root,input,settings,relative=>projectPath(root,relative),signal);
   }
   async importAudio(root:string,input:ImportAssetInput,settings:Partial<EnvironmentSettings>={},signal?:AbortSignal):Promise<Asset>{
     signal?.throwIfAborted();const id=randomUUID(),temporary=await projectPath(root,'assets/'+id+'.audio-input');let buffer:Buffer;

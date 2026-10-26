@@ -1,0 +1,7 @@
+{
+  "request": {"clientRequestId": "example-request-1", "model": "your-video-model", "operation": "text-to-video", "prompt": "清晨湖面，缓慢推进，保留右侧字幕空间", "inputs": [], "parameters": {"durationSeconds": 5, "width": 1280, "height": 720, "fps": 24}},
+  "queued": {"jobId": "example-job-1", "status": "queued", "progress": 0},
+  "running": {"jobId": "example-job-1", "status": "running", "progress": 0.4},
+  "succeeded": {"jobId": "example-job-1", "status": "succeeded", "progress": 1, "artifacts": [{"url": "https://media.example.invalid/example-job-1.mp4", "mimeType": "video/mp4", "name": "清晨湖面.mp4"}]},
+  "cancelled": {"jobId": "example-job-1", "status": "cancelled"}
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:yingliu:media-gateway:v1:response",
+  "title": "映流媒体网关 v1 任务回执",
+  "type": "object",
+  "required": ["jobId", "status"],
+  "properties": {
+    "jobId": {"type": "string", "minLength": 1, "maxLength": 500},
+    "status": {"enum": ["queued", "running", "succeeded", "failed", "cancelled"]},
+    "progress": {"type": "number", "minimum": 0, "maximum": 1},
+    "error": {"type": "string", "maxLength": 1000},
+    "artifacts": {"type": "array", "maxItems": 8, "items": {"type": "object", "required": ["url", "mimeType"], "properties": {"url": {"type": "string", "format": "uri", "maxLength": 16000}, "mimeType": {"enum": ["video/mp4", "video/webm"]}, "name": {"type": "string", "maxLength": 200}}}},
+    "usage": {"type": "object", "properties": {"inputTokens": {"type": "number", "minimum": 0}, "outputTokens": {"type": "number", "minimum": 0}, "cost": {"type": "number", "minimum": 0}, "currency": {"type": "string", "pattern": "^[A-Z]{3}$"}}}
+  },
+  "allOf": [{"if": {"properties": {"status": {"const": "succeeded"}}}, "then": {"required": ["artifacts"], "properties": {"artifacts": {"minItems": 1}}}}]
+}
