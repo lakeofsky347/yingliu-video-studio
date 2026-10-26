@@ -4,7 +4,7 @@
 
 映流（`yingliu-video-studio`）是 DSH Desktop 的视频制作插件。你可以把图片、文字、音频和视频交给工作台，使用 DSH 模型编排分镜、编写动画；也可以单独接入生图、生视频和配音服务，把生成的素材加入影片，再自己修改文案、安排声音、逐帧检查画面。分镜、素材、前端源码和修改历史都保存在本地工程中，方便继续编辑。
 
-当前代码版本：**0.6.0**，新增模型与素材生成、视频片段和协作制作。插件按所需的宿主接口检查兼容性，不再绑定 DSH 发布版本号，详见[宿主兼容机制](docs/COMPATIBILITY.md)。本轮多模态测试和历史 Desktop 验收的范围见 [0.6.0 验收说明](docs/ACCEPTANCE-MULTIMODAL.md)。
+当前代码版本：**0.6.1**，本补丁补齐 npm 市场发现关键词；0.6.0 引入的模型与素材生成、视频片段和协作制作功能保持不变。插件按所需的宿主接口检查兼容性，不再绑定 DSH 发布版本号，详见[宿主兼容机制](docs/COMPATIBILITY.md)。本轮多模态测试和历史 Desktop 验收的范围见 [0.6.0 验收说明](docs/ACCEPTANCE-MULTIMODAL.md)。
 
 [![映流工作台：左侧素材、中间分镜画布、右侧镜头属性，下方为镜头顺序和影片预览](docs/images/readme/workbench.png)](docs/images/readme/workbench.png)
 
@@ -67,8 +67,8 @@
 
 ### 2. 安装并启用插件
 
-1. 在 DSH 插件管理中使用 npm 包名 `yingliu-video-studio@0.6.0` 安装；也可准备与当前版本对应的安装包，例如 `yingliu-video-studio-0.6.0.tgz`。可使用维护者提供的包，或按[开发与扩展](#development)中的步骤自行构建。
-2. 打开 DSH 的 **插件管理 → 添加插件**，填写 `yingliu-video-studio@0.6.0`；使用本地包时填写 `.tgz` 文件的绝对路径。
+1. 在 DSH 插件管理中使用 npm 包名 `yingliu-video-studio@0.6.1` 安装；也可准备与当前版本对应的安装包，例如 `yingliu-video-studio-0.6.1.tgz`。可使用维护者提供的包，或按[开发与扩展](#development)中的步骤自行构建。
+2. 打开 DSH 的 **插件管理 → 添加插件**，填写 `yingliu-video-studio@0.6.1`；使用本地包时填写 `.tgz` 文件的绝对路径。
 3. 安装完成后启用插件。安装与启用是两个步骤，请确认插件已处于运行状态。
 4. 点击 DSH 侧栏带胶片图标的 **映流 · 视频工作台**，进入影片首页；侧栏收起时可点击相同图标。
 
@@ -564,6 +564,6 @@ npm pack --pack-destination artifacts
 
 ### npm 包与源码
 
-公开 npm 包名为 [`yingliu-video-studio`](https://www.npmjs.com/package/yingliu-video-studio)，当前版本 `0.6.0`。在 DSH 插件管理中填写 `yingliu-video-studio@0.6.0`，或使用同版本 `.tgz` 文件安装。包名、客户端模块注册和 Cordis 引用已保持一致。升级原 `dsh-video-studio` 插件时，先停用旧包，再启用新包，避免同一宿主同时注册两套视频工作台；工程默认目录和既有编辑草稿的存储标识保持兼容。
+公开 npm 包名为 [`yingliu-video-studio`](https://www.npmjs.com/package/yingliu-video-studio)，当前版本 `0.6.1`。在 DSH 插件管理中填写 `yingliu-video-studio@0.6.1`，或使用同版本 `.tgz` 文件安装。包名、客户端模块注册和 Cordis 引用已保持一致。升级原 `dsh-video-studio` 插件时，先停用旧包，再启用新包，避免同一宿主同时注册两套视频工作台；工程默认目录和既有编辑草稿的存储标识保持兼容。
 
-发布包同时包含对应的 `src/`、`types/`、`tests/`、构建脚本和许可证。完整锁文件在本仓库中；源码检出使用上面的 `npm ci` 流程，直接从 npm 包源码重建时先运行 `npm install --legacy-peer-deps --ignore-scripts`，再链接官方宿主并执行构建。发布来源见 `SOURCE.json` 与 npm 的 `gitHead`。
+发布包同时包含对应的 `src/`、`types/`、`tests/`、构建脚本和许可证。完整锁文件在本仓库中；源码检出使用上面的 `npm ci` 流程，直接从 npm 包源码重建时先运行 `npm install --legacy-peer-deps --ignore-scripts`，再链接官方宿主并执行构建。发布来源见 `SOURCE.json` 和本仓库对应的发布提交。
