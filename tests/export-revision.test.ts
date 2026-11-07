@@ -1,3 +1,4 @@
+import {createCodeProject as createProject} from './fixtures/production.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -6,7 +7,7 @@ import os from 'node:os';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {createHash,randomUUID} from 'node:crypto';
-import {createProject} from '../src/core/index.js';
+
 import {ProjectStore} from '../src/host/store.js';
 import {StudioService} from '../src/host/service.js';
 import {VideoRenderer,detectEnvironment} from '../src/host/renderer.js';

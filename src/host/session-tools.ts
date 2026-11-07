@@ -20,7 +20,7 @@ function routeMeta(routing:ProjectRouting):Input{return {...routing,sessionId:ro
 function receipt(snapshot:StudioSnapshot,extra:Input={}):Record<string,JsonValue>{
   const project=snapshot.project;if(!project)throw new Error('视频工程尚未创建');
   return json({kind:'video-studio',projectId:project.id,title:project.title,revision:project.revision,root:snapshot.root,target:project.target,
-    topic:project.topic,shotCount:project.shots.length,assets:project.assets,
+    topic:project.topic,shotCount:project.shots.length,assets:project.assets,productionPolicy:project.productionPolicy,videoClips:project.videoClips??[],
     shots:project.shots,shotOrder:project.shotOrder,audioClips:project.audioClips??[],
     task:snapshot.task,outputs:project.outputs,history:snapshot.history,sessionIds:snapshot.relatedSessionIds??[],...extra});
 }
@@ -110,21 +110,30 @@ async function startMedia(ctx:HostContext,hub:ProjectHub,request:Input,exec:Tool
 /** Model-facing tools accept the current conversation model's decisions and code; they do not start a second chat. */
 export function createSessionTools(ctx:HostContext,hub:ProjectHub):ToolDefinition[]{
   return [
+    defineTool({name:'video_director',description:'读取带来源的导演规则，校验结构化导演计划，编译单镜头提示，或只修改指定镜头计划。不会调用生成模型、提交费用、改工程制作模式或自动采用内容。先用 rules 了解片型、表演、对白、空间与参考分层；所有时间为镜头内秒数。校验通过的 plan 可交给 video_workflow。',
+      parameters:{action:{type:'string',enum:['rules','validate','compile','patch'],required:true},plan:{type:'object',additionalProperties:true},shotId:{type:'string'},changes:{type:'object',additionalProperties:true}},output,
+      async execute(args,exec){exec.signal.throwIfAborted();owner(exec);return json({kind:'video-director',...await hub.call<Input>('director.'+args.action,args,{callerSessionId:owner(exec)})});}}),
+    defineTool({name:'video_workflow',description:'在工程已由用户确认的制作模式内执行导演计划、生成候选并检查。先 video_project get 读取制作策略；代码与模型视频禁止自动互换。可传 video_director 校验后的 directorPlan；使用原生对白选 native，明确后配音选 external。maxTasks 为生成次数上限；maxCost 无可靠预报价时停止提交。apply 不代签人工审看；未检查的时序/对白必须在原工作台审看确认。返回稳定 workflow id，通过 get 查询。',
+      parameters:{action:{type:'string',enum:['run','list','get','pause','retry','apply'],required:true},projectId:projectParameter,workflowId:{type:'string'},expectedRevision:{type:'integer'},prompt:{type:'string'},visual:{type:'string',enum:['code','image','video']},shotIds:{type:'array',items:{type:'string'}},narration:{type:'boolean'},review:{type:'boolean'},allowImageUpload:{type:'boolean'},imageAssetIds:{type:'array',items:{type:'string'}},maxTasks:{type:'integer'},maxCost:{type:'number'},filmKind:{type:'string',enum:['general','suspense_short','product','explainer','lyrical']},audioStrategy:{type:'string',enum:['native','external','silent']},directorPlan:{type:'object',additionalProperties:true}},output,
+      async execute(args,exec){const sessionId=owner(exec),located=await hub.resolveProject({...args,signal:exec.signal},sessionId);exec.signal.throwIfAborted();
+        if(['run','apply'].includes(args.action)&&!Number.isSafeInteger(args.expectedRevision))throw new Error('请先读取工程并提供 expectedRevision');
+        const value=await hub.call('workflows.'+args.action,{...args,projectId:located.projectId,textRoute:{provider:exec.agent!.options.provider,model:exec.agent!.options.model}},{callerSessionId:sessionId});return json({kind:'video-studio',projectId:located.projectId,workflow:value});}}),
     defineTool({name:'video_media',description:'使用工作台已配置的生图/生视频模型生成候选素材，或查询、恢复、停止等待、请求云端取消和采用结果。generate 先注册 DSH 后台 Job，返回稳定 taskId；job_kill 仅停止本地等待，不保证云端取消。retry 仅恢复查询/获取结果，不重新计费提交。apply 必须提供当前 expectedRevision，失败时保留候选素材。仅使用模型注册 ID，不接收接口 URL、密钥、请求头或文件路径。',
-      parameters:{action:{type:'string',enum:['generate','list','get','cancel','pause','retry','apply'],required:true},projectId:projectParameter,taskId:{type:'string'},shotId:{type:'string'},expectedRevision:{type:'integer'},operation:{type:'string',enum:['text-to-image','text-to-video','image-to-video']},prompt:{type:'string'},modelId:{type:'string'},connectionId:{type:'string'},imageAssetIds:{type:'array',items:{type:'string'}},allowImageUpload:{type:'boolean',description:'只有用户明确允许本次上传所选图片时才为 true'},parameters:{type:'object',additionalProperties:true}},output,
+      parameters:{action:{type:'string',enum:['capabilities','generate','list','get','cancel','pause','retry','apply'],required:true},projectId:projectParameter,taskId:{type:'string'},shotId:{type:'string'},expectedRevision:{type:'integer'},operation:{type:'string',enum:['text-to-image','text-to-video','image-to-video']},prompt:{type:'string'},modelId:{type:'string'},connectionId:{type:'string'},imageAssetIds:{type:'array',items:{type:'string'}},referenceRoles:{type:'array',items:{type:'string'},description:'与图片逐项对应的用途；先查 capabilities，不支持时不得偷偷改成普通参考'},requiresAudio:{type:'boolean',description:'要求实际产物有原生音轨；未知能力或无声结果拒绝采用'},clientRequestId:{type:'string',description:'同一步骤使用稳定 ID，重试不得用新 ID 偷偷重复付费'},allowImageUpload:{type:'boolean',description:'只有用户明确允许本次上传所选图片时才为 true'},parameters:{type:'object',additionalProperties:true}},output,
       async execute(args,exec){
         const sessionId=owner(exec),context={callerSessionId:sessionId};exec.signal.throwIfAborted();
-        if(args.action==='generate'||args.action==='list'){
+        if(args.action==='generate'||args.action==='list'||args.action==='capabilities'){
           const located=await hub.resolveProject({...args,signal:exec.signal},sessionId);
+          if(args.action==='capabilities')return json({kind:'video-studio',projectId:located.projectId,capabilities:await hub.call('media.capabilities',{...args,projectId:located.projectId},context)});
           if(args.action==='list')return json({kind:'video-studio',projectId:located.projectId,...await hub.call<Input>('media.list',{projectId:located.projectId},context)});
           if(!Number.isSafeInteger(args.expectedRevision))throw new Error('生成媒体需要 expectedRevision，请先读取工程');
-          return startMedia(ctx,hub,{projectId:located.projectId,expectedRevision:args.expectedRevision,operation:args.operation,prompt:args.prompt,modelId:args.modelId,connectionId:args.connectionId,shotId:args.shotId,imageAssetIds:args.imageAssetIds,allowImageUpload:args.allowImageUpload,parameters:args.parameters},exec);
+          return startMedia(ctx,hub,{projectId:located.projectId,expectedRevision:args.expectedRevision,operation:args.operation,prompt:args.prompt,modelId:args.modelId,connectionId:args.connectionId,shotId:args.shotId,imageAssetIds:args.imageAssetIds,allowImageUpload:args.allowImageUpload,parameters:args.parameters,referenceRoles:args.referenceRoles,requiresAudio:args.requiresAudio,clientRequestId:args.clientRequestId},exec);
         }
         if(!['get','cancel','pause','retry','apply'].includes(args.action))throw new Error('媒体任务操作无效');
         const task=await hub.call<MediaTask>('media.'+args.action,{taskId:args.taskId,...(args.projectId?{projectId:args.projectId}:{}),expectedRevision:args.expectedRevision},context);
         return json({kind:'video-studio',operation:'media.'+args.action,projectId:task.projectId,taskId:task.id,task});
       }}),
-    defineTool({name:'video_project',description:'在当前 DSH 会话创建、打开、绑定或查看视频工程。对话模型负责导演决策，通过 video_update 提交规范化分镜和前端源码；插件负责保存、渲染和检查。用户可随时从工具卡片打开工作台看镜头与帧，不需要另一个聊天模型。',
+    defineTool({name:'video_project',description:'在当前 DSH 会话创建、打开、绑定或查看视频工程。先读取 productionPolicy：工具新建或旧工程迁移后模式尚未确认时，请用户在工作台原制作要求面板确认代码动画或模型视频；不要自行推定混合许可或尝试改写策略。对话模型负责导演决策，在已授权范围内通过 video_update 提交分镜和源码；插件负责保存、渲染和检查。用户可随时从工具卡片打开工作台看镜头与帧。',
       parameters:{action:{type:'string',enum:['create','open','get','list','bind'],required:true},projectId:projectParameter,forceNew:{type:'boolean',description:'子代理已继承工程时，默认 create 返回该工程，防止团队重复创建；明确需要独立工程时设为 true。'},path:{type:'string',description:'open 时的本地工程目录'},title:{type:'string'},topic:{type:'string'},targetDuration:{type:'number'},target:{type:'object',additionalProperties:true,description:'输出 width、height、fps:{num,den}、音频模式等；可在之后更新。'}},output,
       async execute(args,exec){
         const sessionId=owner(exec);exec.signal.throwIfAborted();

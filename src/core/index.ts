@@ -1,6 +1,8 @@
-import type { Asset, Shot, VideoProject, VideoSpec, VideoTarget } from '../shared/types.js';
+import type { Asset, ProductionMode, Shot, VideoProject, VideoSpec, VideoTarget } from '../shared/types.js';
 import {inspectProjectPaths,safeRelativeProjectPath as safeRelativePath} from './project-paths.js';
+import {defaultProductionPolicy, productionMode, usesVideoVisual, validateProductionPolicy} from './production-policy.js';
 export { defaultSceneSource } from './default-source.js';
+export * from './production-policy.js';
 
 export interface ValidationResult { ok:boolean; errors:string[]; warnings:string[] }
 export interface StoryEdge { from:string; to:string }
@@ -29,15 +31,21 @@ function plainObject(value:unknown):value is Record<string,unknown> {
 
 /** Migrate in memory: stable IDs, revision and historical snapshots are not rewritten. */
 export function migrateProject(project:VideoProject):VideoProject {
-  if(!project||![1,2].includes(project.schemaVersion))throw new Error('不支持的项目版本');
-  const migrated=copy(project);migrated.schemaVersion=2;migrated.videoClips??=[];return migrated;
+  if(!project||![1,2,3].includes(project.schemaVersion))throw new Error('不支持的项目版本');
+  const migrated=copy(project);migrated.videoClips??=[];
+  if(migrated.schemaVersion!==3){
+    migrated.schemaVersion=3;migrated.productionPolicy=defaultProductionPolicy();
+    for(const shot of migrated.shots)shot.visual={kind:'unresolved'};
+  }
+  return migrated;
 }
 
 /** New projects have three editable ten-second scenes; media is never invented. */
-export function createProject(title:string,topic=''):VideoProject {
+export function createProject(title:string,topic='',mode:ProductionMode='unresolved'):VideoProject {
   const now=new Date().toISOString();
   const shots=Array.from({length:3},(_,i)=>defaultShot(i));
-  return {schemaVersion:2,id:id('film'),title:title.trim()||'未命名视频',topic,
+  for(const shot of shots)shot.visual={kind:mode==='code_animation'?'code':mode==='model_video'?'model_video':'unresolved'};
+  return {schemaVersion:3,productionPolicy:defaultProductionPolicy(mode),id:id('film'),title:title.trim()||'未命名视频',topic,
     targetDuration:30,createdAt:now,updatedAt:now,revision:0,
     target:{width:1920,height:1080,fps:{num:30,den:1},audioMode:'none'},
     assets:[],shots,shotOrder:shots.map(s=>s.id),
@@ -54,14 +62,14 @@ export function defaultShot(index=0,fps={num:30,den:1}):Shot {
     durationFrames:Math.max(1,Math.round(10*fps.num/fps.den)),assetIds:[],referenceIds:[],transition:'cut',
     params:{text:`镜头 ${index+1}`,subtitle:'编辑文字、绑定图片，或让 AI 设计这个镜头',
       background:'#111827',foreground:'#f9fafb',accent:'#a3e635',imageX:74,imageY:50,imageScale:1,
-      imageFit:'contain',fontSize:72,motion:'fade'},sourcePath:`shots/${shotId}`};
+      imageFit:'contain',fontSize:72,motion:'fade'},sourcePath:`shots/${shotId}`,visual:{kind:'code'}};
 }
 
 /** Data validation permits an incomplete graph to be saved. compileSpec also validates its chain. */
 export function validateProject(project:VideoProject,options:{portablePaths?:boolean}={}):ValidationResult {
   const errors:string[]=[],warnings:string[]=[];
   if(!plainObject(project))return {ok:false,errors:['项目必须是对象'],warnings};
-  if(project.schemaVersion!==1&&project.schemaVersion!==2)errors.push('不支持的项目版本');
+  if(![1,2,3].includes(project.schemaVersion))errors.push('不支持的项目版本');
   if(typeof project.id!=='string'||!project.id.trim())errors.push('项目 ID 不能为空');
   if(typeof project.title!=='string'||!project.title.trim())errors.push('项目标题不能为空');
   if(typeof project.topic!=='string')errors.push('主题必须是文字');
@@ -81,6 +89,7 @@ export function validateProject(project:VideoProject,options:{portablePaths?:boo
     return {ok:false,errors:[...errors,'镜头、资产和镜头顺序须为数组'],warnings};
   if(project.shots.some(s=>!plainObject(s))||project.assets.some(a=>!plainObject(a)))
     return {ok:false,errors:[...errors,'镜头与资产必须是对象'],warnings};
+  errors.push(...validateProductionPolicy(project));
   assertUnique(project.shots.map(s=>s.id),'镜头',errors);
   assertUnique(project.assets.map(a=>a.id),'资产',errors);
   assertUnique(project.shotOrder,'镜头顺序',errors);
@@ -205,11 +214,11 @@ export function compileSpec(project:VideoProject):VideoSpec {
   let frame=0;
   const shots=project.shotOrder.map(sid=>{
     const shot=copy(shotOf(project,sid));const startFrame=frame;frame+=shot.durationFrames;
-    const videoClip=project.videoClips?.find(clip=>clip.shotId===shot.id);
-    return {...shot,startFrame,endFrame:frame,assets:project.assets.filter(a=>shot.assetIds.includes(a.id)||a.id===videoClip?.assetId).map(copy),...(videoClip?{videoClip:copy(videoClip)}:{})};
+    const videoClip=usesVideoVisual(shot)?project.videoClips?.find(clip=>clip.shotId===shot.id):undefined;
+    return {...shot,startFrame,endFrame:frame,assets:project.assets.filter(a=>a.provenance?.usage!=='reference_only'&&(shot.assetIds.includes(a.id)&&a.kind!=='video'||a.id===videoClip?.assetId)).map(copy),...(videoClip?{videoClip:copy(videoClip)}:{})};
   });
   if(frame>1000000)throw new Error('全片超过 1,000,000 帧限制');
-  return {projectId:project.id,title:project.title,topic:project.topic,target:copy(project.target),
+  return {projectId:project.id,title:project.title,topic:project.topic,target:copy(project.target),productionPolicy:copy(project.productionPolicy),
     durationFrames:frame,durationSeconds:frame*project.target.fps.den/project.target.fps.num,shots};
 }
 
@@ -239,7 +248,7 @@ export function specMarkdown(spec:VideoSpec):string {
       `进入转场：${shot.transition==='fade'?'淡入':'直接切入'}`,`画面文字：${shot.params.text||'无'}`,
       `字幕／补充文字：${shot.params.subtitle||'无'}`,
       `旁白：${shot.narration||'无'}`,
-      `视频底图：${shot.videoClip?shot.videoClip.assetId+'；源区间 '+shot.videoClip.trimStart+'–'+(shot.videoClip.trimEnd??'结尾')+' 秒；'+shot.videoClip.speed+' 倍速；'+shot.videoClip.fit+'；原声 '+shot.videoClip.audio:'无'}；代码可在其上叠加文字和图形。`,
+      `画面来源：${shot.visual?.kind??'unresolved'}；视频片段：${shot.videoClip?shot.videoClip.assetId+'；源区间 '+shot.videoClip.trimStart+'–'+(shot.videoClip.trimEnd??'结尾')+' 秒；'+shot.videoClip.speed+' 倍速；'+shot.videoClip.fit+'；原声 '+shot.videoClip.audio:'无'}。只有明确许可的混合镜头才能执行代码叠加。`,
       `生产资产：${shot.assets.length?shot.assets.map(a=>`${a.name} (${a.id}，${a.kind}${a.description?`，${a.description}`:''})`).join('；'):'尚未绑定'}`,
       `参考资产 ID：${shot.referenceIds.join('、')||'无'}`,`源码目录：${shot.sourcePath}`,
       '', '画面参数：', '', '```json',JSON.stringify(shot.params,null,2),'```','');
@@ -287,7 +296,8 @@ export function reorderShots(project:VideoProject,shotOrder:string[]):VideoProje
   if(shotOrder.length!==ids.length||new Set(shotOrder).size!==ids.length||shotOrder.some(s=>!ids.includes(s)))throw new Error('重排必须包含每个镜头且只包含一次');
   const next=changed(project);next.shotOrder=[...shotOrder];syncEdges(next);return next;
 }
-export function addShot(project:VideoProject,shot=defaultShot(project.shots.length,project.target.fps),afterId?:string):VideoProject {
+export function addShot(project:VideoProject,shot?:Shot,afterId?:string):VideoProject {
+  if(!shot){shot=defaultShot(project.shots.length,project.target.fps);shot.visual={kind:productionMode(project)==='code_animation'?'code':productionMode(project)==='model_video'?'model_video':'unresolved'};}
   if(project.shots.some(s=>s.id===shot.id))throw new Error(`镜头 ID 已存在：${shot.id}`);
   if(afterId!==undefined&&!project.shotOrder.includes(afterId))throw new Error('插入位置不存在');
   const next=changed(project);next.shots.push(copy(shot));

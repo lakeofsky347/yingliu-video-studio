@@ -14,13 +14,13 @@ export function mediaSignature(bytes:Uint8Array):string|undefined {
 }
 function artifactUrl(raw:string):URL {const url=new URL(raw);if(!['http:','https:'].includes(url.protocol)||url.username||url.password)throw new Error('媒体产物地址必须是无内嵌凭据的 HTTP(S) URL');return url;}
 /** Artifact requests deliberately never carry provider credentials, including across redirects. */
-export async function downloadArtifact(artifact:MediaArtifact,directory:string,index:number,options:{signal:AbortSignal;fetch?:typeof fetch;maxBytes:number;expected:'image'|'video'}):Promise<Omit<GeneratedFile,'metadata'>> {
+export async function downloadArtifact(artifact:MediaArtifact,directory:string,index:number,options:{signal:AbortSignal;fetch?:typeof fetch;maxBytes:number;expected:'image'|'video';authorization?:{origin:string;header:string;value:string}}):Promise<Omit<GeneratedFile,'metadata'>> {
   await mkdir(directory,{recursive:true});const temporary=join(directory,randomUUID()+'.part');const handle=await open(temporary,'wx');const hash=createHash('sha256');let bytes=0,head=Buffer.alloc(0);let destination='';
   const write=async(chunk:Uint8Array)=>{options.signal.throwIfAborted();bytes+=chunk.byteLength;if(bytes>options.maxBytes)throw new Error('媒体产物超过配置的文件大小限制');if(head.length<64)head=Buffer.concat([head,chunk.subarray(0,64-head.length)]);hash.update(chunk);await handle.writeFile(chunk);};
   try {
     if(artifact.base64){if(artifact.base64.length>Math.ceil(options.maxBytes*4/3)+4)throw new Error('媒体产物超过配置的文件大小限制');for(let offset=0;offset<artifact.base64.length;offset+=65536)await write(Buffer.from(artifact.base64.slice(offset,offset+65536),'base64'));}
     else if(artifact.url){let url=artifactUrl(artifact.url),response:Response|undefined;
-      for(let redirects=0;redirects<6;redirects++){response=await (options.fetch??fetch)(url,{signal:options.signal,redirect:'manual'});if(response.status>=300&&response.status<400){const location=response.headers.get('location');await response.body?.cancel();if(!location)throw new Error('媒体下载重定向缺少地址');url=artifactUrl(new URL(location,url).href);continue;}break;}
+      for(let redirects=0;redirects<6;redirects++){const auth=artifact.sameOriginAuth&&redirects===0&&options.authorization?.origin===url.origin?{[options.authorization.header]:options.authorization.value}:{};response=await (options.fetch??fetch)(url,{signal:options.signal,redirect:'manual',headers:auth});if(response.status>=300&&response.status<400){const location=response.headers.get('location');await response.body?.cancel();if(!location)throw new Error('媒体下载重定向缺少地址');url=artifactUrl(new URL(location,url).href);continue;}break;}
       if(!response?.ok||!response.body)throw new Error('媒体下载失败（HTTP '+(response?.status??'unknown')+'）');
       if(Number(response.headers.get('content-length'))>options.maxBytes){await response.body.cancel();throw new Error('媒体产物超过配置的文件大小限制');}
       const reader=response.body.getReader();try{while(true){const next=await reader.read();if(next.done)break;await write(next.value);}}finally{await reader.cancel().catch(()=>{});reader.releaseLock();}

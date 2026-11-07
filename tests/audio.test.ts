@@ -7,7 +7,7 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {createServer} from 'node:http';
 import {createHash} from 'node:crypto';
-import {createProject} from '../src/core/index.js';
+import {createCodeProject as createProject} from './fixtures/production.js';
 import {ProjectStore} from '../src/host/store.js';
 import {AudioMixer, AudioProcesses, compileAudioPlan, SpeechSynthesizer} from '../src/host/audio.js';
 import {detectEnvironment, VideoRenderer} from '../src/host/renderer.js';

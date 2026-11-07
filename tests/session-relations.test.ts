@@ -159,6 +159,7 @@ test('team background jobs keep caller ownership and pin the project even after 
   let release!:()=>void;const gate=new Promise<void>(resolve=>release=resolve);
   try{
     const a=await run(tools,'video_project',{action:'create',title:'影片 A'},'lead'),b=await hub.call<StudioSnapshot>('create',{title:'影片 B',select:false}),located=await hub.resolveProject({},'worker');
+    await hub.call('production.set',{projectId:a.projectId,expectedRevision:a.revision,mode:'code_animation'});
     located.service.renderer.check=async()=>{await gate;return {ok:true,errors:[],frames:[]};};
     const job=await run(tools,'video_render',{action:'check'},'worker');assert.equal(jobOwner,'worker');assert.equal(job.projectId,a.projectId);assert.equal(job.ownerSessionId,'lead');assert.equal(job.callerSessionId,'worker');
     await hub.call('bindSession',{projectId:b.project!.id,sessionId:'lead',select:false});release();

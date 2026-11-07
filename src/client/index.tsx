@@ -81,14 +81,14 @@ export function apply(ctx:ClientContext):void {
     const state=t(phase==='preparing'?'preparing':phase==='start'?'running':block.isError?'failed':meta.status==='running'&&typeof meta.jobId==='string'?'submitted':'complete');
     const open=async()=>{if(!projectId)return;try{await controller.focusProject(projectId,{shotId,frame,sessionId:linkedSession});directEntry=ctx.layout.panelInfo.getSnapshot().activePanelId!=='video-studio';ctx.layout.selectPanel('video-studio');setError('');}catch(cause){directEntry=false;setError(cause instanceof Error?cause.message:String(cause));}};
     const returnToSession=()=>{try{ctx.uiWorkspace.openSession(sessionTarget(linkedSession,ctx.sessions.list.getSnapshot(),value=>ctx.sessions.subagentAddress(value)));setError('');}catch(cause){setError(cause instanceof Error?cause.message:String(cause));}};
-    return <section data-video-tool={toolName} data-video-project={projectId} data-video-caller-session={linkedSession} data-video-owner-session={typeof meta.ownerSessionId==='string'?meta.ownerSessionId:undefined} style={{border:'1px solid var(--dsw-border-default, #7776)',borderRadius:10,padding:12,margin:'8px 0',background:'var(--dsw-surface-elevated, transparent)'}}>
-      <div style={{display:'flex',gap:10,alignItems:'center'}}><strong>{title}</strong><small>{state}</small></div>
+    return <section data-video-tool={toolName} data-video-project={projectId} data-video-caller-session={linkedSession} data-video-owner-session={typeof meta.ownerSessionId==='string'?meta.ownerSessionId:undefined} className="vs-toolcard">
+      <div className="vs-toolcard-title"><strong>{title}</strong><small>{state}</small></div>
       {typeof meta.title==='string'&&<p>{meta.title} · v{String(meta.revision??'')}</p>}
       {typeof meta.jobId==='string'&&<p>Job · {meta.jobId}</p>}
       {meta.routingSource==='subagent-ancestor'&&<p>子代理 / 团队调用 · 使用上级会话影片</p>}
-      {projectId&&<div style={{display:'flex',flexWrap:'wrap',gap:8,marginTop:8}}><button type="button" onClick={()=>void open()}>{frame===undefined?t('open'):t('frame')+(frame===undefined?'':` · ${frame}`)}</button><button type="button" onClick={returnToSession}>{t('return')}</button></div>}
+      {projectId&&<div className="vs-toolcard-actions"><button type="button" onClick={()=>void open()}>{frame===undefined?t('open'):t('frame')+(frame===undefined?'':` · ${frame}`)}</button><button type="button" onClick={returnToSession}>{t('return')}</button></div>}
       {error&&<p role="alert">{error}</p>}
-      <details style={{marginTop:8}}><summary>{t('details')}</summary><pre style={{whiteSpace:'pre-wrap',maxHeight:240,overflow:'auto'}}>{(block.content??[]).map(content=>content.text??'').join('\n')||JSON.stringify(args,null,2)}</pre></details>
+      <details className="vs-toolcard-details"><summary>{t('details')}</summary><pre>{(block.content??[]).map(content=>content.text??'').join('\n')||JSON.stringify(args,null,2)}</pre></details>
     </section>;
   }
   ctx.slots.inject('main',()=>ctx.slots.register({name:'main',key:'video-studio',locale:'video-studio'},SessionStudio));

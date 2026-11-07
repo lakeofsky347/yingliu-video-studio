@@ -1,11 +1,13 @@
 import type { Asset, SceneSource, StudioSnapshot, VideoProject } from '../shared/types.ts';
 import type { MediaTask, GeneratedFile } from '../jobs/contracts.ts';
+import type {FilmKind,AudioStrategy,DirectorPlan,QualityReport} from '../director/index.ts';
 
 export interface WorkflowRequest {
   projectId:string;expectedRevision:number;prompt:string;shotIds?:string[];
   visual:'code'|'image'|'video';narration:boolean;review:boolean;
   allowImageUpload:boolean;imageAssetIds?:string[];maxTasks?:number;maxCost?:number;
   textRoute?:{provider:string;model:string};ownerSessionId?:string;
+  filmKind?:FilmKind;audioStrategy?:AudioStrategy;directorPlan?:DirectorPlan;
 }
 export interface WorkflowModelCall {
   role:'director'|'scene'|'vision';status:'running'|'complete'|'failed';startedAt:string;finishedAt?:string;durationMs?:number;
@@ -21,7 +23,8 @@ export interface WorkflowRecord {
   status:'running'|'paused'|'failed'|'awaiting-apply'|'complete';
   message:string;error?:string;createdAt:string;updatedAt:string;
   startRevision:number;committedRevision?:number;steps:WorkflowStep[];
-  usage:{cost:number|null;currency?:string;generatedTasks:number;mediaCost?:number};
+  directorPlan?:DirectorPlan;qualityReport?:QualityReport;
+  usage:{cost:number|null;currency?:string;generatedTasks:number;mediaCost?:number;externalCalls?:number};
 }
 export interface WorkflowCandidate {project:VideoProject;sources:Record<string,SceneSource>}
 export interface WorkflowPort {

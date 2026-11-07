@@ -1,3 +1,4 @@
+import {createCodeProject as createProject,grantHybrid} from './fixtures/production.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -5,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {createProject,compileSpec,defaultSceneSource} from '../src/core/index.ts';
+import {compileSpec,defaultSceneSource} from '../src/core/index.ts';
 import {VideoRenderer,detectEnvironment} from '../src/host/renderer.ts';
 import {ProjectStore} from '../src/host/store.ts';
 import {StudioService} from '../src/host/service.ts';
@@ -39,6 +40,7 @@ test('lossless capture matches the generic screenshot; media is loaded per shot 
     const created=await store.create(project),image=await store.importAsset(created.root,{path:imageFile},env),videoA=await store.importAsset(created.root,{path:videoFile},env),videoB=await store.importAsset(created.root,{path:videoFile},env);
     project=created.project;project.assets.push(image,videoA,videoB);project.shots[0]!.assetIds=[image.id];
     project.videoClips=[{id:'clip-a',shotId:project.shots[1]!.id,assetId:videoA.id,trimStart:0,speed:1,fit:'contain',audio:'mute'},{id:'clip-b',shotId:project.shots[2]!.id,assetId:videoB.id,trimStart:0,speed:1,fit:'cover',audio:'mute'}];
+    grantHybrid(project,project.shots.slice(1).map(shot=>shot.id));for(const shot of project.shots.slice(1))shot.visual={kind:'hybrid'};
     const source=defaultSceneSource();source.html+='<span data-reset hidden>clean</span><script>window.unexpectedScript=true;</script>';
     source.js=source.js.replace('export function render(ctx) {',`export function render(ctx) {
       const marker=ctx.root.querySelector('[data-reset]');

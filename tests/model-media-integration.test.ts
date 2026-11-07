@@ -29,6 +29,8 @@ async function until<T>(read:()=>Promise<T>,matches:(value:T)=>boolean,options:{
   throw new Error(`Timed out waiting for ${options.label??'local fixture'} after ${Math.round(performance.now()-started)}ms; last state: ${JSON.stringify(details)}`);
 }
 async function configure(hub:ProjectHub,baseUrl:string){const connection=await hub.call<{id:string}>('models.connection.save',{id:'images',name:'本地协议测试',protocol:'images',baseUrl,auth:'none'});const model=await hub.call<{id:string}>('models.model.save',{id:'image-model',connectionId:connection.id,model:'fixture-image',inputModalities:['text'],outputModalities:['image']});await hub.call('models.role.bind',{role:'image',modelId:model.id});return model.id;}
+// Fixture consent comes through the trusted workbench route, never an agent session.
+async function allowImages(hub:ProjectHub,snapshot:StudioSnapshot):Promise<StudioSnapshot>{return hub.call('production.set',{projectId:snapshot.project!.id,expectedRevision:snapshot.project!.revision,mode:'code_animation',allowGeneratedImages:true});}
 
 test('plugin credentials resolve the current host service and status never reads secret values',async()=>{
   let value='one',reads=0,available=true;
@@ -48,7 +50,7 @@ test('media registry is global and secret-free; generated candidates apply once 
     const connection=await hub.call<{credentialRef:string}>('models.connection.save',{id:'secret-profile',name:'独立凭据',protocol:'images',baseUrl:url,apiKey:'fixture-secret-value'});
     assert.match(connection.credentialRef,/^DSH_VIDEO_STUDIO_[A-Z0-9_]+$/);assert.equal(values.get(connection.credentialRef),'fixture-secret-value');
     assert.equal((await readFile(join(base,'models.json'),'utf8')).includes('fixture-secret-value'),false);
-    const a=await hub.call<StudioSnapshot>('create',{title:'A',sessionId:'session-A'}),b=await hub.call<StudioSnapshot>('create',{title:'B',sessionId:'session-B'});
+    const a=await allowImages(hub,await hub.call<StudioSnapshot>('create',{productionMode:'code_animation',title:'A',sessionId:'session-A'})),b=await hub.call<StudioSnapshot>('create',{productionMode:'code_animation',title:'B',sessionId:'session-B'});
     assert.equal((await hub.call<{models:unknown[]}>('models.list')).models.length,1);
     await assert.rejects(hub.call('media.list',{projectId:b.project!.id},{callerSessionId:'session-A'}),/未关联此工程/);
     await assert.rejects(hub.call('models.connection.save',{baseUrl:url},{callerSessionId:'session-A'}),/工作台设置/);
@@ -67,7 +69,7 @@ test('video_media preflights DSH Jobs before submission and job kill pauses obse
   const ctx:HostContext={...host(),jobs:{start(spec){if(rejectJob)throw new Error('No DSH Job controller');hooks=spec.run({id:'video-media-test',append:()=>{},updateProgress:()=>{}});return 'video-media-test';}}};
   const hub=new ProjectHub(ctx,{baseDirectory:base}),server=createServer((_request,response)=>{submits++;response.on('close',()=>{});});
   try{
-    const modelId=await configure(hub,await listen(server)),created=await hub.call<StudioSnapshot>('create',{sessionId:'owner',title:'异步生成'}),project=created.project!;
+    const modelId=await configure(hub,await listen(server)),created=await allowImages(hub,await hub.call<StudioSnapshot>('create',{productionMode:'code_animation',sessionId:'owner',title:'异步生成'})),project=created.project!;
     const tool=createSessionTools(ctx,hub).find(item=>item.name==='video_media')!,args={action:'generate',projectId:project.id,shotId:project.shots[0]!.id,expectedRevision:project.revision,operation:'text-to-image',prompt:'尚未返回的测试',modelId};
     await assert.rejects(tool.execute(args,execution('owner')),/No DSH Job controller/);assert.equal(submits,0);assert.equal((await hub.media.list()).length,0);
     rejectJob=false;const receipt=await tool.execute(args,execution('owner')) as Record<string,any>;assert.ok(receipt.taskId);assert.equal(receipt.jobId,'video-media-test');
@@ -80,7 +82,9 @@ test('video clip edits enforce revision; extraction clips original audio to its 
   const base=await mkdtemp(join(tmpdir(),'plugin-video-clip-')),hub=new ProjectHub(host(),{baseDirectory:base}),file=join(base,'source.mp4');
   try{
     const generated=spawnSync('ffmpeg',['-hide_banner','-loglevel','error','-y','-f','lavfi','-i','color=c=blue:s=64x64:r=30:d=2','-f','lavfi','-i','sine=frequency=440:duration=2','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-shortest',file]);assert.equal(generated.status,0,generated.stderr.toString());
-    let snapshot=await hub.call<StudioSnapshot>('create',{title:'视频片段事务'}),project=snapshot.project!;project.shots[0]!.durationFrames=30;
+    let snapshot=await hub.call<StudioSnapshot>('create',{productionMode:'model_video',title:'视频片段事务'});
+    snapshot=await hub.call<StudioSnapshot>('production.set',{projectId:snapshot.project!.id,expectedRevision:snapshot.project!.revision,mode:'model_video',allowImportedVideo:true});
+    let project=snapshot.project!;project.shots[0]!.durationFrames=30;
     snapshot=await hub.call<StudioSnapshot>('save',{projectId:project.id,expectedRevision:project.revision,project});
     snapshot=await hub.call<StudioSnapshot>('import',{projectId:project.id,expectedRevision:snapshot.project!.revision,path:file});project=snapshot.project!;
     const asset=project.assets[0]!;assert.equal(asset.kind,'video');assert.equal(asset.hasAudio,true);
@@ -103,7 +107,7 @@ test('DSH workflow stages generated media and commits one revision without repea
   }}};
   const hub=new ProjectHub(ctx,{baseDirectory:base}),server=createServer((_request,response)=>{submits++;response.setHeader('Content-Type','application/json');response.end(JSON.stringify({data:[{b64_json:png}]}));});
   try{
-    await configure(hub,await listen(server));const snapshot=await hub.call<StudioSnapshot>('create',{sessionId:'workflow-owner',title:'协作图像'}),project=snapshot.project!;
+    await configure(hub,await listen(server));const snapshot=await allowImages(hub,await hub.call<StudioSnapshot>('create',{productionMode:'code_animation',sessionId:'workflow-owner',title:'协作图像'})),project=snapshot.project!;
     await assert.rejects(hub.call('workflows.run',{projectId:project.id,expectedRevision:project.revision,prompt:'生成图片',visual:'image',textRoute:{provider:'host',model:'fixture'}},{callerSessionId:'unrelated'}),/未关联此工程/);
     const workflow=await hub.call<WorkflowRecord>('workflows.run',{projectId:project.id,expectedRevision:project.revision,prompt:'生成图片',visual:'image',shotIds:[project.shots[0]!.id],textRoute:{provider:'host',model:'fixture'},maxTasks:4},{callerSessionId:'workflow-owner'});
     // This crosses real media journaling and a project commit. Wait for its terminal
@@ -128,7 +132,7 @@ test('DSH workflow retains candidate code after a user edit and merges only on e
     yield {type:'finish',reason:{kind:'stop'}};
   }}};hub=new ProjectHub(ctx,{baseDirectory:base});
   try{
-    const created=(await hub.call<StudioSnapshot>('create',{title:'原名称'})).project!;projectId=created.id;
+    const created=(await hub.call<StudioSnapshot>('create',{productionMode:'code_animation',title:'原名称'})).project!;projectId=created.id;
     const workflow=await hub.call<WorkflowRecord>('workflows.run',{projectId,expectedRevision:created.revision,prompt:'制作画面',visual:'code',shotIds:[created.shots[0]!.id],textRoute:{provider:'host',model:'fixture'}});
     const waiting=await until(()=>hub.workflows.get(workflow.id),item=>item.status==='awaiting-apply'||item.status==='failed');assert.equal(waiting.status,'awaiting-apply',waiting.error);
     const before=(await hub.call<StudioSnapshot>('current',{projectId})).project!;assert.equal(before.title,'用户在生成中修改的名称');assert.equal(before.revision,created.revision+1);
@@ -143,7 +147,7 @@ test('workflow speech distinguishes local preflight failure from a started provi
   const server=createServer((_request,response)=>{submitted++;response.statusCode=503;response.end('fixture unavailable');});
   const safelyUnsubmitted=(error:unknown)=>error instanceof Error&&(error as Error&{submissionUncertain?:boolean}).submissionUncertain===false;
   try{
-    const endpoint=await listen(server),snapshot=await hub.call<StudioSnapshot>('create',{title:'配音提交边界'}),project=snapshot.project!,located=await hub.resolveProject({projectId:project.id});
+    const endpoint=await listen(server),snapshot=await hub.call<StudioSnapshot>('create',{productionMode:'code_animation',title:'配音提交边界'}),project=snapshot.project!,located=await hub.resolveProject({projectId:project.id});
     const settings={endpoint,model:'fixture-tts',voice:'fixture-voice',speed:1,enabled:true},signal=new AbortController().signal;
     await assert.rejects(located.service.stageWorkflowVoice(project.shots[0]!.id,'旁白',signal,{...settings,enabled:false}),safelyUnsubmitted);
     await assert.rejects(located.service.stageWorkflowVoice(project.shots[0]!.id,'旁白',signal,{...settings,voice:''}),safelyUnsubmitted);
@@ -164,7 +168,7 @@ test('missing registry speech credentials remain safely retryable without contac
   try{
     await hub.call('models.connection.save',{id:'speech-fixture',protocol:'speech',baseUrl:await listen(server),auth:'bearer'});
     await hub.call('models.model.save',{id:'speech-model',connectionId:'speech-fixture',model:'fixture-tts',parameters:{voice:'fixture-voice'}});await hub.call('models.role.bind',{role:'speech',modelId:'speech-model'});
-    const project=(await hub.call<StudioSnapshot>('create',{title:'缺少配音凭据'})).project!;
+    const project=(await hub.call<StudioSnapshot>('create',{productionMode:'code_animation',title:'缺少配音凭据'})).project!;
     const record=await hub.call<WorkflowRecord>('workflows.run',{projectId:project.id,expectedRevision:project.revision,prompt:'配音镜头',visual:'code',narration:true,shotIds:[project.shots[0]!.id],textRoute:{provider:'host',model:'fixture'}});
     const failed=await until(()=>hub.workflows.get(record.id),item=>item.status==='failed');assert.equal(failed.steps.find(step=>step.kind==='speech')!.submissionUncertain,false);assert.equal(submitted,0);
   }finally{await hub.dispose();await finish(server);await rm(base,{recursive:true,force:true});}
@@ -177,7 +181,7 @@ test('slow staged workflow speech does not block saving the current project',asy
   const contacted=new Promise<void>(resolve=>{entered=resolve;});
   const server=createServer((_request,response)=>{release=()=>{response.statusCode=503;response.end();};entered();});
   try{
-    const url=await listen(server),project=(await hub.call<StudioSnapshot>('create',{title:'配音期间编辑'})).project!;
+    const url=await listen(server),project=(await hub.call<StudioSnapshot>('create',{productionMode:'code_animation',title:'配音期间编辑'})).project!;
     const located=await hub.resolveProject({projectId:project.id});
     voice=located.service.stageWorkflowVoice(project.shots[0]!.id,'测试旁白',new AbortController().signal,{endpoint:url,model:'fixture',voice:'fixture',speed:1,enabled:true});void voice.catch(()=>{});
     await contacted;let timer:ReturnType<typeof setTimeout>|undefined;

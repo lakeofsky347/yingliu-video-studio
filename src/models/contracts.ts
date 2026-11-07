@@ -1,5 +1,6 @@
 /** Portable model contracts; credentials and running jobs never belong in projects. */
-export type ModelProtocol = 'chat-completions' | 'images' | 'video-gateway' | 'speech';
+export const MODEL_PROTOCOLS = ['chat-completions','images','gemini-image','video-gateway','openai-videos','kling-video','minimax-video','volc-video','dashscope-video','gemini-video','speech'] as const;
+export type ModelProtocol = typeof MODEL_PROTOCOLS[number];
 export type ModelRole = 'director' | 'scene' | 'vision' | 'image' | 'video' | 'speech';
 export type Modality = 'text' | 'image' | 'video' | 'audio';
 export interface CredentialStatus { available:boolean; backend:string; hasStoredKey?:boolean; error?:string }
@@ -31,4 +32,3 @@ export type ConnectionInput = Partial<Omit<ProviderConnection,'revision'|'creden
 export type ModelInput = Partial<ModelDefinition> & { connectionId:string; model:string };
 export type RegistrySeed = Omit<RegistryState,'version'>;
 export const MODEL_ROLES:readonly ModelRole[]=['director','scene','vision','image','video','speech'];
-export const MODEL_PROTOCOLS:readonly ModelProtocol[]=['chat-completions','images','video-gateway','speech'];

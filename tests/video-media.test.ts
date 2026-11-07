@@ -9,13 +9,15 @@ import {createProject,compileSpec,validateProject,migrateProject,deleteShot,dele
 import {ProjectStore} from '../src/host/store.ts';
 import {VideoRenderer,detectEnvironment} from '../src/host/renderer.ts';
 import {probeVideo,MAX_VIDEO_BYTES} from '../src/media/video.ts';
+import {grantHybrid} from './fixtures/production.js';
 const exec=promisify(execFile),env=detectEnvironment();
 
 test('video clips validate source ranges, one layer per shot and v1 migration preserves stable content',()=>{
   const project=createProject('迁移');project.schemaVersion=1;delete project.videoClips;
-  const migrated=migrateProject(project);assert.equal(migrated.schemaVersion,2);assert.equal(project.schemaVersion,1);assert.deepEqual(migrated.shots,project.shots);assert.equal(migrated.revision,project.revision);
+  const migrated=migrateProject(project);assert.equal(migrated.schemaVersion,3);assert.equal(migrated.productionPolicy?.mode,'unresolved');assert.equal(project.schemaVersion,1);assert.deepEqual(migrated.shots,project.shots);assert.equal(migrated.revision,project.revision);
   migrated.assets=[{id:'film',kind:'video',name:'片段',description:'',path:'assets/film.mp4',duration:2,width:160,height:90,fps:{num:24,den:1},hasAudio:false}];
   migrated.videoClips=[{id:'clip',shotId:migrated.shots[0]!.id,assetId:'film',trimStart:.25,trimEnd:1.5,speed:2,fit:'cover',audio:'mute'}];
+  migrated.shots[0]!.visual={kind:'imported_video'};
   assert.equal(validateProject(migrated).ok,true);const spec=compileSpec(migrated);assert.equal(spec.shots[0]!.assets[0]!.id,'film');assert.equal(spec.shots[0]!.videoClip?.speed,2);
   assert.equal(deleteShot(migrated,migrated.shots[0]!.id).videoClips?.length,0);assert.equal(deleteAsset(migrated,'film').videoClips?.length,0);
   const duplicated=duplicateShot(migrated,migrated.shots[0]!.id);assert.equal(duplicated.videoClips?.length,2);assert.notEqual(duplicated.videoClips![0]!.shotId,duplicated.videoClips![1]!.shotId);assert.equal(validateProject(duplicated).ok,true);
@@ -27,12 +29,13 @@ test('real video imports, random seeks, code overlays, mixed-shot export and mig
   const directory=await mkdtemp(join(tmpdir(),'yingliu-video-')),store=new ProjectStore({baseDirectory:directory}),renderer=new VideoRenderer(store);
   try{
     const input=join(directory,'input.mp4');await exec(env.ffmpegPath,['-hide_banner','-loglevel','error','-f','lavfi','-i','testsrc2=size=160x90:rate=24:duration=2','-f','lavfi','-i','sine=frequency=660:sample_rate=48000:duration=2','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-shortest','-y',input]);
-    const project=createProject('视频混排');project.target={width:160,height:90,fps:{num:12,den:1},audioMode:'mixed'};project.shots.forEach((shot,index)=>shot.durationFrames=index===1?12:6);project.targetDuration=2;
+    const project=createProject('视频混排','','code_animation');project.target={width:160,height:90,fps:{num:12,den:1},audioMode:'mixed'};project.shots.forEach((shot,index)=>shot.durationFrames=index===1?12:6);project.targetDuration=2;
     const created=await store.create(project);const asset=await store.importAsset(created.root,{path:input,name:'测试视频'},env);
     assert.ok(asset.originalPath?.startsWith('assets/'));assert.notEqual(asset.originalPath,asset.path);assert.deepEqual(await readFile(join(created.root,asset.originalPath!)),await readFile(input));
     assert.equal(asset.kind,'video');assert.equal(asset.hasAudio,true);assert.equal(asset.frameCount,48);assert.ok(asset.sourceSha256);assert.ok(asset.sha256);assert.ok(asset.path?.startsWith('assets/'));
     const metadata=await probeVideo(join(created.root,asset.path!),env);assert.equal(metadata.fps.num/metadata.fps.den,24);
-    let next=structuredClone(created.project);next.assets.push(asset);next.videoClips=[{id:'video-clip',shotId:next.shots[1]!.id,assetId:asset.id,trimStart:.25,trimEnd:1.25,speed:2,fit:'contain',audio:'keep'}];next.revision++;
+    let next=structuredClone(created.project);next.assets.push(asset);next.videoClips=[{id:'video-clip',shotId:next.shots[1]!.id,assetId:asset.id,trimStart:0,trimEnd:2,speed:2,fit:'contain',audio:'keep'}];next.revision++;
+    grantHybrid(next,[next.shots[1]!.id]);next.shots[1]!.visual={kind:'hybrid'};
     next=await store.commit(created.root,next,{[next.shots[1]!.id]:{html:'<b id="overlay">字幕</b>',css:'#overlay{position:absolute;left:0;bottom:0;color:white;font:10px sans-serif}',js:'export function render(ctx){if(!ctx.hasVideo||!ctx.video)throw new Error("video context missing");}'}});
     const check=await renderer.check(created.root,next,env);assert.equal(check.ok,true,JSON.stringify(check.errors));
     const hashes=new Map<number,string>();for(const frame of [6,9,17,11,6,9]){const capture=await renderer.capture(created.root,next,env,frame);if(hashes.has(frame))assert.equal(capture.sha256,hashes.get(frame));hashes.set(frame,capture.sha256);}
@@ -46,7 +49,7 @@ test('real video imports, random seeks, code overlays, mixed-shot export and mig
     const before=await readdir(join(created.root,'assets'));await assert.rejects(store.importAsset(created.root,{dataBase64:Buffer.from('not a video').toString('base64'),mime:'video/mp4'},env));assert.deepEqual(await readdir(join(created.root,'assets')),before);
     // Opening an old immutable snapshot migrates only its in-memory data and preserves history IDs.
     const state=JSON.parse(await readFile(join(created.root,'.studio/state.json'),'utf8')),file=join(created.root,'.studio/versions',state.current+'.json');const record=JSON.parse(await readFile(file,'utf8'));record.project.schemaVersion=1;delete record.project.videoClips;record.project.assets=[];await writeFile(file,JSON.stringify(record));
-    const migrated=await new ProjectStore({baseDirectory:directory}).open(created.root);assert.equal(migrated.schemaVersion,2);assert.equal(migrated.id,next.id);assert.equal(migrated.revision,redone.revision);assert.equal(JSON.parse(await readFile(file,'utf8')).project.schemaVersion,1);
+    const migrated=await new ProjectStore({baseDirectory:directory}).open(created.root);assert.equal(migrated.schemaVersion,3);assert.equal(migrated.productionPolicy?.mode,'unresolved');assert.equal(migrated.id,next.id);assert.equal(migrated.revision,redone.revision);assert.equal(JSON.parse(await readFile(file,'utf8')).project.schemaVersion,1);
   }finally{await renderer.close();await rm(directory,{recursive:true,force:true});}
 });
 

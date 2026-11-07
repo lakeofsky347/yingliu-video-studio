@@ -1,7 +1,9 @@
 import type { ProviderConnection, ModelDefinition } from '../contracts.ts';
 import type { MediaArtifact, MediaOperation, RemoteJob } from '../../jobs/contracts.ts';
+import { MediaCapabilityError, validateMediaRequest } from '../capabilities.ts';
+import type { MediaReferenceInput } from '../capabilities.ts';
 
-export interface AdapterInput {clientRequestId:string;model:ModelDefinition;operation:MediaOperation;prompt:string;inputs:{type:'image';dataUrl:string}[];parameters:Record<string,string|number|boolean>}
+export interface AdapterInput {clientRequestId:string;model:ModelDefinition;operation:MediaOperation;prompt:string;inputs:(MediaReferenceInput&{dataUrl:string})[];parameters:Record<string,string|number|boolean>;referenceRoles?:string[];requiresAudio?:boolean}
 export interface AdapterContext {connection:ProviderConnection;key?:string;signal:AbortSignal;fetch?:typeof fetch}
 export function mediaEndpoint(connection:ProviderConnection,path:string):string {
   const base=connection.baseUrl.replace(/\/+$/,'');
@@ -31,6 +33,8 @@ async function json(response:Response):Promise<unknown>{
   try{return JSON.parse(Buffer.concat(parts).toString('utf8'));}catch{throw new Error('媒体接口返回无效 JSON');}
 }
 export async function generateImage(context:AdapterContext,input:AdapterInput):Promise<RemoteJob>{
+  if(context.connection.protocol!=='images')throw new MediaCapabilityError('图片兼容接口协议不匹配');
+  validateMediaRequest({connection:context.connection,model:input.model},input);
   if(input.operation!=='text-to-image')throw new Error('图片兼容接口只支持文生图');
   // Never spread provider parameters after identity fields: parameters cannot override model/prompt.
   const allowed=['size','quality','style','response_format','background','output_format','n'];const parameters=Object.fromEntries(Object.entries(input.parameters).filter(([key])=>allowed.includes(key)));
@@ -42,7 +46,11 @@ export async function generateImage(context:AdapterContext,input:AdapterInput):P
   return {jobId:input.clientRequestId,status:'succeeded',artifacts,...(data.usage&&typeof data.usage==='object'?{usage:Object.fromEntries(Object.entries(data.usage as Record<string,unknown>).filter(([key,value])=>['input_tokens','output_tokens','total_tokens','cost'].includes(key)&&typeof value==='number'&&Number.isFinite(value)&&value>=0||key==='currency'&&typeof value==='string'&&/^[A-Z]{3}$/.test(value)))}:{})};
 }
 export async function submitVideo(context:AdapterContext,input:AdapterInput):Promise<RemoteJob>{
-  return parseRemoteJob(await json(await request(context,'/media/jobs',{clientRequestId:input.clientRequestId,model:input.model.model,operation:input.operation,prompt:input.prompt,inputs:input.inputs,parameters:input.parameters})));
+  if(context.connection.protocol!=='video-gateway')throw new MediaCapabilityError('媒体网关协议不匹配');
+  validateMediaRequest({connection:context.connection,model:input.model},input);
+  // v1 wire format stays unchanged; role validation is local, not an undeclared gateway extension.
+  const inputs=input.inputs.map(({type,dataUrl})=>({type,dataUrl}));
+  return parseRemoteJob(await json(await request(context,'/media/jobs',{clientRequestId:input.clientRequestId,model:input.model.model,operation:input.operation,prompt:input.prompt,inputs,parameters:input.parameters})));
 }
 export async function getVideo(context:AdapterContext,jobId:string):Promise<RemoteJob>{return parseRemoteJob(await json(await request(context,'/media/jobs/'+encodeURIComponent(jobId))));}
 export async function lookupVideo(context:AdapterContext,clientRequestId:string):Promise<RemoteJob|null>{

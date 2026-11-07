@@ -2,6 +2,14 @@ import { LiteGraph, LGraph, LGraphNode, LGraphCanvas, LGraphGroup } from '@comfy
 import { deleteAsset, deleteShot, duplicateShot } from '../core/index.ts';
 import type { Asset, GraphEditorAdapter, Shot, VideoProject } from '../shared/types.ts';
 
+const GRAPH_INK = {well:'#192a37',placeholder:'#8397a7',caption:'#a8b7c4',body:'#d2dce4',strong:'#e0e8ed',meta:'#99a7ba',meta2:'#93a5b4',meta3:'#7892a3',accent:'#79d8c0',media:'#bcbbeb',rule:'#36504f',film:'#e2cf8e',filmBody:'#aab7c2'};
+function graphInk(){return GRAPH_INK;}
+function nodeChrome(kind: NodeKind, assetKind?: Asset['kind']): {color:string;bgcolor:string} {
+  if(kind==='shot')return {color:'#2c7168',bgcolor:'#1a3033'};
+  if(kind==='film')return {color:'#897138',bgcolor:'#332e21'};
+  return {color:assetKind==='image'?'#315474':'#5f4e77',bgcolor:'#1d2b3a'};
+}
+
 export interface GraphEdge { from:string; to:string }
 type NodeKind='image'|'text'|'audio'|'video'|'shot'|'film';
 interface NodeData { id:string; kind:NodeKind; asset?:Asset; shot?:Shot; image?:HTMLImageElement; order:number; fps?:number }
@@ -11,29 +19,29 @@ class StudioNode extends LGraphNode {
   get shotBodyTop():number{return this.inputs.length*LiteGraph.NODE_SLOT_HEIGHT+14;}
   resizeForPorts():void{if(this.data.kind==='shot'){this.size=[252,this.shotBodyTop+142];this.setDirtyCanvas(true,true);}}
   onDrawForeground(ctx:CanvasRenderingContext2D):void {
-    const d=this.data;ctx.save();ctx.font='14px system-ui, sans-serif';ctx.textBaseline='top';
+    const d=this.data,p=graphInk();ctx.save();ctx.font='14px system-ui, sans-serif';ctx.textBaseline='top';
     if(d.kind==='image'){
       const image=d.image;
-      ctx.fillStyle='#192a37';ctx.fillRect(14,50,224,92);
+      ctx.fillStyle=p.well;ctx.fillRect(14,50,224,92);
       if(image?.complete&&image.naturalWidth){const scale=Math.min(224/image.naturalWidth,92/image.naturalHeight);const w=image.naturalWidth*scale,h=image.naturalHeight*scale;ctx.drawImage(image,14+(224-w)/2,50+(92-h)/2,w,h);}
-      else {ctx.fillStyle='#8397a7';ctx.fillText('图片资产',26,86);}
-      ctx.fillStyle='#a8b7c4';ctx.fillText(ellipsize(ctx,d.asset?.description||d.asset?.name||'',224),14,153);
+      else {ctx.fillStyle=p.placeholder;ctx.fillText('图片资产',26,86);}
+      ctx.fillStyle=p.caption;ctx.fillText(ellipsize(ctx,d.asset?.description||d.asset?.name||'',224),14,153);
     }else if(d.kind==='text'){
-      ctx.fillStyle='#d2dce4';wrap(ctx,d.asset?.text||d.asset?.description||'文字内容',14,54,220,18,5);
+      ctx.fillStyle=p.body;wrap(ctx,d.asset?.text||d.asset?.description||'文字内容',14,54,220,18,5);
     }else if(d.kind==='video'){
-      ctx.fillStyle='#bcbbeb';ctx.fillText('▶  视频素材',14,57);ctx.fillStyle='#d2dce4';wrap(ctx,d.asset?.description||d.asset?.name||'',14,86,220,20,2);
-      ctx.fillStyle='#99a7ba';ctx.fillText(ellipsize(ctx,`${(d.asset?.duration||0).toFixed(1)} 秒 · 镜头属性绑定`,220),14,143);
+      ctx.fillStyle=p.media;ctx.fillText('▶  视频素材',14,57);ctx.fillStyle=p.body;wrap(ctx,d.asset?.description||d.asset?.name||'',14,86,220,20,2);
+      ctx.fillStyle=p.meta;ctx.fillText(ellipsize(ctx,`${(d.asset?.duration||0).toFixed(1)} 秒 · 镜头属性绑定`,220),14,143);
     }else if(d.kind==='audio'){
-      ctx.fillStyle='#bcbbeb';ctx.fillText('♫  音频素材',14,57);ctx.fillStyle='#d2dce4';wrap(ctx,d.asset?.description||d.asset?.name||'',14,86,220,20,2);
-      ctx.fillStyle='#99a7ba';ctx.fillText(ellipsize(ctx,`${(d.asset?.duration||0).toFixed(1)} 秒 · 声音面板安排`,220),14,143);
+      ctx.fillStyle=p.media;ctx.fillText('♫  音频素材',14,57);ctx.fillStyle=p.body;wrap(ctx,d.asset?.description||d.asset?.name||'',14,86,220,20,2);
+      ctx.fillStyle=p.meta;ctx.fillText(ellipsize(ctx,`${(d.asset?.duration||0).toFixed(1)} 秒 · 声音面板安排`,220),14,143);
     }else if(d.kind==='shot'){
       const top=this.shotBodyTop;
-      ctx.strokeStyle='#36504f';ctx.beginPath();ctx.moveTo(14,top-12);ctx.lineTo(238,top-12);ctx.stroke();
-      ctx.fillStyle='#79d8c0';ctx.fillText(`镜头 ${String(d.order+1).padStart(2,'0')}  ·  ${((d.shot?.durationFrames||0)/(d.fps||30)).toFixed(1)} 秒`,14,top);
-      ctx.fillStyle='#e0e8ed';wrap(ctx,d.shot?.intent||'描述这个镜头想表达什么',14,top+23,216,18,3);
-      ctx.fillStyle='#93a5b4';ctx.fillText(ellipsize(ctx,d.shot?.composition||'可在右侧编辑构图和动作',216),14,top+83);
-      const n=(d.shot?.assetIds.length||0)+(d.shot?.referenceIds.length||0);ctx.fillStyle='#7892a3';ctx.fillText(`${n} 项素材关联  ·  ${d.shot?.transition==='fade'?'淡入淡出':'直接切换'}`,14,top+109);
-    }else {ctx.fillStyle='#e2cf8e';ctx.fillText('主镜头链的终点',14,55);ctx.fillStyle='#aab7c2';wrap(ctx,'最后一个镜头连接到这里，然后生成画面、预览并导出。',14,83,220,19,3);}
+      ctx.strokeStyle=p.rule;ctx.beginPath();ctx.moveTo(14,top-12);ctx.lineTo(238,top-12);ctx.stroke();
+      ctx.fillStyle=p.accent;ctx.fillText(`镜头 ${String(d.order+1).padStart(2,'0')}  ·  ${((d.shot?.durationFrames||0)/(d.fps||30)).toFixed(1)} 秒`,14,top);
+      ctx.fillStyle=p.strong;wrap(ctx,d.shot?.intent||'描述这个镜头想表达什么',14,top+23,216,18,3);
+      ctx.fillStyle=p.meta2;ctx.fillText(ellipsize(ctx,d.shot?.composition||'可在右侧编辑构图和动作',216),14,top+83);
+      const n=(d.shot?.assetIds.length||0)+(d.shot?.referenceIds.length||0);ctx.fillStyle=p.meta3;ctx.fillText(`${n} 项素材关联  ·  ${d.shot?.transition==='fade'?'淡入淡出':'直接切换'}`,14,top+109);
+    }else {ctx.fillStyle=p.film;ctx.fillText('主镜头链的终点',14,55);ctx.fillStyle=p.filmBody;wrap(ctx,'最后一个镜头连接到这里，然后生成画面、预览并导出。',14,83,220,19,3);}
     ctx.restore();
   }
 }
@@ -99,6 +107,7 @@ export class LiteGraphEditor implements GraphEditorAdapter {
     canvas.addEventListener('dragover',drag);canvas.addEventListener('drop',drop);this.cleanup.push(()=>{canvas.removeEventListener('dragover',drag);canvas.removeEventListener('drop',drop);});
     this.resize();
   }
+  private paint(node:StudioNode):void {const chrome=nodeChrome(node.data.kind,node.data.asset?.kind);node.color=chrome.color;node.bgcolor=chrome.bgcolor;}
   setProject(project:VideoProject,assetUrl:(asset:Asset)=>string):void {
     const signature=projection(project);this.project=project;
     if(signature===this.serialized){
@@ -113,21 +122,20 @@ export class LiteGraphEditor implements GraphEditorAdapter {
       this.graph.clear();this.nodes.clear();
       const assetX=Math.min(375,...project.shots.map(s=>project.graph.positions[s.id]?.[0]??375))-335;
       project.assets.forEach((asset,index)=>{
-        const node=this.add(asset.id,asset.kind,asset.name,project.graph.positions[asset.id]||[assetX,55+index*235]);node.data.asset=asset;
-        node.color=asset.kind==='image'?'#315474':'#5f4e77';node.bgcolor='#1d2b3a';
+        const node=this.add(asset.id,asset.kind,asset.name,project.graph.positions[asset.id]||[assetX,55+index*235]);node.data.asset=asset;this.paint(node);
         if(asset.kind!=='audio'&&asset.kind!=='video'){node.addOutput('使用素材','asset');node.addOutput('仅供参考','reference');}
         if(asset.kind==='image'){const url=assetUrl(asset);if(url){const image=new Image();image.onload=()=>node.setDirtyCanvas(true,true);image.src=url;node.data.image=image;}}
       });
       project.shots.forEach((shot,index)=>{
         const order=project.shotOrder.indexOf(shot.id);
-        const node=this.add(shot.id,'shot',shot.title,project.graph.positions[shot.id]||[375+(index%3)*330,100+Math.floor(index/3)*300]);node.data.shot=shot;node.data.order=order<0?index:order;node.data.fps=project.target.fps.num/project.target.fps.den;
-        node.color='#2c7168';node.bgcolor='#1a3033';node.addInput('上一镜头','shot');node.addOutput('下一镜头','shot');
+        const node=this.add(shot.id,'shot',shot.title,project.graph.positions[shot.id]||[375+(index%3)*330,100+Math.floor(index/3)*300]);node.data.shot=shot;node.data.order=order<0?index:order;node.data.fps=project.target.fps.num/project.target.fps.den;this.paint(node);
+        node.addInput('上一镜头','shot');node.addOutput('下一镜头','shot');
         for(let i=0;i<Math.max(1,shot.assetIds.length+1);i++)node.addInput(`使用 ${i+1}`,'asset');
         for(let i=0;i<Math.max(1,shot.referenceIds.length+1);i++)node.addInput(`参考 ${i+1}`,'reference');
         node.resizeForPorts();
         node.onConnectionsChange=()=>{if(this.setting)return;for(const type of ['asset','reference'])if(!node.inputs.some(input=>input.type===type&&input.link==null))node.addInput(type==='asset'?'使用 +':'参考 +',type);node.resizeForPorts();this.queueChange();};
       });
-      const film=this.add('film-output','film','影片输出',project.graph.positions['film-output']||[375+Math.min(project.shots.length,3)*330,100]);film.color='#897138';film.bgcolor='#332e21';film.addInput('最后镜头','shot');
+      const film=this.add('film-output','film','影片输出',project.graph.positions['film-output']||[375+Math.min(project.shots.length,3)*330,100]);this.paint(film);film.addInput('最后镜头','shot');
       for(const shot of project.shots){const target=this.nodes.get(shot.id)!;shot.assetIds.forEach((id,i)=>this.nodes.get(id)?.connect(0,target,1+i));const offset=1+Math.max(1,shot.assetIds.length+1);shot.referenceIds.forEach((id,i)=>this.nodes.get(id)?.connect(1,target,offset+i));}
       for(const edge of graphEdges(project)){const from=this.nodes.get(edge.from),to=this.nodes.get(edge.to);if(from&&to)from.connect(0,to,0);}
       for(const saved of project.graph.groups){const group=new LGraphGroup(saved.title);group.pos=[saved.bounds[0],saved.bounds[1]];group.size=[saved.bounds[2],saved.bounds[3]];this.graph.add(group);}

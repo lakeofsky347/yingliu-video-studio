@@ -175,7 +175,7 @@ export class StudioController {
       await this.flush();if(this.dirty)throw new Error(this.state.error||'工程尚未保存，请重试保存。');
       if(this.state.sourceDraft&&['preview','export','generate','retry','undo','redo'].includes(endpoint))throw new Error('本工程有源码草稿。请在源码面板保存或丢弃草稿后再执行此操作；切换页面会保留草稿。');
       const targetId=(payload as {projectId?:string})?.projectId??this.state.snapshot?.project?.id;
-      const guard=['saveSource','restoreSource','apply','rename','undo','redo','retry'].includes(endpoint)&&targetId===this.serverProjectId?{expectedRevision:this.serverRevision}:{};
+      const guard=['saveSource','restoreSource','apply','rename','undo','redo','retry','production.set'].includes(endpoint)&&targetId===this.serverProjectId?{expectedRevision:this.serverRevision}:{};
       const request=['create','open','focus'].includes(endpoint)?payload:{projectId:this.state.snapshot?.project?.id,...guard,...payload as object};
       const snapshot=await this.api.call<StudioSnapshot>(endpoint,request);this.accept(snapshot,false,['saveSource','restoreSource','import','rename'].includes(endpoint));await this.refreshHistory();
       if(['create','rename','duplicate','archive','restore'].includes(endpoint))await this.refreshProjects();

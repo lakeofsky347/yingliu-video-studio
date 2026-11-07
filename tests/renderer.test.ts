@@ -1,3 +1,4 @@
+import {createCodeProject as createProject} from './fixtures/production.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -7,7 +8,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ProjectStore, projectPath } from '../src/host/store.js';
 import { VideoRenderer, detectEnvironment } from '../src/host/renderer.js';
-import { createProject, defaultSceneSource } from '../src/core/index.js';
+import {  defaultSceneSource } from '../src/core/index.js';
 import {createTestSymlink} from './fixtures/symlink.js';
 
 test('project, image/text references and scene sources persist without an in-memory cache',async()=>{

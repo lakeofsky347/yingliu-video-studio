@@ -1,10 +1,27 @@
 export interface ModelRoute { provider:string; model:string }
+export type ProductionMode='unresolved'|'code_animation'|'model_video'|'hybrid';
+export type ProductionOperation='code'|'image'|'video';
+export interface HybridProductionGrant {
+  id:string; projectId:string; shotIds:string[]; operations:('code'|'video')[]; confirmedAt:string;
+}
+/** Only a trusted host user-decision path may create or replace this policy. */
+export interface ProductionPolicy {
+  version:1; decisionId:string; mode:ProductionMode; allowGeneratedImages:boolean; allowImportedVideo:boolean;
+  baseMode?:'code_animation'|'model_video';
+  hybridGrants?:HybridProductionGrant[];
+}
+export interface AssetProvenance {
+  origin:'user_import'|'model_generation'|'code_render'|'unknown'; usage:'reference_only'|'production';
+  sourceProjectId?:string; sourceExportId?:string;
+}
+export interface ShotVisual { kind:'unresolved'|'code'|'model_video'|'imported_video'|'hybrid' }
 export interface Asset {
   id:string; kind:'image'|'text'|'audio'|'video'; name:string; description:string;
   path?:string; originalPath?:string; text?:string; mime?:string; width?:number; height?:number;
   duration?:number; sampleRate?:number; channels?:number;
   fps?:{num:number;den:number}; frameCount?:number; hasAudio?:boolean; sha256?:string; sourceSha256?:string;
   generation?:{taskId:string;connectionId?:string;model:string;operation:string;prompt:string;inputHashes?:{assetId:string;sha256:string}[]};
+  provenance?:AssetProvenance;
 }
 export interface ShotParams {
   text:string; subtitle:string; background:string; foreground:string; accent:string;
@@ -17,6 +34,7 @@ export interface Shot {
   durationFrames:number; assetIds:string[]; referenceIds:string[];
   transition:'cut'|'fade'; params:ShotParams; sourcePath:string;
   narration?:string;
+  visual?:ShotVisual;
 }
 export interface GraphLayout {
   positions:Record<string,[number,number]>;
@@ -43,16 +61,18 @@ export interface ExportResult {
   width:number; height:number; frameCount:number; duration:number; qa?:Record<string,unknown>;
 }
 export interface VideoProject {
-  schemaVersion:1|2; id:string; title:string; topic:string; targetDuration:number;
+  schemaVersion:1|2|3; id:string; title:string; topic:string; targetDuration:number;
   createdAt:string; updatedAt:string; revision:number; target:VideoTarget;
   assets:Asset[]; shots:Shot[]; shotOrder:string[]; graph:GraphLayout;
   outputs:ExportResult[]; extensions:Record<string,unknown>;
   sessionIds?:string[];audioClips?:AudioClip[];videoClips?:VideoClip[];videoStyle?:VideoStyle;
+  productionPolicy?:ProductionPolicy;
 }
 export interface SpecShot extends Shot { startFrame:number; endFrame:number; assets:Asset[]; videoClip?:VideoClip }
 export interface VideoSpec {
   projectId:string; title:string; topic:string; target:VideoTarget;
   durationFrames:number; durationSeconds:number; shots:SpecShot[];
+  productionPolicy?:ProductionPolicy;
 }
 export interface SceneSource { html:string; css:string; js:string; shotPatch?:Partial<Shot> }
 export interface TaskState {

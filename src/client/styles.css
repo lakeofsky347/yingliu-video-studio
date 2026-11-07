@@ -42,6 +42,66 @@
 
 /* Model settings share the same responsive layout as the workbench panel. */
 .yl-modal.yl-provider-modal{width:min(1000px,100%)}.vs-model-center-grid>div,.vs-media-create-grid>div,.vs-model-roles>*{min-width:0}.vs-model-center .vs-field-pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.vs-model-center input,.vs-model-center select,.vs-model-center textarea{min-width:0}.vs-model-center .vs-media-heading>h4{min-width:0}.vs-model-center .vs-media-heading>button{flex-shrink:0}
+/* Interaction: stages, grouped panels, a taller stage, compact assets. */
+.vs-stages{display:flex;align-items:center;gap:2px;min-width:0}
+.vs-stages span{display:inline-flex;align-items:center;gap:2px}
+.vs-stages i{width:16px;height:1px;background:var(--vs-border);display:inline-block}
+.vs-studio .vs-stages button{border:0;background:transparent;color:var(--vs-muted);font-size:11px;padding:4px 6px;border-radius:999px}
+.vs-studio .vs-stages button.is-current{color:var(--vs-text);background:var(--vs-hover)}
+.vs-studio .vs-stages button.is-running{color:var(--vs-accent)}
+.vs-tabgroups{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.vs-studio .vs-tabs{overflow-x:auto;height:36px;gap:14px}
+.vs-studio .vs-tabs-more{height:28px;gap:12px}
+.vs-studio .vs-tabs-more button{font-size:10px}
+.vs-dock-header{height:auto;min-height:68px;align-items:center;flex-wrap:wrap;row-gap:4px}
+.vs-studio .vs-workspace{grid-template-rows:minmax(340px,1.05fr) 84px minmax(440px,.95fr)}
+.vs-studio .vs-preview-screen{height:min(34vh,300px);min-height:210px}
+.vs-studio .vs-preview-layout.is-stage{grid-template-columns:1fr}
+.vs-studio .vs-preview-layout.is-stage .vs-ai-edit{display:none}
+.vs-studio .vs-preview-layout.is-stage .vs-preview-screen{height:min(46vh,420px);min-height:260px}
+.vs-studio .vs-asset{flex-direction:row;align-items:center}
+.vs-studio .vs-asset-thumb{width:52px;height:44px;flex:0 0 52px}
+.vs-studio .vs-asset-thumb.is-text{width:52px;height:44px;justify-content:center;padding:0}
+.vs-studio .vs-asset>div:last-child{padding:6px 8px;min-width:0;flex:1}
+.vs-prop-group{margin:0 0 8px;padding-bottom:4px;border-bottom:1px solid var(--vs-border)}
+.vs-prop-group h3,.vs-prop-fold>summary{font-size:11px;font-weight:600;color:var(--vs-text)}
+.vs-prop-fold{margin:0 0 8px;border-top:1px solid var(--vs-border);padding-top:4px}
+.vs-prop-fold>summary{cursor:pointer;padding:7px 0;list-style:none}
+.vs-prop-fold>summary::-webkit-details-marker{display:none}
+.vs-studio .vs-top-actions .is-current{border-color:var(--vs-accent);color:var(--vs-accent)}
+.vs-notice span{flex:1}
+.vs-keys{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:8px}
+.vs-keys li{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:12px}
+.vs-keys kbd{border:1px solid var(--vs-border);border-radius:6px;padding:2px 6px;font:11px/1.4 ui-monospace,monospace;background:var(--vs-field);margin-left:4px}
+.vs-toolcard{border:1px solid var(--dsw-border-default,#7776);border-radius:10px;padding:12px;margin:8px 0;background:var(--dsw-surface-elevated,transparent);color:inherit;font:inherit}
+.vs-toolcard-title{display:flex;align-items:center;gap:10px}
+.vs-toolcard-title small{opacity:.72}
+.vs-toolcard p{margin:6px 0 0}
+.vs-toolcard-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.vs-toolcard button{border:1px solid var(--dsw-border-default,#7776);background:transparent;color:inherit;border-radius:8px;padding:6px 10px;cursor:pointer}
+.vs-toolcard button:first-child{border-color:var(--dsw-border-default,#7776)}
+.vs-toolcard-details{margin-top:10px}
+.vs-toolcard pre{white-space:pre-wrap;max-height:240px;overflow:auto}
+.vs-toolcard summary{cursor:pointer}
+.vs-model-kinds{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+.vs-studio .vs-model-kinds button.is-active,.vs-model-center .vs-model-kinds button.is-active{border-color:var(--vs-accent,#7bd6bd);color:var(--vs-accent,#7bd6bd)}
+.vs-provider-list{display:flex;flex-direction:column;gap:6px;margin:0 0 14px}
+.vs-model-center .vs-provider-list button{justify-content:space-between;width:100%;text-align:left}
+.vs-model-center .vs-provider-list button.is-active{border-color:var(--vs-accent,#7bd6bd)}
+.vs-model-center .vs-provider-list small,.vs-pool-row small,.vs-model-pool-note{color:var(--vs-muted,#8b9cac);font-size:11px}
+.vs-model-pool{margin:0 0 14px;padding:12px;border:1px solid var(--vs-border,#2a3a47);border-radius:14px;background:var(--vs-panel-alt,#17222e)}
+.vs-pool-row{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--vs-border,#2a3a47)}
+.vs-pool-row span{min-width:0;display:flex;flex-direction:column}
+.vs-pool-row strong{font-size:12px}
+
+.vs-draft-banner{border-radius:14px}
+@media(max-width:760px){
+  .vs-studio .vs-preview-screen,.vs-studio .vs-preview-layout.is-stage .vs-preview-screen{height:200px;min-height:180px}
+  .vs-studio .vs-asset{width:200px}
+  .vs-stages{order:3;width:100%}
+}
+
+
 
 .vs-keyframe img,.vs-keyframe-placeholder{display:block;width:100%;height:62px;object-fit:contain;background:#080d14}
 .vs-keyframe-placeholder{display:grid;place-items:center;font-size:10px;color:var(--vs-muted)}

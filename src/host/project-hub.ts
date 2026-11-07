@@ -12,6 +12,8 @@ import { MediaTaskService } from '../jobs/media-tasks.ts';
 import type { MediaRequest,MediaTask } from '../jobs/contracts.ts';
 import { WorkflowService } from '../workflows/service.ts';
 import type { WorkflowRequest } from '../workflows/contracts.ts';
+import {getMediaCapabilities} from '../models/capabilities.ts';
+import {DIRECTOR_RULES,DIRECTOR_RULESET_VERSION,validateDirectorPlan,compileDirectorShot,patchDirectorPlan} from '../director/index.ts';
 
 export interface StudioFocus { shotId?:string; frame?:number }
 export type ProjectLocation = import('../shared/types.ts').ProjectLocation;
@@ -51,6 +53,8 @@ export class ProjectHub {
     this.models=new ModelRegistry(this.baseDirectory,modelSecrets(ctx),{filename:'models.json',credentialRefFactory:id=>'DSH_VIDEO_STUDIO_MODELS_'+createHash('sha256').update(this.baseDirectory+'\0'+id).digest('hex').toUpperCase()+'_API_KEY'});
     this.media=new MediaTaskService(this.baseDirectory,this.models,{
       inspect:async id=>(await this.service(id)).inspectMediaProject(),
+      authorizeOperation:async(id,operation,shotId,fingerprint)=>(await this.service(id)).authorizeMediaOperation(operation,shotId,fingerprint),
+      submitAuthorized:async(id,operation,shotId,fingerprint,submit)=>(await this.service(id)).submitAuthorizedMedia(operation,shotId,fingerprint,submit),
       readImage:async(id,assetId,shotId)=>(await this.service(id)).readMediaImage(assetId,shotId),
       validateArtifact:async(path,mime,id,signal)=>(await this.service(id)).validateMediaArtifact(path,mime,signal),
       applyResult:async input=>{const service=await this.service(input.projectId),result=await service.applyMediaResult(input);await this.remember(await service.snapshot());return result;},
@@ -317,15 +321,17 @@ export class ProjectHub {
   }
   private async mediaRoute(endpoint:string,data:Input,context:CallContext):Promise<unknown>{
     let task:MediaTask|undefined;
-    if(!['media.generate','media.list'].includes(endpoint)){if(typeof data.taskId!=='string')throw new Error('缺少媒体任务 ID');task=await this.media.get(data.taskId);if(data.projectId!==undefined&&data.projectId!==task.projectId)throw new Error('媒体任务不属于此工程');}
+    if(!['media.generate','media.list','media.capabilities'].includes(endpoint)){if(typeof data.taskId!=='string')throw new Error('缺少媒体任务 ID');task=await this.media.get(data.taskId);if(data.projectId!==undefined&&data.projectId!==task.projectId)throw new Error('媒体任务不属于此工程');}
     const projectId=task?.projectId??(typeof data.projectId==='string'?data.projectId:context.callerSessionId?(await this.sessionRouting(context.callerSessionId)).projectId:this.index.selected);
     if(!projectId)throw new Error('请先选择媒体任务所属工程');await this.assertMediaAccess(projectId,context.callerSessionId);
     await this.service(projectId);
     if(endpoint==='media.list')return {tasks:await this.media.list(projectId)};
+    if(endpoint==='media.capabilities')return getMediaCapabilities(await this.models.resolve({role:data.operation==='text-to-image'?'image':'video',...(typeof data.modelId==='string'?{modelId:data.modelId}:{}),...(typeof data.connectionId==='string'?{connectionId:data.connectionId}:{})}));
     if(endpoint==='media.generate'){
       const request:MediaRequest={projectId,expectedRevision:data.expectedRevision as number,operation:data.operation as MediaRequest['operation'],prompt:data.prompt as string,
         ...(typeof data.shotId==='string'?{shotId:data.shotId}:{}),...(typeof data.modelId==='string'?{modelId:data.modelId}:{}),...(typeof data.connectionId==='string'?{connectionId:data.connectionId}:{}),
         ...(data.imageAssetIds!==undefined?{imageAssetIds:data.imageAssetIds as string[]}:{}),allowImageUpload:data.allowImageUpload===true,
+        ...(data.referenceRoles!==undefined?{referenceRoles:data.referenceRoles as string[]}:{}),...(data.requiresAudio!==undefined?{requiresAudio:data.requiresAudio as boolean}:{}),...(typeof data.clientRequestId==='string'?{clientRequestId:data.clientRequestId}:{}),
         ...(data.parameters!==undefined?{parameters:record(data.parameters) as MediaRequest['parameters']}:{}),...(context.callerSessionId?{ownerSessionId:context.callerSessionId}:{})};
       return this.media.generate(request);
     }
@@ -333,7 +339,10 @@ export class ProjectHub {
     if(endpoint==='media.pause')return this.media.pause(task!.id);
     if(endpoint==='media.cancel')return this.media.cancel(task!.id);
     if(endpoint==='media.retry')return this.media.retry(task!.id);
-    if(endpoint==='media.apply')return this.media.apply(task!.id,data.expectedRevision as number);
+    if(endpoint==='media.apply'){
+      if(data.confirmLegacyPolicy===true&&context.callerSessionId)throw Object.assign(new Error('旧候选采用许可需要用户在工作台明确确认'),{code:'PRODUCTION_CONFIRMATION_REQUIRED'});
+      return this.media.apply(task!.id,data.expectedRevision as number,data.confirmLegacyPolicy===true);
+    }
     throw new Error('未知媒体任务操作');
   }
   private async workflowText(role:'director'|'scene'|'vision',prompt:string,signal:AbortSignal,request:WorkflowRequest,images?:{bytes:Uint8Array;mime:string}[]):Promise<string>{
@@ -363,12 +372,22 @@ export class ProjectHub {
     await this.assertMediaAccess(projectId,context.callerSessionId);await this.service(projectId);
     if(endpoint==='workflows.list')return {workflows:await this.workflows.list(projectId)};
     if(endpoint==='workflows.get')return workflow;
+    if(endpoint==='workflows.preview'){
+      const reviewed=await this.workflows.reviewCandidate(id);
+      const playback=await(await this.service(projectId)).previewWorkflowCandidate(reviewed.candidate,reviewed.qualityReport.candidateHash,workflow!.request.shotIds);
+      return {candidateHash:reviewed.qualityReport.candidateHash,qualityReport:reviewed.qualityReport,playback};
+    }
     if(endpoint==='workflows.pause')return this.workflows.pause(id);
     if(endpoint==='workflows.retry')return this.workflows.retry(id);
-    if(endpoint==='workflows.apply')return this.workflows.apply(id,data.expectedRevision as number);
+    if(endpoint==='workflows.apply'){
+      if(data.reviewApproval!==undefined&&context.callerSessionId)throw Object.assign(new Error('未检查项须由用户审看当前候选后确认，智能体不能代签'),{code:'REVIEW_CONFIRMATION_REQUIRED'});
+      const review=record(data.reviewApproval);
+      return this.workflows.apply(id,data.expectedRevision as number,data.reviewApproval===undefined?undefined:{candidateHash:String(review.candidateHash??''),checkIds:review.checkIds as string[]});
+    }
     if(endpoint==='workflows.run'){
       const route=record(data.textRoute);
       const request:WorkflowRequest={projectId,expectedRevision:data.expectedRevision as number,prompt:data.prompt as string,visual:data.visual as WorkflowRequest['visual'],narration:data.narration===true,review:data.review===true,allowImageUpload:data.allowImageUpload===true,
+        ...(data.filmKind!==undefined?{filmKind:data.filmKind as WorkflowRequest['filmKind']}:{}),...(data.audioStrategy!==undefined?{audioStrategy:data.audioStrategy as WorkflowRequest['audioStrategy']}:{}),...(data.directorPlan!==undefined?{directorPlan:data.directorPlan as WorkflowRequest['directorPlan']}:{}),
         ...(data.shotIds!==undefined?{shotIds:data.shotIds as string[]}:{}),...(data.imageAssetIds!==undefined?{imageAssetIds:data.imageAssetIds as string[]}:{}),...(data.maxTasks!==undefined?{maxTasks:data.maxTasks as number}:{}),...(data.maxCost!==undefined?{maxCost:data.maxCost as number}:{}),
         textRoute:{provider:String(route.provider??''),model:String(route.model??'')},...(context.callerSessionId?{ownerSessionId:context.callerSessionId}:{})};
       if(!request.textRoute!.provider||!request.textRoute!.model)throw new Error('请在工作台选择 DSH 创作模型');return this.workflows.run(request);
@@ -387,6 +406,14 @@ export class ProjectHub {
       if(endpoint.startsWith('models.'))return {ok:true,value:await this.modelRoute(endpoint,data,context)};
       if(endpoint.startsWith('media.'))return {ok:true,value:await this.mediaRoute(endpoint,data,context)};
       if(endpoint.startsWith('workflows.'))return {ok:true,value:await this.workflowRoute(endpoint,data,context)};
+      if(endpoint.startsWith('director.')){
+        if(endpoint==='director.rules')return {ok:true,value:{version:DIRECTOR_RULESET_VERSION,rules:DIRECTOR_RULES}};
+        const checked=validateDirectorPlan(data.plan);if(endpoint==='director.validate')return {ok:true,value:checked};
+        if(!checked.ok||!checked.plan)throw new Error(checked.errors.join('\n'));
+        if(endpoint==='director.compile')return {ok:true,value:compileDirectorShot(checked.plan,String(data.shotId??''))};
+        if(endpoint==='director.patch')return {ok:true,value:patchDirectorPlan(checked.plan,{shotId:String(data.shotId??''),changes:record(data.changes)})};
+        throw new Error('未知导演约束操作');
+      }
       const projectInput=record(data.project);
       if(endpoint==='styles.list')return {ok:true,value:{styles:structuredClone(this.styles)}};
       if(endpoint==='styles.save')return await this.saveStyle(data);
@@ -414,6 +441,7 @@ export class ProjectHub {
         try{const snapshot=resultValue<StudioSnapshot>(await service.rpc('open',{path:copied.root}));this.services.set(snapshot.project!.id,service);await this.remember(snapshot);if(data.select!==false)await this.selectProject(snapshot.project!.id);return {ok:true,value:await this.decorate(service)};}catch(error){await service.dispose();throw error;}
       }
       if(endpoint==='create'||endpoint==='open'){
+        if(endpoint==='create'&&context.callerSessionId)delete data.productionMode;
         if(endpoint==='create'&&typeof projectInput.id==='string'&&this.index.projects.some(item=>item.id===projectInput.id))throw new Error('工程 ID 已存在，请复制工程或生成新 ID');
         if(endpoint==='open'&&typeof data.path==='string'){
           const requestedPath=resolve(data.path),existing=this.index.projects.find(item=>resolve(item.path)===requestedPath);
@@ -437,6 +465,10 @@ export class ProjectHub {
         return {ok:true,value:await this.decorate(await this.service(),this.selectedSession)};
       }
       const service=await this.service(id);
+      if(endpoint==='production.set'){
+        if(context.callerSessionId)throw Object.assign(new Error('制作模式与混合范围须由用户在原工作台的制作要求中确认，智能体不能自行授权'),{code:'PRODUCTION_CONFIRMATION_REQUIRED'});
+        const snapshot=await service.setProductionPolicy(data as unknown as Parameters<StudioService['setProductionPolicy']>[0]);await this.remember(snapshot);return {ok:true,value:await this.decorate(service,sessionId)};
+      }
       if(endpoint==='bind'||endpoint==='bindSession'){
         if(!sessionId)throw new Error('请选择关联会话');await this.bind(service,sessionId,{select:false,...data},context);
         return {ok:true,value:await this.decorate(service,sessionId)};

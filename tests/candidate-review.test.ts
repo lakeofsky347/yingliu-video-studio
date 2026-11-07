@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { createProject } from '../src/core/index.js';
+import {createCodeProject as createProject} from './fixtures/production.js';
 import { ProjectStore } from '../src/host/store.js';
 import { VideoRenderer, detectEnvironment } from '../src/host/renderer.js';
 import type { SceneSource } from '../src/shared/types.js';

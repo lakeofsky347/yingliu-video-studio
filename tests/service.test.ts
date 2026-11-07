@@ -8,7 +8,7 @@ async function value(service:StudioService,endpoint:string,payload:unknown={}):P
 test('save broken graph, clone current source, restart project without model calls',async()=>{
   const base=await mkdtemp(join(tmpdir(),'video-studio-service-'));let service=new StudioService(ctx,{baseDirectory:base});
   try{
-    const start=await value(service,'create',{title:'持久化中文项目',topic:'图文到视频'}) as StudioSnapshot;
+    const start=await value(service,'create',{productionMode:'code_animation',title:'持久化中文项目',topic:'图文到视频'}) as StudioSnapshot;
     const source=await value(service,'source',{shotId:start.project!.shots[0]!.id});source.js+='\n// manual edit kept in duplicate';
     const edited=await value(service,'saveSource',{shotId:start.project!.shots[0]!.id,source,check:false}) as StudioSnapshot;
     let project=duplicateShot(edited.project!,edited.project!.shots[0]!.id);const clone=project.shots.at(-1)!;
@@ -31,7 +31,7 @@ test('source-only simulated generation increments revision and changes preview U
   // This regression covers service revision/cache keys. Browser/media behavior is tested separately.
   service.renderer.check=async()=>({ok:true,errors:[],frames:[]});
   try{
-    let before=await value(service,'create',{title:'源码revision回归'}) as StudioSnapshot;const shotId=before.project!.shots[0]!.id;
+    let before=await value(service,'create',{productionMode:'code_animation',title:'源码revision回归'}) as StudioSnapshot;const shotId=before.project!.shots[0]!.id;
     for(let iteration=1;iteration<=2;iteration++){
       await value(service,'generate',{kind:'scenes',shotId,provider:'fixture',model:'fixture'});
       let after=await service.snapshot();const deadline=Date.now()+5000;
@@ -46,7 +46,7 @@ test('source-only simulated generation increments revision and changes preview U
 test('complete project directory copy opens with relative assets; broken graph retains asset HTTP access after restart',async()=>{
   const base=await mkdtemp(join(tmpdir(),'video-studio-relocation-'));let service=new StudioService(ctx,{baseDirectory:base});
   try{
-    const start=await value(service,'create',{title:'完整目录搬迁'}) as StudioSnapshot;
+    const start=await value(service,'create',{productionMode:'code_animation',title:'完整目录搬迁'}) as StudioSnapshot;
     const data=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jCZkAAAAASUVORK5CYII=','base64');
     const imported=await value(service,'import',{name:'tiny.png',mime:'image/png',dataBase64:data.toString('base64')}) as StudioSnapshot;
     const destination=join(base,'relocated');await cp(start.root!,destination,{recursive:true});

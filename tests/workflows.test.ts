@@ -5,6 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {createProject,defaultSceneSource} from '../src/core/index.ts';
+import {defaultProductionPolicy} from '../src/core/production-policy.ts';
 import {WorkflowService} from '../src/workflows/service.ts';
 import type {WorkflowPort,WorkflowRecord,WorkflowRequest,WorkflowCandidate} from '../src/workflows/contracts.ts';
 import type {Asset,SceneSource,StudioSnapshot,VideoProject} from '../src/shared/types.ts';
@@ -17,10 +18,11 @@ async function settled(service:WorkflowService,id:string){return until(()=>servi
 function block(signal:AbortSignal):Promise<void>{return new Promise((_,reject)=>{if(signal.aborted)reject(signal.reason);else signal.addEventListener('abort',()=>reject(signal.reason),{once:true});});}
 
 async function fixture(t:TestContext,shotCount=2){
-  const directory=await mkdtemp(join(tmpdir(),'workflow-contract-'));let project=createProject('原始影片');project.shots=project.shots.slice(0,shotCount);project.shotOrder=project.shots.map(shot=>shot.id);project.shots.forEach(shot=>shot.durationFrames=12);project.target.fps={num:12,den:1};
+  const directory=await mkdtemp(join(tmpdir(),'workflow-contract-'));let project=createProject('原始影片','','code_animation');project.shots=project.shots.slice(0,shotCount);project.shotOrder=project.shots.map(shot=>shot.id);project.shots.forEach(shot=>shot.durationFrames=12);project.target.fps={num:12,den:1};
+  project.productionPolicy!.allowGeneratedImages=true;
   const original=copy(project),sources=new Map(project.shots.map(shot=>[shot.id,defaultSceneSource()]));
-  const calls={director:0,scene:new Map<string,number>(),voice:new Map<string,number>(),vision:[] as {prompt:string;images?:{bytes:Uint8Array;mime:string}[]}[],capture:[] as number[],candidates:[] as WorkflowCandidate[],commit:[] as {project:VideoProject;sources:Record<string,SceneSource>;label:string}[],generate:[] as (MediaRequest&{clientRequestId?:string})[],submissions:0,stage:[] as string[],ack:[] as string[]};
-  const hooks={scene:undefined as undefined|((shotId:string,signal:AbortSignal)=>Promise<void>),capture:undefined as undefined|((frame:number)=>void),vision:undefined as undefined|((signal:AbortSignal)=>Promise<void>),loseCommitReceipt:false,failCommit:0,failAck:0};
+  const calls={director:0,directorPrompts:[] as string[],scenePrompts:[] as string[],scene:new Map<string,number>(),voice:new Map<string,number>(),vision:[] as {prompt:string;images?:{bytes:Uint8Array;mime:string}[]}[],capture:[] as number[],candidates:[] as WorkflowCandidate[],commit:[] as {project:VideoProject;sources:Record<string,SceneSource>;label:string}[],generate:[] as (MediaRequest&{clientRequestId?:string})[],submissions:0,stage:[] as string[],ack:[] as string[]};
+  const hooks={directorResult:undefined as Record<string,unknown>|undefined,visionResult:undefined as string|undefined,stage:undefined as undefined|((task:MediaTask)=>Asset[]),scene:undefined as undefined|((shotId:string,signal:AbortSignal)=>Promise<void>),capture:undefined as undefined|((frame:number)=>void),vision:undefined as undefined|((signal:AbortSignal)=>Promise<void>),loseCommitReceipt:false,failCommit:0,failAck:0};
   const tasks=new Map<string,MediaTask>(),requests=new Map<string,string>();
   const fakeMedia={
     async generate(request:MediaRequest&{clientRequestId?:string}){
@@ -39,9 +41,9 @@ async function fixture(t:TestContext,shotCount=2){
     async snapshot(){return snapshot();},async source(_id,shotId){return copy(sources.get(shotId)??defaultSceneSource());},
     async text(role,prompt,signal,_request,images){
       signal.throwIfAborted();const input=JSON.parse(prompt);
-      if(role==='director'){calls.director++;return JSON.stringify({shots:input.shots.length?input.shots.map((shot:{id:string})=>({shotId:shot.id,prompt:'画面 '+shot.id,narration:'旁白 '+shot.id})):[{title:'新镜头',intent:'解释',prompt:'新画面',narration:'新旁白',durationSeconds:1,params:{text:'新标题'}}]});}
-      if(role==='vision'){calls.vision.push({prompt,images:images?copy(images):undefined});await hooks.vision?.(signal);return '根据提供的关键帧检查：文字可读。';}
-      const shotId=String(input.shot.id);calls.scene.set(shotId,(calls.scene.get(shotId)??0)+1);await hooks.scene?.(shotId,signal);signal.throwIfAborted();return JSON.stringify({html:'<main>'+shotId+'</main>',css:'main{color:white}',js:'export function render(ctx){ctx.root.dataset.frame=String(ctx.localFrame)}'});
+      if(role==='director'){calls.director++;calls.directorPrompts.push(prompt);return JSON.stringify(hooks.directorResult??{shots:input.shots.length?input.shots.map((shot:{id:string})=>({shotId:shot.id,prompt:'画面 '+shot.id,narration:'旁白 '+shot.id})):[{title:'新镜头',intent:'解释',prompt:'新画面',narration:'新旁白',durationSeconds:1,params:{text:'新标题'}}]});}
+      if(role==='vision'){calls.vision.push({prompt,images:images?copy(images):undefined});await hooks.vision?.(signal);return hooks.visionResult??JSON.stringify({visual:{verdict:'pass',confidence:.95,message:'抽样帧中文字可读。'}});}
+      calls.scenePrompts.push(prompt);const shotId=String(input.shot.id);calls.scene.set(shotId,(calls.scene.get(shotId)??0)+1);await hooks.scene?.(shotId,signal);signal.throwIfAborted();return JSON.stringify({html:'<main>'+shotId+'</main>',css:'main{color:white}',js:'export function render(ctx){ctx.root.dataset.frame=String(ctx.localFrame)}'});
     },
     async commit(_id,expectedRevision,next,changed,label){
       if(project.revision!==expectedRevision)throw Object.assign(new Error('fixture revision conflict'),{code:'REVISION_CONFLICT'});
@@ -49,7 +51,7 @@ async function fixture(t:TestContext,shotCount=2){
       calls.commit.push({project:copy(next),sources:copy(changed),label});project=copy(next);project.revision=expectedRevision+1;for(const [id,source]of Object.entries(changed))sources.set(id,copy(source));
       if(hooks.loseCommitReceipt){hooks.loseCommitReceipt=false;throw new Error('fixture commit response lost after durable commit');}return snapshot();
     },
-    async stageMedia(_id,task,_files,signal){signal.throwIfAborted();calls.stage.push(task.id);return [{id:'asset-'+task.id,kind:'image',name:task.id,description:'test fixture',path:'assets/'+task.id+'.png',mime:'image/png',width:1,height:1}];},
+    async stageMedia(_id,task,_files,signal){signal.throwIfAborted();calls.stage.push(task.id);if(hooks.stage)return hooks.stage(task);return [{id:'asset-'+task.id,kind:'image',name:task.id,description:'test fixture',path:'assets/'+task.id+'.png',mime:'image/png',width:1,height:1}];},
     async voice(_id,shotId,_text,signal){signal.throwIfAborted();calls.voice.set(shotId,(calls.voice.get(shotId)??0)+1);return {id:'voice-'+shotId,kind:'audio',name:'旁白',description:'fixture',path:'assets/voice-'+shotId+'.wav',duration:1,sampleRate:48000,channels:2};},
     async capture(_id,frame,signal,candidate){signal.throwIfAborted();calls.capture.push(frame);if(candidate)calls.candidates.push(copy(candidate));hooks.capture?.(frame);const bytes=Buffer.from('captured pixels at frame '+frame);return {bytes,mime:'image/png',sha256:createHash('sha256').update(bytes).digest('hex')};},
   };
@@ -204,4 +206,117 @@ test('long speech is fitted before candidate capture so review and commit use id
 test('locked shot duration refuses overlong speech before review or commit',async t=>{
   const f=await fixture(t,1),voice=f.port.voice;f.project={...f.project,extensions:{...f.project.extensions,lockDuration:true}};f.port.voice=async(...args)=>({...await voice(...args),duration:2});
   const started=await f.service.run(f.request({narration:true,review:true,allowImageUpload:true})),done=await settled(f.service,started.id);assert.equal(done.status,'failed');assert.match(done.error??'',/时长/);assert.equal(f.calls.capture.length,0);assert.equal(f.calls.vision.length,0);assert.equal(f.calls.commit.length,0);assert.equal(f.project.revision,0);assert.equal(f.project.shots[0]!.durationFrames,12);
+});
+
+function useVideo(f:Awaited<ReturnType<typeof fixture>>,duration=1){
+  const p=f.project;p.productionPolicy=defaultProductionPolicy('model_video');p.shots.forEach(s=>{s.visual={kind:'model_video'};});f.project=p;
+  f.hooks.stage=task=>[{id:'asset-'+task.id,kind:'video',name:'原生视频',description:'fixture',path:'assets/'+task.id+'.mp4',mime:'video/mp4',width:640,height:360,duration,fps:{num:12,den:1},frameCount:Math.round(duration*12),hasAudio:true,provenance:{origin:'model_generation',usage:'production'}}];
+}
+
+test('code-only production refuses a video workflow before any external request',async t=>{const f=await fixture(t);await assert.rejects(f.service.run(f.request({visual:'video'})),/模式|视频/);assert.equal(f.calls.director,0);assert.equal(f.calls.submissions,0);});
+
+test('video workflow generates no scene code, preserves native audio and requires exact-candidate review',async t=>{
+  const f=await fixture(t,1);useVideo(f);const started=await f.service.run(f.request({visual:'video',review:true,allowImageUpload:true}));const pending=await settled(f.service,started.id);
+  assert.equal(pending.status,'awaiting-apply',pending.error);assert.equal(f.calls.scene.size,0);assert.equal(f.calls.voice.size,0);assert.equal(f.calls.commit.length,0);assert.equal(pending.qualityReport?.decision,'needs-review');const preview=await f.service.reviewCandidate(started.id);assert.equal(preview.qualityReport.candidateHash,pending.qualityReport!.candidateHash);preview.candidate.project.title='mutated caller copy';assert.notEqual((await f.service.reviewCandidate(started.id)).candidate.project.title,'mutated caller copy');assert.equal(pending.qualityReport?.checks.find(c=>c.id==='sampled-frames')?.status,'pass');assert.equal(pending.qualityReport?.checks.find(c=>c.category==='timing')?.status,'unchecked');
+  assert.equal(f.calls.candidates[0]!.project.videoClips![0]!.audio,'keep');assert.deepEqual(f.calls.candidates[0]!.sources,{});assert.equal(JSON.parse(f.calls.generate[0]!.prompt).audio.strategy,'native');
+  const report=pending.qualityReport!,ids=report.checks.filter(c=>['unchecked','needs-review'].includes(c.status)).map(c=>c.id);
+  await assert.rejects(f.service.apply(started.id,f.project.revision,{candidateHash:'stale',checkIds:ids}),/过期/);
+  await f.service.apply(started.id,f.project.revision,{candidateHash:report.candidateHash,checkIds:ids});const done=await settled(f.service,started.id);
+  assert.equal(done.status,'complete',done.error);assert.deepEqual(f.calls.commit[0]!.sources,{});assert.equal(f.project.videoClips![0]!.audio,'keep');assert.equal(f.project.schemaVersion,3);assert.equal(f.calls.submissions,1);assert.equal(f.calls.vision.length,1);assert.ok(done.qualityReport!.checks.some(c=>c.evidence?.some(e=>e.kind==='human')));
+});
+
+test('empty model-video initialization never creates default animation source',async t=>{
+  const f=await fixture(t,0);useVideo(f,30);const started=await f.service.run(f.request({visual:'video'})),pending=await settled(f.service,started.id);
+  assert.equal(pending.status,'awaiting-apply',pending.error);assert.equal(f.calls.commit.length,1);assert.deepEqual(f.calls.commit[0]!.sources,{});assert.equal(f.project.shots[0]!.visual?.kind,'model_video');assert.equal(f.calls.scene.size,0);
+});
+
+test('native video cannot silently start external narration; explicit external strategy mutes source voice',async t=>{
+  const f=await fixture(t,1);useVideo(f);await assert.rejects(f.service.run(f.request({visual:'video',narration:true})),/external/);
+  const started=await f.service.run(f.request({visual:'video',narration:true,audioStrategy:'external',review:true,allowImageUpload:true})),pending=await settled(f.service,started.id);
+  assert.equal(pending.status,'awaiting-apply',pending.error);assert.equal(f.calls.voice.size,1);assert.equal(f.calls.candidates[0]!.project.videoClips![0]!.audio,'mute');assert.equal(f.calls.candidates[0]!.project.audioClips![0]!.role,'voice');
+});
+
+test('short generated video is a structured hard failure and cannot be committed by retry',async t=>{
+  const f=await fixture(t,1);useVideo(f,.5);const started=await f.service.run(f.request({visual:'video'})),failed=await settled(f.service,started.id);
+  assert.equal(failed.status,'failed');assert.equal(failed.qualityReport?.decision,'fail');assert.ok(failed.qualityReport?.checks.some(c=>c.id==='production-composition'&&c.status==='fail'));assert.equal(f.calls.commit.length,0);
+  await assert.rejects(f.service.apply(started.id,0,{candidateHash:failed.qualityReport!.candidateHash,checkIds:['production-composition']}));await f.service.retry(started.id);assert.equal((await settled(f.service,started.id)).status,'failed');assert.equal(f.calls.submissions,1);assert.equal(f.calls.commit.length,0);
+});
+
+test('unstructured or low-confidence static review needs trusted confirmation; a hard visual failure blocks commit',async t=>{
+  for(const result of ['文字好像正常。',JSON.stringify({visual:{verdict:'pass',confidence:.4,message:'不确定小字'}}),JSON.stringify({visual:{verdict:'fail',confidence:.95,message:'字被遮住'}})]){
+    const f=await fixture(t,1);f.hooks.visionResult=result;const started=await f.service.run(f.request({review:true,allowImageUpload:true})),pending=await settled(f.service,started.id);
+    assert.equal(f.calls.commit.length,0);assert.equal(pending.status,result.includes('遮住')?'failed':'awaiting-apply');assert.equal(pending.qualityReport?.decision,result.includes('遮住')?'fail':'needs-review');
+  }
+});
+
+test('retry never exceeds reserved external-call budget',async t=>{
+  const f=await fixture(t,1);f.hooks.scene=async()=>{throw new Error('first request failed');};const started=await f.service.run(f.request({maxTasks:2}));assert.equal((await settled(f.service,started.id)).usage.externalCalls,2);
+  f.hooks.scene=undefined;await f.service.retry(started.id);const failed=await settled(f.service,started.id);assert.equal(failed.status,'failed');assert.match(failed.error!,/上限/);assert.equal(f.calls.scene.size,1);assert.equal([...f.calls.scene.values()][0],1);assert.equal(f.calls.commit.length,0);
+});
+
+test('policy change after generation blocks adoption and never changes mode automatically',async t=>{
+  const f=await fixture(t,1);f.hooks.scene=async()=>{const p=f.project;p.productionPolicy!.allowGeneratedImages=false;f.project=p;};const started=await f.service.run(f.request()),done=await settled(f.service,started.id);assert.equal(done.status,'failed');assert.match(done.error!,/许可已变化/);assert.equal(f.calls.commit.length,0);assert.equal(f.project.productionPolicy!.mode,'code_animation');
+});
+
+test('provider returning an image to a video request cannot fall back to still or code',async t=>{
+  const f=await fixture(t,1);useVideo(f);f.hooks.stage=undefined;const started=await f.service.run(f.request({visual:'video'})),done=await settled(f.service,started.id);assert.equal(done.status,'failed');assert.match(done.error!,/类型/);assert.equal(f.calls.commit.length,0);assert.equal(f.calls.scene.size,0);
+});
+
+test('supplied validated director plan skips the director model and enters the actual generation workflow',async t=>{
+  const f=await fixture(t,1),id=f.project.shots[0]!.id;
+  const directorPlan={version:1 as const,ruleSetVersion:'2026-11-06.1',filmKind:'explainer' as const,characters:[],storyBeats:[],worldLayouts:[],identityMap:[],shots:[{shotId:id,title:'科学解释',visualPrompt:'用两个圆说明关系',durationSeconds:1,narration:'',audioStrategy:'silent' as const,performance:[],dialogue:[],events:[],references:[],acceptance:[]}]};
+  const started=await f.service.run(f.request({directorPlan,maxTasks:1})),done=await settled(f.service,started.id);assert.equal(done.status,'complete',done.error);assert.equal(f.calls.director,0);assert.equal(f.calls.scene.get(id),1);assert.equal(done.usage.externalCalls,1);assert.equal(done.directorPlan?.filmKind,'explainer');
+});
+
+test('actual reference-only outputs are rejected by quality before entering production',async t=>{
+  const f=await fixture(t,1);useVideo(f);const staged=f.hooks.stage!;f.hooks.stage=task=>staged(task).map(a=>({...a,provenance:{origin:'model_generation',usage:'reference_only'}}));
+  const started=await f.service.run(f.request({visual:'video'})),done=await settled(f.service,started.id);assert.equal(done.status,'failed');assert.match(done.error!,/参考专用/);assert.equal(done.qualityReport?.decision,'fail');assert.equal(f.calls.commit.length,0);
+});
+
+test('human review of old candidate cannot authorize a rebuilt candidate on a newer revision',async t=>{
+  const f=await fixture(t,1);useVideo(f);const started=await f.service.run(f.request({visual:'video'})),first=await settled(f.service,started.id),old=first.qualityReport!;f.project={...f.project,title:'更新标题',revision:1};
+  await assert.rejects(f.service.apply(started.id,1,{candidateHash:old.candidateHash,checkIds:old.checks.filter(c=>c.status==='unchecked').map(c=>c.id)}),/过期/);
+  await f.service.apply(started.id,1);const next=await settled(f.service,started.id);assert.equal(next.status,'awaiting-apply');assert.notEqual(next.qualityReport!.candidateHash,old.candidateHash);assert.equal(f.calls.submissions,1);assert.equal(f.calls.commit.length,0);assert.ok(next.qualityReport!.checks.some(c=>c.status==='unchecked'));
+});
+
+test('one selected model-video shot can be adopted while export still refuses other missing shots',async t=>{
+  const f=await fixture(t,2);useVideo(f);const id=f.project.shots[0]!.id;const started=await f.service.run(f.request({visual:'video',shotIds:[id]})),pending=await settled(f.service,started.id);assert.equal(pending.status,'awaiting-apply',pending.error);assert.equal(f.calls.submissions,1);
+  const report=pending.qualityReport!;await f.service.apply(started.id,f.project.revision,{candidateHash:report.candidateHash,checkIds:report.checks.filter(c=>c.status==='unchecked').map(c=>c.id)});const done=await settled(f.service,started.id);assert.equal(done.status,'complete',done.error);assert.equal(f.project.videoClips?.length,1);
+  const {assertProductionComposition}=await import('../src/core/production-policy.ts');assert.throws(()=>assertProductionComposition(f.project,{forExport:true}),/尚未采用视频/);
+});
+
+test('image workflow needs code production authority as well as generated-image permission',async t=>{
+  const f=await fixture(t,1);useVideo(f);const p=f.project;p.productionPolicy!.allowGeneratedImages=true;f.project=p;await assert.rejects(f.service.run(f.request({visual:'image'})),/代码|源码/);assert.equal(f.calls.director,0);assert.equal(f.calls.generate.length,0);
+});
+
+test('native dialogue requires audio at media preflight and preserves planned interruptions in compiled prompt',async t=>{
+  const f=await fixture(t,1);useVideo(f);const id=f.project.shots[0]!.id;
+  const directorPlan={version:1 as const,ruleSetVersion:'2026-11-06.1',filmKind:'general' as const,characters:[{id:'C1',name:'甲',identity:'灰衣'}],storyBeats:[],worldLayouts:[],identityMap:[],shots:[{shotId:id,title:'截断',visualPrompt:'甲尝试辩解',durationSeconds:1,narration:'',audioStrategy:'native' as const,performance:[],dialogue:[{id:'d1',characterId:'C1',start:.1,end:.8,text:'我不是——',intentional:{truncation:true}}],events:[],references:[],acceptance:[]}]};
+  const started=await f.service.run(f.request({visual:'video',directorPlan})),pending=await settled(f.service,started.id);assert.equal(pending.status,'awaiting-apply',pending.error);assert.equal(f.calls.generate[0]!.requiresAudio,true);assert.equal(JSON.parse(f.calls.generate[0]!.prompt).dialogue[0].intentional.truncation,true);
+});
+
+test('code generation receives resolved global director definitions with the original renderer contract',async t=>{
+  const f=await fixture(t,1),id=f.project.shots[0]!.id,p=f.project;p.assets.push({id:'listener',kind:'image',name:'乙',description:'蓝衬衫',path:'assets/listener.png',mime:'image/png',width:1,height:1});p.shots[0]!.referenceIds.push('listener');f.project=p;
+  const directorPlan={version:1 as const,ruleSetVersion:'2026-11-06.1',filmKind:'general' as const,characters:[{id:'A',name:'甲',identity:'灰衣'},{id:'B',name:'乙',identity:'蓝衬衫'},{id:'unused',name:'未入镜人物',identity:'红衣'}],storyBeats:[{id:'beat',function:'发现',change:'甲发现画外乙',shotIds:[id]}],worldLayouts:[{id:'room',description:'门窗的稳定世界位置',anchors:[{id:'door',position:[0,0,0] as [number,number,number]}]}],identityMap:[{characterId:'B',assetId:'listener'}],shots:[{shotId:id,title:'回头',visualPrompt:'甲看向画外乙',durationSeconds:1,narration:'',audioStrategy:'silent' as const,performance:[],dialogue:[],events:[{id:'e',start:0,end:1,segmentId:'standing',worldLayoutId:'room',camera:'甲近景',screenPositions:[{characterId:'A',x:.5,y:.5}],relationships:[{from:'A',to:'B',relation:'看向画外乙'}],action:'甲回头'}],references:[{assetId:'listener',purpose:'identity' as const,usage:'reference_only' as const}],acceptance:[]}]};
+  const started=await f.service.run(f.request({directorPlan,imageAssetIds:['listener'],allowImageUpload:true,maxTasks:1})),pending=await settled(f.service,started.id);assert.equal(pending.status,'awaiting-apply',pending.error);assert.equal(f.calls.director,0);const input=JSON.parse(f.calls.scenePrompts[0]!),context=input.directorConstraints;
+  assert.deepEqual(context.characters.map((c:any)=>c.id),['A','B']);assert.equal(context.identityMap[0].characterId,'B');assert.equal(context.worldLayouts[0].id,context.shotEvents[0].worldLayoutId);assert.deepEqual(context.storyBeats[0].shotIds,[id]);assert.match(input.contract,/JS导出render/);assert.equal(context.instruction,undefined,'neutral context must not inject the media-only no-code instruction');assert.equal(f.calls.generate.length,0);
+});
+
+test('zero captured frames cannot pass visual quality even if a model-shaped result claims certainty',async()=>{
+  const {frameQuality}=await import('../src/workflows/quality.ts');const check=frameQuality(JSON.stringify({visual:{verdict:'pass',confidence:1,message:'模型声称全都清晰'}}),[]);assert.equal(check.status,'unchecked');assert.deepEqual(check.evidence,[]);
+});
+
+test('reviewing a shot outside the main chain does not call vision without actual frame evidence',async t=>{
+  const f=await fixture(t,2),p=f.project,id=p.shots[1]!.id;p.shotOrder=[p.shots[0]!.id];f.project=p;
+  const started=await f.service.run(f.request({shotIds:[id],review:true,allowImageUpload:true})),pending=await settled(f.service,started.id);assert.equal(pending.status,'awaiting-apply',pending.error);assert.deepEqual(f.calls.capture,[]);assert.equal(f.calls.vision.length,0);assert.equal(pending.usage.externalCalls,2,'only director and scene calls are charged');assert.equal(pending.qualityReport?.checks.find(c=>c.id==='sampled-frames')?.status,'unchecked');assert.equal(f.calls.commit.length,0);
+});
+
+test('empty-project temporary shot IDs map story beats and scoped prompts to real persistent IDs',async t=>{
+  const f=await fixture(t,0);f.hooks.directorResult={filmKind:'explainer',storyBeats:[{id:'b2',function:'比较',change:'第二镜展示差异',shotIds:['draft-b']},{id:'b1',function:'提出问题',change:'第一镜给出疑问',shotIds:['draft-a']}],shots:[{shotId:'draft-a',title:'提问',intent:'提问',prompt:'第一镜',narration:'',durationSeconds:1},{shotId:'draft-b',title:'比较',intent:'比较',prompt:'第二镜',narration:'',durationSeconds:1}]};
+  const started=await f.service.run(f.request()),done=await settled(f.service,started.id);assert.equal(done.status,'complete',done.error);const ids=f.project.shots.map(s=>s.id);assert.ok(ids.every(id=>!id.startsWith('draft-')));assert.deepEqual(done.directorPlan!.storyBeats.map(b=>b.shotIds),[[ids[1]],[ids[0]]]);assert.deepEqual(done.directorPlan!.shots.map(s=>s.shotId),ids);
+  assert.match(JSON.parse(f.calls.directorPrompts[0]!).output.shots[0].shotId,/临时ID/);for(const raw of f.calls.scenePrompts){const input=JSON.parse(raw);assert.deepEqual(input.directorConstraints.storyBeats[0].shotIds,[input.shot.id]);}assert.equal(f.calls.commit.length,2);
+});
+
+test('duplicate temporary shot IDs fail before empty-project initialization or scene generation',async t=>{
+  const f=await fixture(t,0);f.hooks.directorResult={storyBeats:[{id:'b',function:'介绍',change:'变化',shotIds:['draft']}],shots:[{shotId:'draft',title:'一',prompt:'一',durationSeconds:1},{shotId:'draft',title:'二',prompt:'二',durationSeconds:1}]};const started=await f.service.run(f.request()),done=await settled(f.service,started.id);assert.equal(done.status,'failed');assert.match(done.error!,/唯一/);assert.equal(f.calls.commit.length,0);assert.equal(f.calls.scene.size,0);
 });

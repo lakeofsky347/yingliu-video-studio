@@ -11,7 +11,7 @@ const context:HostContext={llm:{listProviders:()=>[],listModels:async()=>[],asyn
 test('library rename, independent copy, archive and restore survive restart without copying Session bindings',async()=>{
  const base=await mkdtemp(join(tmpdir(),'dsh-library-'));let hub=new ProjectHub(context,{baseDirectory:base});
  try{
-  const created=await hub.call<StudioSnapshot>('create',{title:'原工程',topic:'中文故事',sessionId:'original-session'}),id=created.project!.id,shotId=created.project!.shots[0]!.id;
+  const created=await hub.call<StudioSnapshot>('create',{productionMode:'code_animation',title:'原工程',topic:'中文故事',sessionId:'original-session'}),id=created.project!.id,shotId=created.project!.shots[0]!.id;
   const imported=await hub.call<StudioSnapshot>('import',{projectId:id,text:'保留的文本素材',name:'文案'});
   const source:SceneSource={html:'<h1></h1>',css:'h1{color:#ffeeaa}',js:'export function render(ctx){ctx.root.querySelector("h1").textContent=ctx.params.text}'};
   const edited=await hub.call<StudioSnapshot>('apply',{projectId:id,expectedRevision:imported.project!.revision,sources:[{shotId,source}]});

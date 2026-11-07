@@ -8,7 +8,8 @@ import { randomUUID } from 'node:crypto';
 import type { Asset, EnvironmentSettings, SceneSource, Shot, VideoProject } from '../shared/types.js';
 import { createProject, defaultSceneSource, validateProject, migrateProject } from '../core/index.js';
 import {probeAudio} from './audio.js';
-import {importVideoFile,MAX_VIDEO_BYTES} from '../media/video.js';
+import {hashMediaFile,importVideoFile,MAX_VIDEO_BYTES} from '../media/video.js';
+import {assetOrigin,defaultProductionPolicy,usesCodeVisual,usesVideoVisual} from '../core/production-policy.js';
 import {syncDirectory} from './directory-sync.js';
 import {atomicRename} from './atomic-rename.js';
 import {inspectProjectPaths,portableProjectPathReason,safeRelativeProjectPath} from '../core/project-paths.js';
@@ -60,7 +61,7 @@ async function atomicWrite(file:string,data:string|Buffer):Promise<void> {
 }
 function json(value:unknown):string { return JSON.stringify(value,null,2)+'\n'; }
 function assertProjectShape(project:VideoProject):void {
-  if(!project||![1,2].includes(project.schemaVersion)||typeof project.id!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(project.id)||!Array.isArray(project.assets)||!Array.isArray(project.shots)||!Array.isArray(project.shotOrder)||!Array.isArray(project.outputs)||!project.target||!project.graph)throw new Error('Unsupported or damaged project.json');
+  if(!project||![1,2,3].includes(project.schemaVersion)||typeof project.id!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(project.id)||!Array.isArray(project.assets)||!Array.isArray(project.shots)||!Array.isArray(project.shotOrder)||!Array.isArray(project.outputs)||!project.target||!project.graph)throw new Error('Unsupported or damaged project.json');
 }
 function assertSource(source:SceneSource):void {
   if(!source||!['html','css','js'].every(key=>typeof source[key as keyof SceneSource]==='string'))throw new Error('Scene source requires html, css and js strings');
@@ -116,7 +117,7 @@ export class ProjectStore {
     project.revision=0;project.createdAt=new Date().toISOString();project.updatedAt=project.createdAt;
     validateStoredProject(project);
     const sources=validateSources(project,full?.sources);
-    for(const shot of project.shots)if(!sources[shot.id])sources[shot.id]=defaultSceneSource();
+    for(const shot of project.shots)if(!sources[shot.id]&&(usesCodeVisual(shot)||shot.visual?.kind==='unresolved'))sources[shot.id]=defaultSceneSource();
     const files=await this.validateAssetFiles(project,full?.assetFiles??[]);
     await fs.mkdir(this.baseDirectory,{recursive:true});
     const slug=project.title.replace(/[^\p{L}\p{N}_-]+/gu,'-').replace(/^-|-$/g,'').slice(0,50)||'video';
@@ -125,6 +126,12 @@ export class ProjectStore {
     try{
       await fs.mkdir(path.join(root,'assets'),{recursive:true});
       for(const [relative,bytes] of files){const destination=await projectPath(root,relative);await fs.mkdir(path.dirname(destination),{recursive:true});if(typeof bytes==='string'){let size=0;await pipeline(createReadStream(bytes),new Transform({transform(chunk,_encoding,callback){size+=chunk.length;callback(size>MAX_VIDEO_BYTES?new Error('工程媒体单文件超过 512 MiB'):null,chunk);}}),createWriteStream(destination,{flags:'wx'}));}else await atomicWrite(destination,bytes);}
+      for(const asset of project.assets.filter(asset=>asset.kind==='video')){
+        for(const relative of [asset.path,asset.originalPath])if(relative){
+          const known=await this.knownExportProvenance(await hashMediaFile(await projectPath(root,relative)));
+          if(known){asset.provenance={...known,usage:asset.provenance?.usage??'production'};if(known.origin==='code_render')break;}
+        }
+      }
       const saved=await this.commit(root,project,sources,{label:'创建工程'});
       return {root,project:saved};
     }catch(error){await fs.rm(root,{recursive:true,force:true});throw error;}
@@ -161,7 +168,7 @@ export class ProjectStore {
     const text=await fs.readFile(await projectPath(root,`.studio/versions/${id}.json`),'utf8'),record=JSON.parse(text) as StoredVersion;
     if(record.version!==1||record.id!==id||!record.sources||typeof record.label!=='string')throw new Error('工程版本快照损坏');
     record.project=migrateProject(record.project);validateStoredProject(record.project,{portablePaths:false});
-    for(const shot of record.project.shots)assertSource(record.sources[shot.id]);
+    for(const shot of record.project.shots)if(record.sources[shot.id]||usesCodeVisual(shot))assertSource(record.sources[shot.id]);
     const bytes=Buffer.byteLength(text);if(bytes<=32*1024*1024){while(this.cachedBytes+bytes>32*1024*1024&&this.versionCache.size){const oldest=this.versionCache.keys().next().value!;this.cachedBytes-=this.versionCache.get(oldest)!.bytes;this.versionCache.delete(oldest);}this.versionCache.set(key,{record,bytes});this.cachedBytes+=bytes;}
     return record;
   }
@@ -186,7 +193,7 @@ export class ProjectStore {
     try{project=await this.physicalProject(root);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return;throw error;}
     assertPortablePaths(project,true);
     const sources:Record<string,SceneSource>={};
-    for(const shot of project.shots){try{sources[shot.id]=await this.physicalSource(root,shot);}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;sources[shot.id]=defaultSceneSource();}}
+    for(const shot of project.shots){try{sources[shot.id]=await this.physicalSource(root,shot);}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;if(usesCodeVisual(shot)||shot.visual?.kind==='unresolved')sources[shot.id]=defaultSceneSource();}}
     const baseline:StoredVersion={version:1,id:randomUUID(),label:'导入既有工程',createdAt:new Date().toISOString(),project,sources};
     await atomicWrite(await projectPath(root,`.studio/versions/${baseline.id}.json`),json(baseline));
     await this.indexRevision(root,baseline);
@@ -200,6 +207,7 @@ export class ProjectStore {
     validateStoredProject(project);
     const state=await this.ensureState(root),previous=state?await this.version(root,state.current):undefined;
     if(previous&&project.id!==previous.project.id)throw new Error('不能改写工程 ID');
+    if(previous?.project.schemaVersion===3&&project.schemaVersion!==3)throw new Error('不能降级工程格式或丢弃制作策略');
     if(options.expectedRevision!==undefined&&options.expectedRevision!==previous?.project.revision)throw Object.assign(new Error('工程版本已更新，请重新读取后合并修改'),{code:'REVISION_CONFLICT'});
     if(previous&&project.revision<=previous.project.revision)throw Object.assign(new Error('新提交的 revision 必须递增'),{code:'REVISION_CONFLICT'});
     const sources:Record<string,SceneSource>={};
@@ -207,7 +215,8 @@ export class ProjectStore {
     for(const shot of project.shots){
       const origin=(project.extensions.sourceCopies as Record<string,string>|undefined)?.[shot.id];
       const originId=previous?.project.shots.find(s=>s.sourcePath===origin)?.id;
-      const source=sourceChanges[shot.id]??previous?.sources[shot.id]??(originId?previous?.sources[originId]:undefined)??defaultSceneSource();
+      const source=sourceChanges[shot.id]??previous?.sources[shot.id]??(originId?previous?.sources[originId]:undefined)??(usesCodeVisual(shot)||shot.visual?.kind==='unresolved'?defaultSceneSource():undefined);
+      if(!source)continue;
       assertSource(source);sources[shot.id]={html:source.html,css:source.css,js:source.js};
       await projectPath(root,shot.sourcePath+'/index.html');
     }
@@ -233,6 +242,7 @@ export class ProjectStore {
     let previousProjected=false;
     if(previous)try{previousProjected=JSON.parse(await fs.readFile(await projectPath(root,'.studio/projected.json'),'utf8')).current===previous.id;}catch{/* A missing/damaged projection marker means repair every scene file. */}
     for(const shot of record.project.shots){
+      if(!record.sources[shot.id])continue;
       const prior=previous?.sources[shot.id],unchanged=!!prior&&JSON.stringify(prior)===JSON.stringify(record.sources[shot.id]);
       if(unchanged&&previousProjected&&previous?.project.shots.find(item=>item.id===shot.id)?.sourcePath===shot.sourcePath)continue;
       if(prior&&!unchanged)await atomicWrite(await projectPath(root,shot.sourcePath+'/previous.json'),json(prior));
@@ -263,6 +273,8 @@ export class ProjectStore {
     const target=await this.version(root,id),project=structuredClone(target.project);
     // Outputs and session associations outlive editable content and must not be rolled back.
     project.outputs=structuredClone(current.project.outputs);
+    // Content history is not an authorization history. Revoked grants stay revoked.
+    project.productionPolicy=structuredClone(current.project.productionPolicy);project.schemaVersion=3;
     if(current.project.sessionIds!==undefined)project.sessionIds=structuredClone(current.project.sessionIds);else delete project.sessionIds;
     if(Object.hasOwn(current.project.extensions,'sessionIds'))project.extensions.sessionIds=structuredClone(current.project.extensions.sessionIds);else delete project.extensions.sessionIds;
     project.revision=current.project.revision+1;project.updatedAt=new Date().toISOString();
@@ -281,6 +293,7 @@ export class ProjectStore {
   async duplicate(root:string,title?:string):Promise<{root:string;project:VideoProject}>{
     const state=await this.ensureState(root);if(!state)throw new Error('未找到工程');const current=await this.version(root,state.current),project=structuredClone(current.project);
     project.id='film_'+randomUUID().replaceAll('-','');project.title=title?.trim()||project.title+'（副本）';project.outputs=[];project.sessionIds=[];delete project.extensions.sessionIds;
+    if(project.productionPolicy?.mode==='hybrid'){project.productionPolicy=defaultProductionPolicy();for(const shot of project.shots)shot.visual={kind:'unresolved'};}
     project.revision=0;project.createdAt=new Date().toISOString();project.updatedAt=project.createdAt;validateStoredProject(project);
     const slug=project.title.replace(/[^\p{L}\p{N}_-]+/gu,'-').replace(/^-|-$/g,'').slice(0,50)||'video';
     const destination=path.join(this.baseDirectory,slug+'-'+project.id);await fs.mkdir(destination,{recursive:false});
@@ -315,7 +328,24 @@ export class ProjectStore {
     return this.importImageOrText(root,input);
   }
   async importVideo(root:string,input:ImportAssetInput,settings:Partial<EnvironmentSettings>={},signal?:AbortSignal):Promise<Asset>{
-    return importVideoFile(root,input,settings,relative=>projectPath(root,relative),signal);
+    const asset=await importVideoFile(root,input,settings,relative=>projectPath(root,relative),signal);
+    const known=await this.knownExportProvenance(asset.sourceSha256??asset.sha256??'');
+    if(known&&asset.sha256){const directory=path.join(this.baseDirectory,'.provenance');await fs.mkdir(directory,{recursive:true});await atomicWrite(path.join(directory,asset.sha256+'.json'),json(known));}
+    asset.provenance=known??{origin:'user_import',usage:'production'};return asset;
+  }
+  /** Host-recorded content identity survives renames/reimports; arbitrary project labels do not. */
+  async recordExportProvenance(file:string,project:VideoProject,exportId:string):Promise<void>{
+    const sha256=await hashMediaFile(file),directory=path.join(this.baseDirectory,'.provenance');
+    const active=project.shots.filter(shot=>project.shotOrder.includes(shot.id));
+    const videoOrigins=active.filter(usesVideoVisual).map(shot=>{const asset=project.assets.find(asset=>asset.id===project.videoClips?.find(clip=>clip.shotId===shot.id)?.assetId);return asset?assetOrigin(asset):'unknown';});
+    const origin=active.some(usesCodeVisual)||videoOrigins.includes('code_render')?'code_render':videoOrigins.length&&videoOrigins.every(origin=>origin==='model_generation')?'model_generation':'unknown';
+    await fs.mkdir(directory,{recursive:true});
+    await atomicWrite(path.join(directory,sha256+'.json'),json({origin,usage:'production',sourceProjectId:project.id,sourceExportId:exportId}));
+  }
+  private async knownExportProvenance(sha256:string):Promise<Asset['provenance']|undefined>{
+    if(!/^[a-f0-9]{64}$/.test(sha256))return;
+    try{return JSON.parse(await fs.readFile(path.join(this.baseDirectory,'.provenance',sha256+'.json'),'utf8')) as Asset['provenance'];}
+    catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return;throw error;}
   }
   async importAudio(root:string,input:ImportAssetInput,settings:Partial<EnvironmentSettings>={},signal?:AbortSignal):Promise<Asset>{
     signal?.throwIfAborted();const id=randomUUID(),temporary=await projectPath(root,'assets/'+id+'.audio-input');let buffer:Buffer;
@@ -329,14 +359,14 @@ export class ProjectStore {
     try{
       await atomicWrite(temporary,buffer);const metadata=await probeAudio(temporary,settings,signal);signal?.throwIfAborted();
       const relative='assets/'+id+metadata.extension;await fs.rename(temporary,await projectPath(root,relative));
-      return {id,kind:'audio',name:input.name??(input.path?path.basename(input.path):'音频素材'+metadata.extension),description:input.description??'',path:relative,mime:metadata.mime,duration:metadata.duration,sampleRate:metadata.sampleRate,channels:metadata.channels};
+      return {id,kind:'audio',name:input.name??(input.path?path.basename(input.path):'音频素材'+metadata.extension),description:input.description??'',path:relative,mime:metadata.mime,duration:metadata.duration,sampleRate:metadata.sampleRate,channels:metadata.channels,provenance:{origin:'user_import',usage:'production'}};
     }finally{await fs.rm(temporary,{force:true});}
   }
   async importImageOrText(root:string,input:ImportAssetInput):Promise<Asset> {
     const id=randomUUID(), description=input.description??'';
     if(typeof input.text==='string'){
       if(input.text.length>2_000_000)throw new Error('Text asset exceeds 2 MB');
-      return {id,kind:'text',name:input.name??'文本素材',description,text:input.text,mime:'text/plain'};
+      return {id,kind:'text',name:input.name??'文本素材',description,text:input.text,mime:'text/plain',provenance:{origin:'user_import',usage:'production'}};
     }
     let buffer:Buffer;
     if(input.dataBase64!==undefined){
@@ -348,7 +378,7 @@ export class ProjectStore {
       const extension=path.extname(input.path).toLowerCase();
       if(['.txt','.md'].includes(extension)){
         if(info.size>2_000_000)throw new Error('Text asset exceeds 2 MB');
-        return {id,kind:'text',name:input.name??path.basename(input.path),description,text:await fs.readFile(input.path,'utf8'),mime:'text/plain'};
+        return {id,kind:'text',name:input.name??path.basename(input.path),description,text:await fs.readFile(input.path,'utf8'),mime:'text/plain',provenance:{origin:'user_import',usage:'production'}};
       }
       buffer=await fs.readFile(input.path);
     }else throw new Error('Choose a PNG, JPEG, WebP image or text');
@@ -359,7 +389,7 @@ export class ProjectStore {
     const extension=mime==='image/png'?'.png':mime==='image/jpeg'?'.jpg':'.webp';
     const relative='assets/'+id+extension;
     await atomicWrite(await projectPath(root,relative),buffer);
-    return {id,kind:'image',name:input.name??(input.path?path.basename(input.path):'图片素材'+extension),description,path:relative,mime,...imageSize(buffer,mime)};
+    return {id,kind:'image',name:input.name??(input.path?path.basename(input.path):'图片素材'+extension),description,path:relative,mime,...imageSize(buffer,mime),provenance:{origin:'user_import',usage:'production'}};
   }
   private async indexRevision(root:string,record:StoredVersion):Promise<void>{
     await atomicWrite(await projectPath(root,`.studio/revisions/${record.project.revision}.json`),json({version:1,id:record.id,revision:record.project.revision}));
@@ -378,7 +408,7 @@ export class ProjectStore {
   }
   async readSource(root:string,shot:Shot|string,revision?:number):Promise<SceneSource> {
     const state=await this.state(root);
-    if(state){const current=await this.snapshotVersion(root,state,revision);const found=typeof shot==='string'?current.project.shots.find(s=>s.sourcePath===shot):current.project.shots.find(s=>s.id===shot.id);if(!found)throw Object.assign(new Error('镜头源码不存在'),{code:'ENOENT'});return structuredClone(current.sources[found.id]!);}
+    if(state){const current=await this.snapshotVersion(root,state,revision);const found=typeof shot==='string'?current.project.shots.find(s=>s.sourcePath===shot):current.project.shots.find(s=>s.id===shot.id);if(!found||!current.sources[found.id])throw Object.assign(new Error('镜头源码不存在'),{code:'ENOENT'});return structuredClone(current.sources[found.id]!);}
     await this.assertPhysicalProjectPaths(root);
     return this.physicalSource(root,shot);
   }

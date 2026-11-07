@@ -5,6 +5,17 @@ const sceneStyle = document.getElementById('scene-style');
 let data, modules, images, videos, sources, templates, readyPromise, renderChain = Promise.resolve();
 let frameCanvases=[],loadedShot;
 let pendingMessage, messageRendering=false;
+let codeFrame, codeReady, codeWait, codeOrigin, codeShotId,codeListener;
+const isCodePage=location.pathname==='/code.html';
+// Free scene code has a separate origin and cannot reach the compositor's media decoder.
+// CSP additionally denies every native media/data/blob load, child frame and worker here.
+if(isCodePage){
+  const blocked=()=>{throw new Error('Video/media decoding is unavailable in the code animation runtime');};
+  for(const name of ['VideoDecoder','AudioDecoder','MediaSource','ManagedMediaSource','RTCPeerConnection','Worker','SharedWorker']){
+    try{Object.defineProperty(globalThis,name,{value:blocked,writable:false,configurable:false});}catch{}
+  }
+  for(const name of ['play','load'])Object.defineProperty(HTMLMediaElement.prototype,name,{value:blocked,writable:false,configurable:false});
+}
 function hash(value) { let n=2166136261; for(const c of String(value)){n^=c.charCodeAt(0);n=Math.imul(n,16777619)}return n>>>0; }
 function helpers(seed) { return {
   clamp:(v,min=0,max=1)=>Math.max(min,Math.min(max,v)), lerp:(a,b,t)=>a+(b-a)*t,
@@ -19,7 +30,7 @@ function decorateError(error,shot,frame) {
 }
 function assetUrl(asset){return asset.path?new URL('../'+asset.path.split('/').map(encodeURIComponent).join('/'),import.meta.url).href:undefined;}
 async function init() {
-  const response=await fetch('./runtime/spec.json');
+  const response=await fetch(isCodePage?'./runtime/code-spec-'+encodeURIComponent(new URL(location.href).searchParams.get('shot'))+'.json':'./runtime/spec.json');
   if(!response.ok)throw new Error('Unable to read project runtime: '+response.status);
   data=await response.json();modules=new Map();images=new Map();videos=new Map();templates=new Map();
   sources=new Map(data.sources.map(source=>[source.id,source]));
@@ -30,6 +41,27 @@ async function init() {
   await document.fonts.ready;
   return {contractVersion:'1.0.0',frameCount:data.spec.durationFrames,shots:data.spec.shots.length};
 }
+async function loadCodeFrame(shot){
+  if(codeShotId===shot.id)return codeReady;
+  if(codeListener)window.removeEventListener('message',codeListener);
+  codeFrame?.remove();codeShotId=shot.id;codeOrigin=data.codeOrigins[shot.id];
+  if(!codeOrigin)throw new Error('No approved code renderer for shot '+shot.id);
+  {
+    codeFrame=document.createElement('iframe');codeFrame.title='Code animation renderer';
+    codeFrame.setAttribute('sandbox','allow-scripts allow-same-origin');
+    codeFrame.style.cssText='position:absolute;inset:0;width:100%;height:100%;border:0;background:transparent;z-index:1';
+    codeReady=new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>reject(new Error('Code renderer ready timed out')),20000);
+      codeListener=event=>{
+        if(event.source!==codeFrame.contentWindow||event.origin!==codeOrigin)return;
+        if(event.data?.type==='video-studio/ready'){clearTimeout(timer);resolve();}
+        if(event.data?.type==='video-studio/frame'&&codeWait){const pending=codeWait;codeWait=undefined;pending.resolve(event.data);}
+        if(event.data?.type==='video-studio/error'){const error=new Error(event.data.message);if(codeWait){codeWait.reject(error);codeWait=undefined;}else{clearTimeout(timer);reject(error);}}
+      };window.addEventListener('message',codeListener);
+    });
+    codeFrame.src=codeOrigin+'/code.html?render=manual&shot='+encodeURIComponent(shot.id);stage.append(codeFrame);await codeReady;
+  }
+}
 async function loadShot(shot) {
   if(loadedShot===shot.id)return;
   // A preview (including each thumbnail) needs only its current shot's decoded assets.
@@ -38,7 +70,8 @@ async function loadShot(shot) {
   for(const id of images.keys())if(!wanted.has(id))images.delete(id);
   for(const [id,entry] of videos)if(id!==shot.videoClip?.assetId){entry.video.removeAttribute('src');entry.video.load();videos.delete(id);}
   const source=sources.get(shot.id);
-  if(!modules.has(shot.id)){
+  if(isCodePage&&!modules.has(shot.id)){
+    if(!source)throw new Error('No approved code source for shot '+shot.id);
     const module=await import(source.moduleUrl);
     if(typeof module.render!=='function')throw new Error('Scene module must export render(ctx)');
     if(module.ready!==undefined&&typeof module.ready!=='function')throw new Error('Scene ready export must be a function');
@@ -46,8 +79,8 @@ async function loadShot(shot) {
   }
   // Parse in the same div context as the original runtime. A <template> would change
   // fragment parsing (e.g. tables) and could activate scripts when its content is cloned.
-  if(!templates.has(shot.id)){const template=document.createElement('div');template.className='scene-root';template.innerHTML=source.html;templates.set(shot.id,template);}
-  await Promise.all(shot.assets.filter(asset=>asset.kind==='image'&&!images.has(asset.id)).map(async asset=>{
+  if(isCodePage&&!templates.has(shot.id)){const template=document.createElement('div');template.className='scene-root';template.innerHTML=source.html;templates.set(shot.id,template);}
+  await Promise.all(shot.assets.filter(asset=>isCodePage&&asset.kind==='image'&&!images.has(asset.id)).map(async asset=>{
     if(!asset.path)throw new Error('Image has no path: '+asset.id);
     const image=new Image();image.decoding='sync';image.src=assetUrl(asset);
     try{await image.decode();}catch{throw new Error('Image cannot be decoded: '+asset.id+' ('+asset.name+')');}
@@ -103,7 +136,7 @@ function contextFor(shot,frame,root,canvas) {
   const fps=data.spec.target.fps.num/data.spec.target.fps.den;
   const localFrame=frame-shot.startFrame;
   const seed=hash(data.spec.projectId+':'+shot.id);
-  return {root,canvas,hasVideo:!!shot.videoClip,ctx2d:canvas.getContext('2d'),params:structuredClone(shot.params),
+  return {root,canvas,hasVideo:!!shot.videoClip||!!shot.hasVideo,ctx2d:canvas.getContext('2d'),params:structuredClone(shot.params),
     assets:shot.assets.map(asset=>({...structuredClone(asset),asset:structuredClone(asset),url:assetUrl(asset),image:images.get(asset.id)})),
     frame,localFrame,progress:localFrame/Math.max(1,shot.durationFrames-1),time:localFrame/fps,
     duration:shot.durationFrames/fps,width:data.spec.target.width,height:data.spec.target.height,seed,helpers:helpers(seed)};
@@ -121,29 +154,36 @@ async function draw(input) {
     // Retire the owned backing stores now rather than leaving full-resolution surfaces
     // alive until a later DOM/GC cycle during a fast offline export.
     for(const canvas of frameCanvases){canvas.width=0;canvas.height=0;}frameCanvases=[];
-    stage.replaceChildren();if(sceneStyle.textContent!==source.css)sceneStyle.textContent=source.css;
+    for(const child of [...stage.children])if(child!==codeFrame)child.remove();
+    const css=isCodePage?source.css:'';if(sceneStyle.textContent!==css)sceneStyle.textContent=css;
+    if(isCodePage){stage.style.background=shot.hasVideo?'transparent':'#101016';document.documentElement.style.background=shot.hasVideo?'transparent':'#000';document.body.style.background=shot.hasVideo?'transparent':'#000';}
     let videoInfo;if(shot.videoClip){const layer=document.createElement('canvas');frameCanvases.push(layer);layer.className='video-background';layer.width=data.spec.target.width;layer.height=data.spec.target.height;stage.append(layer);videoInfo=await videoFrame(shot,frame,layer);}
-    const canvas=document.createElement('canvas');canvas.width=data.spec.target.width;canvas.height=data.spec.target.height;
-    frameCanvases.push(canvas);
-    canvas.className='video-canvas';canvas.setAttribute('aria-hidden','true');stage.append(canvas);
-    const root=templates.get(shot.id).cloneNode(true);stage.append(root);
-    const context=contextFor(shot,frame,root,canvas);context.video=videoInfo;
-    const module=modules.get(shot.id);
-    if(module.ready)await module.ready(context);
-    await document.fonts.ready;
-    await module.render(context);
+    if(isCodePage){
+      const canvas=document.createElement('canvas');canvas.width=data.spec.target.width;canvas.height=data.spec.target.height;
+      frameCanvases.push(canvas);canvas.className='video-canvas';canvas.setAttribute('aria-hidden','true');stage.append(canvas);
+      const root=templates.get(shot.id).cloneNode(true);stage.append(root);
+      const context=contextFor(shot,frame,root,canvas);context.video=input.videoInfo;
+      const module=modules.get(shot.id);if(module.ready)await module.ready(context);await document.fonts.ready;await module.render(context);
+    }else{
+      const code=shot.visual?.kind==='code'||shot.visual?.kind==='hybrid';
+      if(code){await loadCodeFrame(shot);codeFrame.style.display='block';await new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>{codeWait=undefined;reject(new Error('Code frame timed out'));},20000);
+        codeWait={resolve:value=>{clearTimeout(timer);resolve(value);},reject:error=>{clearTimeout(timer);reject(error);}};
+        codeFrame.contentWindow.postMessage({type:'video-studio/render',frame,videoInfo},codeOrigin);
+      });}else if(codeFrame)codeFrame.style.display='none';
+    }
     // The business transition belongs to the runtime, independently of AI scene motion.
     const fps=data.spec.target.fps.num/data.spec.target.fps.den;
     const fadeFrames=Math.min(Math.max(1,Math.round(.25*fps)),Math.floor(shot.durationFrames/2));
     const next=data.spec.shots[data.spec.shots.indexOf(shot)+1];let opacity=1;
     if(fadeFrames>0){
-      if(shot.transition==='fade')opacity=Math.min(opacity,context.localFrame/fadeFrames);
-      if(next?.transition==='fade')opacity=Math.min(opacity,(shot.durationFrames-1-context.localFrame)/fadeFrames);
+      if(shot.transition==='fade')opacity=Math.min(opacity,(frame-shot.startFrame)/fadeFrames);
+      if(next?.transition==='fade')opacity=Math.min(opacity,(shot.durationFrames-1-(frame-shot.startFrame))/fadeFrames);
     }
-    stage.style.opacity=String(Math.max(0,Math.min(1,opacity)));
+    stage.style.opacity=isCodePage?'1':String(Math.max(0,Math.min(1,opacity)));
     // Freeze accidental CSS animations so the capture is controlled exclusively by frame.
     for(const animation of document.getAnimations())animation.pause();
-    return {frame,sceneId:shot.id,declaredTexts:[shot.params.text,shot.params.subtitle].filter(Boolean)};
+    return {frame,sceneId:shot.id,declaredTexts:shot.visual?.kind==='code'||shot.visual?.kind==='hybrid'?[shot.params.text,shot.params.subtitle].filter(Boolean):[]};
   }catch(error){throw decorateError(error,shot,frame);}
 }
 function renderFrame(input) {
@@ -154,14 +194,14 @@ function post(payload){if(window.parent!==window)window.parent.postMessage(paylo
 window.addEventListener('message',event=>{
   if(event.source!==window.parent||!event.data||event.data.type!=='video-studio/render')return;
   if(!Number.isSafeInteger(event.data.frame)){post({type:'video-studio/error',message:'Frame must be an integer'});return;}
-  pendingMessage=event.data.frame;
+  pendingMessage={frame:event.data.frame,videoInfo:event.data.videoInfo};
   if(messageRendering)return;
   messageRendering=true;
   void (async()=>{
     try{
       while(pendingMessage!==undefined){
         const requested=pendingMessage;pendingMessage=undefined;
-        try{const info=await renderFrame({frame:requested});post({type:'video-studio/frame',...info});}
+        try{const info=await renderFrame(requested);post({type:'video-studio/frame',...info});}
         catch(error){post({type:'video-studio/error',message:error.message,shotId:error.shotId,frame:error.frame});}
       }
     }finally{messageRendering=false;}

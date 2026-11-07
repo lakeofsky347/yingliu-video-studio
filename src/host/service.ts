@@ -1,5 +1,5 @@
 import {defaultTtsSettings,validateTtsSettings} from '../shared/tts-capability.ts';
-import {randomUUID} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {readFile,writeFile,mkdir,readdir,rename,open,rm} from 'node:fs/promises';
 import {resolve,join,relative} from 'node:path';
 import {homedir} from 'node:os';
@@ -14,6 +14,9 @@ import {ProjectFileOpener} from './file-opener.ts';
 import type {MediaProjectPort} from '../jobs/contracts.ts';
 import type {MediaTask,GeneratedFile} from '../jobs/contracts.ts';
 import {inspectGeneratedMedia,readProjectImage} from '../media/inspect.ts';
+import {applyProductionPolicy,assertProductionOperation,assertProductionComposition,productionPolicyFingerprint,productionMode,defaultProductionPolicy,assetOrigin,usesVideoVisual,usesCodeVisual} from '../core/production-policy.ts';
+import type {ProductionPolicy} from '../shared/types.ts';
+import type {MediaOperation} from '../jobs/contracts.ts';
 
 interface TaskRequest { endpoint:'preview'|'export'|'generate'; payload:Record<string,string> }
 interface RecordedTask extends TaskState { recordVersion?:1; revision?:number; request?:TaskRequest; retryOf?:string }
@@ -24,7 +27,7 @@ export function speechPreflightFailure(error:unknown):Error&{submissionUncertain
 }
 
 export class StudioService {
-  readonly store:ProjectStore;readonly renderer=new VideoRenderer();
+  readonly store:ProjectStore;readonly renderer:VideoRenderer;
   private project:VideoProject|null=null;private root:string|null=null;
   private task:RecordedTask|null=null;private controller?:AbortController;private job?:Promise<void>;
   private commands:Promise<unknown>=Promise.resolve();
@@ -41,6 +44,7 @@ export class StudioService {
     this.baseDirectory=resolve(config.baseDirectory??process.env.DSH_VIDEO_PROJECTS??join(homedir(),'Documents','DSHVideoProjects'));
     this.restoreRecent=config.restoreRecent!==false;
     this.store=new ProjectStore({baseDirectory:this.baseDirectory});
+    this.renderer=new VideoRenderer(this.store);
     const env=detectEnvironment();this.tts=defaultTtsSettings(env);this.settings={browserPath:env.browserPath,ffmpegPath:env.ffmpegPath,ffprobePath:env.ffprobePath};
     this.initialized=this.initialize();
   }
@@ -53,6 +57,34 @@ export class StudioService {
   async snapshot():Promise<StudioSnapshot>{await this.initialized;const credentials=this.credentials();return structuredClone({project:this.project,root:this.root,task:this.task,previewUrl:this.previewUrl,previewRevision:this.previewRevision,assetBaseUrl:this.assetBaseUrl,audioUrl:this.audioUrl,tts:{...this.tts,apiKey:undefined},ttsConfigured:!!(await credentials?.resolve('DSH_VIDEO_STUDIO_TTS_API_KEY')),providers:this.providers,environment:detectEnvironment(this.settings),recent:await this.store.recent()});}
   /** Trusted host port: generated paths never cross the public RPC or model tool surface. */
   async inspectMediaProject(){await this.initialized;const {project}=this.required();return {revision:project.revision,shotIds:project.shots.map(shot=>shot.id)};}
+  async authorizeMediaOperation(operation:MediaOperation,shotId?:string,expectedFingerprint?:string):Promise<string>{
+    await this.initialized;const {project}=this.required();
+    assertProductionOperation(project,operation==='text-to-image'?'image':'video',shotId?[shotId]:undefined);
+    const fingerprint=productionPolicyFingerprint(project);
+    if(expectedFingerprint!==undefined&&expectedFingerprint!==fingerprint)throw Object.assign(new Error('制作模式或许可已变化，旧任务不能继续提交或自动采用'),{code:'PRODUCTION_POLICY_CHANGED',submissionUncertain:false});
+    return fingerprint;
+  }
+  async submitAuthorizedMedia<T>(operation:MediaOperation,shotId:string|undefined,fingerprint:string|undefined,submit:()=>Promise<T>):Promise<T>{
+    await this.initialized;return this.enqueue(async()=>{
+      if(!fingerprint)throw Object.assign(new Error('旧排队任务没有制作许可快照，请核对后新建任务'),{code:'PRODUCTION_POLICY_REQUIRED',submissionUncertain:false});
+      await this.authorizeMediaOperation(operation,shotId,fingerprint);return submit();
+    });
+  }
+  /** Only ProjectHub's trusted workbench route may call this; no model-facing setter exists. */
+  async setProductionPolicy(data:{expectedRevision:number;mode:ProductionPolicy['mode'];baseMode?:'code_animation'|'model_video';allowGeneratedImages?:boolean;allowImportedVideo?:boolean;shotIds?:string[];operations?:('code'|'video')[]}):Promise<StudioSnapshot>{
+    await this.initialized;return this.enqueue(async()=>{
+      this.assertIdle();this.assertRevision(data,true);const {project}=this.required();
+      const policy:ProductionPolicy={...defaultProductionPolicy(data.mode),allowGeneratedImages:data.allowGeneratedImages===true,allowImportedVideo:data.allowImportedVideo===true};
+      if(data.mode==='hybrid'){
+        const prior=productionMode(project);policy.baseMode=data.baseMode??project.productionPolicy?.baseMode??(prior==='code_animation'||prior==='model_video'?prior:undefined);
+        if(policy.baseMode!=='code_animation'&&policy.baseMode!=='model_video')throw new Error('请明确未授权镜头继续使用的基线制作方式');
+        if(!Array.isArray(data.shotIds)||!data.shotIds.length||new Set(data.shotIds).size!==data.shotIds.length||data.shotIds.some(id=>!project.shots.some(shot=>shot.id===id)))throw new Error('请明确选择允许混合的现有镜头');
+        if(!Array.isArray(data.operations)||!data.operations.length||data.operations.some(op=>op!=='code'&&op!=='video'))throw new Error('请明确允许的代码/视频操作');
+        policy.hybridGrants=[{id:randomUUID(),projectId:project.id,shotIds:[...data.shotIds],operations:[...new Set(data.operations)],confirmedAt:new Date().toISOString()}];
+      }
+      const next=applyProductionPolicy(project,policy);await this.persist(next,{},'用户设置制作模式');return this.snapshot();
+    });
+  }
   async readMediaImage(assetId:string,shotId?:string){await this.initialized;const {root,project}=this.required();return readProjectImage(root,project,assetId,shotId);}
   async validateMediaArtifact(path:string,mimeType:string,signal?:AbortSignal){await this.initialized;return inspectGeneratedMedia(path,mimeType,this.settings,signal);}
   async applyMediaResult(input:Parameters<MediaProjectPort['applyResult']>[0]):Promise<{assetIds:string[];revision:number}>{
@@ -63,17 +95,19 @@ export class StudioService {
       const applications=(project.extensions.mediaApplications??{}) as Record<string,{assetIds:string[];revision:number}>;
       const prior=applications[input.provenance.taskId];if(prior)return structuredClone(prior);
       this.assertRevision(input,true);if(input.shotId&&!project.shots.some(shot=>shot.id===input.shotId))throw new Error('媒体任务镜头已不存在');
+      if(!input.productionPolicyFingerprint)throw new Error('采用媒体必须有宿主记录的制作许可快照');
+      await this.authorizeMediaOperation(input.provenance.operation,input.shotId,input.productionPolicyFingerprint);
       const next=structuredClone(project),assetIds:string[]=[];
       for(const file of input.files){
         const asset=await this.store.importAsset(root,{path:file.path,mime:file.mimeType,name:file.name,description:input.provenance.prompt},this.settings);
-        Object.assign(asset,{generation:structuredClone(input.provenance)});next.assets.push(asset);assetIds.push(asset.id);next.graph.positions[asset.id]=[60,80+(next.assets.length-1)*180];
+        Object.assign(asset,{generation:structuredClone(input.provenance),provenance:{origin:'model_generation',usage:'production'}});next.assets.push(asset);assetIds.push(asset.id);next.graph.positions[asset.id]=[60,80+(next.assets.length-1)*180];
       }
       if(!assetIds.length)throw new Error('媒体任务没有可采用的结果');
       const shot=next.shots.find(item=>item.id===input.shotId);
       if(shot){
         const imageIds=next.assets.filter(asset=>assetIds.includes(asset.id)&&asset.kind==='image').map(asset=>asset.id);shot.assetIds=[...new Set([...shot.assetIds,...imageIds])];
         const video=next.assets.find(asset=>assetIds.includes(asset.id)&&asset.kind==='video');
-        if(video){next.schemaVersion=2;next.videoClips=[...(next.videoClips??[]).filter(clip=>clip.shotId!==shot.id),{id:randomUUID(),shotId:shot.id,assetId:video.id,trimStart:0,trimEnd:video.duration,speed:1,fit:'cover',audio:'mute'}];}
+        if(video){next.schemaVersion=3;shot.visual={kind:'model_video'};next.videoClips=[...(next.videoClips??[]).filter(clip=>clip.shotId!==shot.id),{id:randomUUID(),shotId:shot.id,assetId:video.id,trimStart:0,trimEnd:video.duration,speed:1,fit:'cover',audio:video.hasAudio?'keep':'mute'}];if(video.hasAudio)next.target.audioMode='mixed';}
       }
       const applied={assetIds,revision:project.revision+1};next.extensions.mediaApplications={...applications,[input.provenance.taskId]:applied};
       await this.persist(next,{},'采用生成媒体');return structuredClone(applied);
@@ -86,7 +120,7 @@ export class StudioService {
       if(next.id!==current.id)throw new Error('协作任务工程不匹配');
       const applications=next.extensions.workflowApplications as Record<string,number>|undefined,existing=current.extensions.workflowApplications as Record<string,number>|undefined;
       if(applications&&Object.keys(applications).some(id=>applications[id]===expectedRevision+1&&existing?.[id]===applications[id]))return this.snapshot();
-      this.assertRevision({expectedRevision},true);await this.persist(next,sources,label);return this.snapshot();
+      this.assertRevision({expectedRevision},true);if(productionPolicyFingerprint(current)!==productionPolicyFingerprint(next))throw new Error('协作候选不能更改制作许可');this.assertActiveVisuals(next);await this.persist(next,sources,label);return this.snapshot();
     });
   }
   async stageWorkflowMedia(task:MediaTask,files:GeneratedFile[],signal:AbortSignal){
@@ -94,7 +128,7 @@ export class StudioService {
     const {root,project}=this.required();if(task.projectId!==project.id)throw new Error('媒体任务工程不匹配');
     const environment=structuredClone(this.settings),assets=[];
     for(const file of files){signal.throwIfAborted();const asset=await this.store.importAsset(root,{path:file.path,mime:file.mimeType,name:file.name,description:task.prompt},environment,signal);
-      asset.generation={taskId:task.id,connectionId:task.connection.id,model:task.model.model,operation:task.operation,prompt:task.prompt,inputHashes:task.inputHashes};assets.push(asset);}
+      asset.generation={taskId:task.id,connectionId:task.connection.id,model:task.model.model,operation:task.operation,prompt:task.prompt,inputHashes:task.inputHashes};asset.provenance={origin:'model_generation',usage:'production'};assets.push(asset);}
     return assets;
   }
   async stageWorkflowVoice(shotId:string,text:string,signal:AbortSignal,settings?:TtsSettings){
@@ -112,6 +146,19 @@ export class StudioService {
     await this.initialized;signal.throwIfAborted();const {root,project}=this.required();if(candidate){if(candidate.project.id!==project.id)throw new Error('候选工程不匹配');return this.renderer.captureCandidate(root,candidate.project,candidate.sources,this.settings,frame,signal);}
     return this.enqueue(async()=>{signal.throwIfAborted();const {root,project}=this.required(),capture=await this.renderer.capture(root,project,this.settings,frame,signal);return {bytes:await readFile(capture.path),mime:'image/png',sha256:capture.sha256};});
   }
+  /** A trusted review requests the actual candidate, never the currently adopted live preview. */
+  async previewWorkflowCandidate(candidate:import('../workflows/contracts.ts').WorkflowCandidate&{expectedRevision?:number},candidateHash:string,shotIds?:string[],signal?:AbortSignal){
+    await this.initialized;signal?.throwIfAborted();const {root,project}=this.required(),pinned=structuredClone(candidate);
+    const expectedRevision=pinned.expectedRevision??pinned.project.revision,policyFingerprint=productionPolicyFingerprint(pinned.project);
+    if(createHash('sha256').update(JSON.stringify(pinned)).digest('hex')!==candidateHash)throw new Error('候选 hash 与实际内容不一致');
+    const assertAuthorized=()=>{
+      if(this.disposed)throw new Error('插件服务已停止');const current=this.required();
+      if(current.root!==root||current.project.id!==project.id||pinned.project.id!==project.id)throw new Error('候选工程不匹配');
+      if(current.project.revision!==expectedRevision||pinned.project.revision!==expectedRevision)throw Object.assign(new Error('候选审看版本已过期，请重新生成当前版本的审看片'),{code:'REVISION_CONFLICT'});
+      if(productionPolicyFingerprint(current.project)!==policyFingerprint)throw Object.assign(new Error('制作模式或许可已变化，旧候选不能继续审看'),{code:'PRODUCTION_POLICY_CHANGED'});
+    };
+    assertAuthorized();return this.renderer.previewCandidate(root,pinned,this.settings,{candidateHash,shotIds,assertAuthorized},signal);
+  }
   private required(){if(!this.project||!this.root)throw new Error('请先新建或打开项目');return {project:this.project,root:this.root};}
   private assertIdle(){if(this.task?.status==='running')throw new Error('已有任务运行，请等待或取消');}
   private async refreshPreview(){
@@ -121,7 +168,7 @@ export class StudioService {
     try{compileSpec(this.project);}catch{this.previewUrl=null;this.previewRevision=null;this.audioUrl=null;return;}
     this.previewUrl=await this.renderer.preview(this.root,this.project);this.previewRevision=this.project.revision;
     this.audioUrl=await this.renderer.audioPreview(this.root,this.project,this.settings);
-    for(const output of this.project.outputs){output.path=join(this.root,'exports',output.id,'video.mp4');output.url=new URL(`exports/${encodeURIComponent(output.id)}/video.mp4`,this.previewUrl).href;}
+    for(const output of this.project.outputs){output.path=join(this.root,'exports',output.id,'video.mp4');output.url=new URL(`exports/${encodeURIComponent(output.id)}/video.mp4`,this.assetBaseUrl).href;}
   }
   private async refreshAfterCommit():Promise<void>{
     try{await this.refreshPreview();}catch(error){
@@ -135,6 +182,7 @@ export class StudioService {
   }
   private async persist(next:VideoProject,sources:Record<string,SceneSource>={},label='编辑工程',historyGroup?:string){
     const {root,project:current}=this.required();next=structuredClone(next);next.revision=current.revision+1;this.fitAudio(next);
+    if(Object.keys(sources).length)assertProductionOperation(next,'code',Object.keys(sources));
     this.project=await this.store.commit(root,next,sources,{expectedRevision:current.revision,label,historyGroup});
     // Rendering follows the durable commit. A preview failure leaves the new version undoable.
     await this.refreshAfterCommit();
@@ -154,10 +202,36 @@ export class StudioService {
     for(const item of metadata.shotPatches??[])project=updateShot(project,item.id??item.shotId,item.patch);
     if(metadata.audioClips!==undefined)project.audioClips=structuredClone(metadata.audioClips);
     if(metadata.sessionIds)project.sessionIds=[...new Set<string>(metadata.sessionIds)];
+    if(metadata.productionPolicy!==undefined||metadata.schemaVersion!==undefined)throw new Error('制作模式只能由用户在制作要求中确认，普通更新不能修改');
+    if(metadata.videoClips!==undefined)project.videoClips=structuredClone(metadata.videoClips);
     if(metadata.extensions)project.extensions={...project.extensions,...metadata.extensions};
+    this.assertPublicProjectUpdate(current,project);
     this.fitAudio(project);
     const sources=(metadata.sources??[]).map((item:any)=>({shotId:item.shotId,source:parseSceneSource(JSON.stringify(item.source))}));
     await this.persist(project,validateSources(project,sources),String(data.label??'应用分镜与源码变更'));
+  }
+  private assertActiveVisuals(project:VideoProject):void{
+    for(const shot of project.shots){
+      if(usesCodeVisual(shot)&&productionMode(project)!=='unresolved')assertProductionOperation(project,'code',[shot.id]);
+      if(usesVideoVisual(shot)){
+        assertProductionOperation(project,'video',[shot.id]);
+        if(project.videoClips?.some(clip=>clip.shotId===shot.id))assertProductionComposition({...project,shotOrder:[shot.id]});
+      }
+      for(const id of shot.assetIds){const asset=project.assets.find(item=>item.id===id);if(asset?.kind==='video'||asset?.provenance?.usage==='reference_only')throw new Error('动态视频或参考专用资产不能直接暴露给场景源码');}
+    }
+  }
+  /** Edits may change content, never the host's authority or the origin of an existing file. */
+  private assertPublicProjectUpdate(current:VideoProject,next:VideoProject):void{
+    if(next.schemaVersion!==current.schemaVersion||productionPolicyFingerprint(current)!==productionPolicyFingerprint(next))throw new Error('普通保存不能更改制作模式、许可或工程格式');
+    for(const key of ['mediaApplications','workflowApplications','workflowInitializations'])if(JSON.stringify(current.extensions[key])!==JSON.stringify(next.extensions[key]))throw new Error('普通编辑不能伪造媒体任务或协作采用回执');
+    for(const asset of next.assets){
+      const previous=current.assets.find(item=>item.id===asset.id);
+      if(!previous){if(asset.kind!=='text'||asset.path||asset.originalPath||asset.generation||asset.provenance)throw new Error('新媒体必须通过导入或候选采用入口写入');continue;}
+      const oldFields=previous as unknown as Record<string,unknown>,newFields=asset as unknown as Record<string,unknown>;
+      for(const key of new Set([...Object.keys(oldFields),...Object.keys(newFields)]))if(!['name','description','text'].includes(key)&&JSON.stringify(oldFields[key])!==JSON.stringify(newFields[key]))throw new Error('普通编辑不能修改媒体来源、用途、文件身份或探测元数据');
+    }
+    for(const shot of next.shots)if(!shot.visual){shot.visual=current.shots.find(item=>item.id===shot.id)?.visual??{kind:productionMode(next)==='code_animation'?'code':productionMode(next)==='model_video'?'model_video':'unresolved'};}
+    this.assertActiveVisuals(next);
   }
   private fitAudio(project:VideoProject,fitDuration=true):void{
     const check=validateProject(project);if(!check.ok)throw new Error(check.errors.join('\n'));
@@ -278,6 +352,7 @@ export class StudioService {
   }
   private async generateScene(root:string,shotId:string,route:ModelRoute,signal:AbortSignal,instruction?:string){
     const generator=this.generator(root),initial=structuredClone(this.required().project),shot=initial.shots.find(s=>s.id===shotId);if(!shot)throw new Error('镜头已不存在');
+    assertProductionOperation(initial,'code',[shotId]);
     const old=await this.store.readSource(root,shot);const source=await generator.scene(initial,shot,route,signal,instruction?old:undefined,instruction);
     signal.throwIfAborted();await this.enqueue(async()=>{signal.throwIfAborted();this.assertRevision({expectedRevision:initial.revision});const next=this.patched(structuredClone(this.required().project),shotId,source.shotPatch);await this.persist(next,{[shotId]:{html:source.html,css:source.css,js:source.js}},'模型生成镜头',this.task?.id);});
     let checked=await this.renderer.check(root,this.required().project,this.settings,signal);
@@ -306,9 +381,9 @@ export class StudioService {
         case 'current':break;
         case 'create':{
           this.assertIdle();let project:VideoProject;
-          if(data.project){project=structuredClone(data.project);validateStoredProject(project);validateSources(project,data.sources??[]);for(const item of data.sources??[])parseSceneSource(JSON.stringify(item.source));}
+          if(data.project){project=structuredClone(data.project);validateStoredProject(project);validateSources(project,data.sources??[]);for(const item of data.sources??[])parseSceneSource(JSON.stringify(item.source));project=applyProductionPolicy(project,defaultProductionPolicy());for(const asset of project.assets){delete asset.generation;asset.provenance={origin:'unknown',usage:asset.provenance?.usage==='reference_only'?'reference_only':'production'};}project.outputs=[];for(const key of ['mediaApplications','workflowApplications','workflowInitializations'])delete project.extensions[key];}
           else{
-            project=createProject(String(data.title||'未命名视频'),String(data.topic||''));if(data.target)project=updateTarget(project,data.target);if(data.targetDuration!==undefined)project.targetDuration=Number(data.targetDuration);
+            project=createProject(String(data.title||'未命名视频'),String(data.topic||''),data.productionMode==='code_animation'||data.productionMode==='model_video'?data.productionMode:'unresolved');if(data.target)project=updateTarget(project,data.target);if(data.targetDuration!==undefined)project.targetDuration=Number(data.targetDuration);
             if(data.videoStyle&&typeof data.videoStyle==='object'&&typeof data.videoStyle.name==='string'&&typeof data.videoStyle.prompt==='string')project.videoStyle=structuredClone(data.videoStyle);
             if(data.blank===true){project.shots=[];project.shotOrder=[];project.graph={positions:{'film-output':[375,140]},groups:[]};project.extensions.graphEdges=[];}
             project.extensions.brief={profile:String(data.profile??''),preset:String(data.preset??'')};
@@ -317,7 +392,7 @@ export class StudioService {
           if(!data.project)for(const shot of this.project.shots)await this.store.markSourceGood(this.root,shot).catch(()=>{});await this.refreshAfterCommit();break;
         }
         case 'open':{this.assertIdle();const root=resolve(String(data.path)),project=await this.store.open(root);this.root=root;this.project=project;this.task=null;await this.recoverTask();await this.refreshAfterCommit();break;}
-        case 'save':{if(this.task?.status==='running'&&this.task.kind!=='export')this.assertIdle();const {project}=this.required();if(!data.project||data.project.id!==project.id)throw new Error('项目已切换，请刷新后重试');const next=structuredClone(data.project) as VideoProject;this.fitAudio(next);await this.persist({...next,outputs:project.outputs}, {},'保存工程');break;}
+        case 'save':{if(this.task?.status==='running'&&this.task.kind!=='export')this.assertIdle();const {project}=this.required();if(!data.project||data.project.id!==project.id)throw new Error('项目已切换，请刷新后重试');const next=structuredClone(data.project) as VideoProject;this.assertPublicProjectUpdate(project,next);this.fitAudio(next);await this.persist({...next,outputs:project.outputs}, {},'保存工程');break;}
         case 'apply':await this.apply(data);break;
         case 'import':{this.assertIdle();const {root,project}=this.required();const asset=await this.store.importAsset(root,data,this.settings);const next=structuredClone(project);next.assets.push(asset);next.graph.positions[asset.id]=[60,80+(next.assets.length-1)*180];await this.persist(next,{},'导入素材');break;}
         case 'tts':{this.assertIdle();const options:Partial<TtsSettings>={};for(const key of ['endpoint','model','voice','speed','enabled'] as const)if(data[key]!==undefined)(options as any)[key]=data[key];const next={...this.tts,...options};const onlyClearingKey=data.apiKey===''&&Object.keys(options).length===0;if(!onlyClearingKey)validateTtsSettings(next,detectEnvironment(this.settings));if(data.apiKey!==undefined){const credentials=this.credentials();if(data.apiKey){if(!credentials)throw new Error('宿主凭据服务不可用，请使用本地配音或无密钥端点');await credentials.set('DSH_VIDEO_STUDIO_TTS_API_KEY',String(data.apiKey));}else{if(!credentials?.unset)throw new Error('宿主凭据服务无法清除密钥，请在 DSH 凭据设置中清除');await credentials.unset('DSH_VIDEO_STUDIO_TTS_API_KEY');}}this.tts=next;await mkdir(this.baseDirectory,{recursive:true});await writeFile(join(this.baseDirectory,'tts.json'),JSON.stringify(this.tts,null,2));break;}
@@ -338,7 +413,9 @@ export class StudioService {
           const previous=(next.videoClips??[]).find(clip=>clip.id===value.id);
           if(value.id&&!previous)throw new Error('视频片段不存在，请刷新工程');
           const clip:VideoClip={id:previous?.id??randomUUID(),shotId:value.shotId,assetId:value.assetId,trimStart:value.trimStart,speed:value.speed,fit:value.fit,audio:value.audio,...(value.trimEnd!==undefined?{trimEnd:value.trimEnd}:{})};
-          next.schemaVersion=2;next.videoClips=[...(next.videoClips??[]).filter(item=>item.id!==clip.id&&item.shotId!==clip.shotId),clip];
+          assertProductionOperation(next,'video',[clip.shotId]);const shot=next.shots.find(item=>item.id===clip.shotId),asset=next.assets.find(item=>item.id===clip.assetId);if(!shot||!asset)throw new Error('视频镜头或资产不存在');
+          shot.visual={kind:data.overlayCode===true?'hybrid':assetOrigin(asset)==='model_generation'?'model_video':'imported_video'};
+          next.schemaVersion=3;next.videoClips=[...(next.videoClips??[]).filter(item=>item.id!==clip.id&&item.shotId!==clip.shotId),clip];this.assertActiveVisuals(next);
           if(clip.audio==='keep')next.target.audioMode='mixed';await this.persist(next,{},'设置视频片段');break;
         }
         case 'video.clip.remove':{
@@ -364,18 +441,19 @@ export class StudioService {
         case 'preview':{const {root,project}=this.required();compileSpec(project);await this.start('preview',async signal=>{await this.refreshPreview();signal.throwIfAborted();this.progress(.1,'检查资源与关键帧');const checked=await this.renderer.check(root,this.required().project,this.settings,signal);if(!checked.ok)throw new Error(checked.errors.map(e=>e.message).join('\n'));for(const shot of this.required().project.shots)await this.store.markSourceGood(root,shot);},undefined,this.recordedRequest('preview',data),data._retryOf);break;}
         case 'generate':{
           const {root,project}=this.required(),route={provider:String(data.provider??''),model:String(data.model??'')},kind=data.kind as 'storyboard'|'scenes'|'modify';if(!['storyboard','scenes','modify'].includes(kind))throw new Error('生成类型无效');
+          if(kind!=='storyboard')assertProductionOperation(project,'code',data.shotId?[String(data.shotId)]:project.shotOrder);
           await this.start(kind,async signal=>{
             if(kind==='storyboard'){
               const shots=await this.generator(root).storyboard(structuredClone(project),route,signal);signal.throwIfAborted();await this.enqueue(async()=>{signal.throwIfAborted();this.assertRevision({expectedRevision:project.revision});const current=structuredClone(this.required().project);
-              current.shots=shots;current.shotOrder=shots.map(s=>s.id);delete current.extensions.graphEdges;current.revision++;
-              for(let i=0;i<shots.length;i++)current.graph.positions[shots[i]!.id]=[420+i*340,160];current.graph.positions['film-output']=[420+shots.length*340,160];await this.persist(current,Object.fromEntries(shots.map(s=>[s.id,defaultSceneSource()])),'模型生成分镜',this.task?.id);});
+              current.shots=shots;for(const shot of shots)shot.visual={kind:productionMode(current)==='code_animation'?'code':productionMode(current)==='model_video'?'model_video':'unresolved'};current.shotOrder=shots.map(s=>s.id);delete current.extensions.graphEdges;current.revision++;
+              for(let i=0;i<shots.length;i++)current.graph.positions[shots[i]!.id]=[420+i*340,160];current.graph.positions['film-output']=[420+shots.length*340,160];await this.persist(current,productionMode(current)==='code_animation'?Object.fromEntries(shots.map(s=>[s.id,defaultSceneSource()])):{},'模型生成分镜',this.task?.id);});
             }else{
               compileSpec(this.required().project);const ids=data.shotId?[String(data.shotId)]:[...this.required().project.shotOrder];
               for(let i=0;i<ids.length;i++){signal.throwIfAborted();this.progress(i/ids.length,`生成镜头 ${i+1}/${ids.length}`);await this.generateScene(root,ids[i]!,route,signal,kind==='modify'?String(data.instruction??'改进画面与动作，保留内容'):undefined);}
             }
           },data.shotId,this.recordedRequest('generate',data),data._retryOf);break;
         }
-        case 'export':{const {root,project}=this.required();compileSpec(project);const snapshot=structuredClone(project);await this.start('export',async signal=>{const result=await this.renderer.export(root,snapshot,this.settings,signal,(p,m)=>this.progress(p,m));signal.throwIfAborted();await this.enqueue(async()=>{signal.throwIfAborted();const current=structuredClone(this.required().project);current.outputs.push(result);await this.persist(current,{},'导出成片记录');if(!result.url&&this.previewUrl)result.url=new URL(relative(root,result.path).split('/').map(encodeURIComponent).join('/'),this.previewUrl).href;});},undefined,this.recordedRequest('export',data),data._retryOf);break;}
+        case 'export':{const {root,project}=this.required();assertProductionComposition(project,{forExport:true});compileSpec(project);const snapshot=structuredClone(project);await this.start('export',async signal=>{const result=await this.renderer.export(root,snapshot,this.settings,signal,(p,m)=>this.progress(p,m));signal.throwIfAborted();await this.enqueue(async()=>{signal.throwIfAborted();const current=structuredClone(this.required().project);current.outputs.push(result);await this.persist(current,{},'导出成片记录');if(!result.url&&this.previewUrl)result.url=new URL(relative(root,result.path).split('/').map(encodeURIComponent).join('/'),this.previewUrl).href;});},undefined,this.recordedRequest('export',data),data._retryOf);break;}
         case 'history':return {ok:true,value:await this.store.history(this.required().root)};
         case 'undo':case 'redo':{this.assertIdle();this.project=await this.store.moveHistory(this.required().root,endpoint,data.expectedRevision??this.required().project.revision);await this.refreshAfterCommit();break;}
         case 'rename':{this.assertIdle();if(typeof data.title!=='string'||!data.title.trim())throw new Error('工程名称不能为空');const next=structuredClone(this.required().project);next.title=data.title.trim();await this.persist(next,{},'重命名工程');break;}

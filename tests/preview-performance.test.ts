@@ -1,3 +1,4 @@
+import {createCodeProject as createProject} from './fixtures/production.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -8,7 +9,7 @@ import {randomUUID} from 'node:crypto';
 import {build} from 'tsdown';
 import {chromium} from 'playwright-core';
 import {ProjectHub} from '../src/host/project-hub.ts';
-import {createProject} from '../src/core/index.ts';
+
 import {detectEnvironment} from '../src/host/renderer.ts';
 import type {HostContext} from '../src/host/platform.ts';
 import type {StudioSnapshot} from '../src/shared/types.ts';
@@ -34,7 +35,8 @@ test('preview keeps one live iframe, loads cached PNG thumbnails and does not re
   });
   try{
     const project=createProject('缩略图交互验收');project.shots=project.shots.slice(0,2);project.shotOrder=project.shots.map(shot=>shot.id);project.shots.forEach(shot=>shot.durationFrames=12);project.target={width:640,height:360,fps:{num:12,den:1},audioMode:'none'};project.targetDuration=2;
-    const snapshot=await hub.call<StudioSnapshot>('create',{project});
+    const created=await hub.call<StudioSnapshot>('create',{project});
+    const snapshot=await hub.call<StudioSnapshot>('production.set',{projectId:created.project!.id,expectedRevision:created.project!.revision,mode:'code_animation'});
     const entry=path.join(fixtureDirectory,'fixture.tsx');
     await fs.writeFile(entry,`import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {Preview} from ${JSON.stringify(path.resolve('src/client/Preview.tsx'))};
       const snapshot=${JSON.stringify(snapshot)};const controller={api:{call:async(_endpoint,payload)=>{const response=await fetch('/rpc',{method:'POST',body:JSON.stringify(payload)});if(!response.ok)throw new Error(await response.text());return response.json();}},notify:message=>{throw new Error(message);}};

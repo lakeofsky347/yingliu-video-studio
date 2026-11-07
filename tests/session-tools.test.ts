@@ -38,6 +38,7 @@ test('session model reads manual parameters and revision before applying a local
   const base=await mkdtemp(join(tmpdir(),'video-session-edit-')),hub=new ProjectHub(context,{baseDirectory:base}),tools=createSessionTools(context,hub);
   try{
     const created=await run(tools,'video_project',{action:'create',title:'手动与对话编辑'},'session-edit');
+    await hub.call('production.set',{projectId:created.projectId,expectedRevision:created.revision,mode:'code_animation'});
     const before=await hub.call<StudioSnapshot>('current',{projectId:created.projectId}),shotId=before.project!.shots[1]!.id;
     before.project!.shots[1]!.params.text='用户刚刚手动改过';await hub.call('save',{project:before.project});
     const current=await run(tools,'video_project',{action:'get'},'session-edit');assert.equal(current.shots[1].params.text,'用户刚刚手动改过');assert.ok(current.revision>created.revision);
@@ -82,6 +83,7 @@ test('background render is a session-owned DSH job with progress and cancel afte
   const hub=new ProjectHub(ctx,{baseDirectory:base}),tools=createSessionTools(ctx,hub);
   try{
     const project=await run(tools,'video_project',{action:'create'},'session-job'),located=await hub.resolveProject({projectId:project.projectId});let cleaned=false,entered!:()=>void;const checking=new Promise<void>(resolve=>entered=resolve);
+    await hub.call('production.set',{projectId:project.projectId,expectedRevision:project.revision,mode:'code_animation'});
     located.service.renderer.check=async(_root,_project,_settings,signal)=>{
       assert.ok(signal);
       entered();
