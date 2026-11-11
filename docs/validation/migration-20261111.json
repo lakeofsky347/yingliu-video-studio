@@ -1,0 +1,392 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-11",
+  "scope": [
+    "M00",
+    "M01",
+    "M02",
+    "M03",
+    "M04",
+    "M05",
+    "M06",
+    "M07"
+  ],
+  "branch": "codex/agent-feature-migration-20261111",
+  "baseline": "ae05700953a4a92b7c6f56bca64b7bf89a08ec0f",
+  "donor": "ef3fc82e62ff57c8654e827e4e75b8eb7c7f0fc6",
+  "packageVersion": "0.7.0",
+  "releaseStatus": "unreleased",
+  "tests": {
+    "command": "npm run verify:compat",
+    "tests": 462,
+    "passed": 461,
+    "failed": 0,
+    "cancelled": 0,
+    "skipped": 1,
+    "typecheck": "PASS",
+    "build": "PASS",
+    "hostCompatibility": "PASS",
+    "log": "artifacts/migration-20261111/acceptance-final.log",
+    "sha256": "cee195dcc4a1348b147f384d4777a95a6e4ae9e3e8ca59d5bd0c3c02ce36f636"
+  },
+  "benchmark": {
+    "date": "2026-11-11",
+    "timeZone": "Asia/Singapore",
+    "status": "PASS",
+    "method": "Sequential single runs on the same machine, baseline first then current; 60 frames each at 1280x720 and 1920x1080. Same corrected explicit-code_animation fixture and same installed dependencies; each run imports its own complete application source including ProjectStore and VideoRenderer.",
+    "context": {
+      "baselineCommit": "ae05700953a4a92b7c6f56bca64b7bf89a08ec0f",
+      "baselineRoot": "/private/tmp/yingliu-bench-ae05700-k2c88w6p",
+      "currentRoot": "/Users/skylake/Work/Projects/code-video/plugins/dsh-video-studio",
+      "sameDependencies": "/Users/skylake/Work/Projects/code-video/plugins/dsh-video-studio/node_modules",
+      "benchmarkScriptSha256": "fedc1ca1551a10a8957183aaabdba8fc27fb523efbea9641086d09f1bd4c8a5c",
+      "baselineScriptAdaptation": "Only the current explicit-code_animation benchmark fixture was copied; all imported application source including ProjectStore and VideoRenderer is baseline ae05700.",
+      "currentBranch": "codex/agent-feature-migration-20261111",
+      "currentHead": "ae05700953a4a92b7c6f56bca64b7bf89a08ec0f",
+      "currentSourceHashes": {
+        "src/host/renderer.ts": "9af0b8b08e1b1f0589220901856138548c95f4ac7095540f833b28940912c3d3",
+        "src/runtime/browser.ts": "82d70d6722e7d68a3d699768fb8181af2579e3adff75899a34ebf820716ad3e9",
+        "src/host/store.ts": "2e2b8382e128db8125df04f4c60896b8de6b5fd9f05e7a4f5c5e39e8656f15f0",
+        "src/core/index.ts": "0c8737b2b66fdca765643436aeabc10ac441fd654c39c3d4e277053af484bb58"
+      }
+    },
+    "sourceHashesUnchangedDuringRun": true,
+    "environment": {
+      "node": "v26.8.2",
+      "platform": "darwin",
+      "arch": "arm64",
+      "tools": {
+        "browserPath": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "ffmpegPath": "/opt/homebrew/bin/ffmpeg",
+        "ffprobePath": "/opt/homebrew/bin/ffprobe",
+        "browserAvailable": true,
+        "ffmpegAvailable": true,
+        "ffprobeAvailable": true,
+        "platform": "darwin",
+        "localSpeechAvailable": true
+      }
+    },
+    "cases": [
+      {
+        "width": 1280,
+        "height": 720,
+        "frames": 60,
+        "sampledFrames": [
+          0,
+          14,
+          29,
+          30,
+          44,
+          59
+        ],
+        "sampledRgbaHashesEqual": true,
+        "sampledFrameCount": 6,
+        "baselineElapsedMs": 1671.989791,
+        "currentElapsedMs": 1672.8390829999998,
+        "elapsedChangePercent": 0.050795286225513436,
+        "baselineCaptureMeanMs": 10.817148124999981,
+        "currentCaptureMeanMs": 10.96242308333333,
+        "captureMeanChangePercent": 1.3430060923137255,
+        "baselinePeakTreeRssMiB": 1047.234375,
+        "currentPeakTreeRssMiB": 1074.1875,
+        "peakTreeRssChangePercent": 2.5737433418378863,
+        "qa": "PASS"
+      },
+      {
+        "width": 1920,
+        "height": 1080,
+        "frames": 60,
+        "sampledFrames": [
+          0,
+          14,
+          29,
+          30,
+          44,
+          59
+        ],
+        "sampledRgbaHashesEqual": true,
+        "sampledFrameCount": 6,
+        "baselineElapsedMs": 2001.675416,
+        "currentElapsedMs": 2115.7015,
+        "elapsedChangePercent": 5.696532169429425,
+        "baselineCaptureMeanMs": 15.833067694444468,
+        "currentCaptureMeanMs": 15.984980902777806,
+        "captureMeanChangePercent": 0.9594679392840755,
+        "baselinePeakTreeRssMiB": 1373.796875,
+        "currentPeakTreeRssMiB": 1378.03125,
+        "peakTreeRssChangePercent": 0.3082242416660108,
+        "qa": "PASS"
+      }
+    ],
+    "limits": [
+      "One observation per size and version; no repeat-run variance estimate. Elapsed deltas are observations, not general performance conclusions.",
+      "Exact decoded RGBA hashes are compared for the six recorded keyframes per case, not all 60 encoded frames. Both runs also pass their internal backward-seek and cold-reload checks.",
+      "Peak descendant RSS is sampled every 250 ms and includes shared pages; it is an approximate measurement, not a demonstrated peak memory reduction.",
+      "Baseline and current run sequentially using the same dependencies, but there is no control over unrelated machine activity."
+    ],
+    "artifacts": {
+      "bench-baseline.json": "370dc08d82f0bf8b465391f9e8ce60b7f084a72879db6fbff5828e5e9393f458",
+      "bench-current.json": "1704878ae7f2e38f9ec49be642843c533b83c55c1823c32b13d752513d306152"
+    }
+  },
+  "boundaries": {
+    "paidProviderCalls": 0,
+    "formalDesktopInstall": false,
+    "remotePush": false,
+    "npmPublish": false,
+    "nativePlatforms": [
+      "darwin-arm64"
+    ],
+    "windowsRenameTests": "fault-injection only"
+  },
+  "codeCommit": "62564cc530a1929dbbc264af4bea0f606c366fd5",
+  "actualHostUi": {
+    "status": "PASS",
+    "surface": "official isolated DSH Web on macOS",
+    "realProvider": false,
+    "checks": [
+      {
+        "name": "actual isolated host restart retains approved plan, audio and historical MP4",
+        "evidence": {
+          "projectId": "film-86796246-527a-473e-ab57-ec78ae706d8a",
+          "revision": 5,
+          "outputs": 1
+        }
+      },
+      {
+        "name": "edit character, assign shot, save draft, explicitly approve persisted plan",
+        "evidence": {
+          "version": 2,
+          "hash": "ed16508d6b72592e17fe6c4038d654eecab81b6b482dc00afe8f53323b11bbc5"
+        }
+      },
+      {
+        "name": "synthesize local chime through original audio panel and register one playable clip",
+        "evidence": {
+          "assetId": "6534b818-80de-454b-b0eb-ff22058ed11d"
+        }
+      },
+      {
+        "name": "local QC captures six actual first/middle/last frames and displays untested scope",
+        "evidence": {
+          "revision": 4,
+          "candidateHash": "a16f5fc57c5fc695f68389976b4e911c8044fe36a5e5ccce5a240069933267f9",
+          "frames": [
+            {
+              "shotId": "shot-304f4fb1-2b41-4c0a-b381-5c334e04103e",
+              "frame": 0,
+              "sha256": "9848f3f93968dc76d98d3676bf765bfe5f0c06226700b230d2a696ce603efcf6"
+            },
+            {
+              "shotId": "shot-304f4fb1-2b41-4c0a-b381-5c334e04103e",
+              "frame": 5,
+              "sha256": "b1afb3afa69b81dde504930b2f5ee8b859914c572274d216181cce55074d3450"
+            },
+            {
+              "shotId": "shot-304f4fb1-2b41-4c0a-b381-5c334e04103e",
+              "frame": 11,
+              "sha256": "b1afb3afa69b81dde504930b2f5ee8b859914c572274d216181cce55074d3450"
+            },
+            {
+              "shotId": "shot-7fcd8964-8601-4804-855b-d42b25a18f63",
+              "frame": 12,
+              "sha256": "d4af78de4b0c1914614bc8ea18873ff38c97a241b66b4ce649cdd70276648d68"
+            },
+            {
+              "shotId": "shot-7fcd8964-8601-4804-855b-d42b25a18f63",
+              "frame": 17,
+              "sha256": "3c7d818b8ac12d9da000c816203c5486240d114fc26899c6190c48534b85a413"
+            },
+            {
+              "shotId": "shot-7fcd8964-8601-4804-855b-d42b25a18f63",
+              "frame": 23,
+              "sha256": "3c7d818b8ac12d9da000c816203c5486240d114fc26899c6190c48534b85a413"
+            }
+          ]
+        }
+      },
+      {
+        "name": "shared export QC gate produces playable AAC MP4 and full FFmpeg decode",
+        "evidence": {
+          "path": "/Users/skylake/Work/Projects/code-video/plugins/dsh-video-studio/artifacts/migration-20261111/dsh-projects/选择性迁移-本地验收-film-2ddba845-6509-4b59-910b-bc497e02eec3/exports/ed9fc65f-3bcb-4df6-ab43-4ce87bc7ca0d/video.mp4",
+          "sha256": "5837d1da71067c35bb116d2cdafd82e086a1b5a248ba0f2d5f96d02c12d167b6",
+          "qa": "PASS",
+          "streams": [
+            {
+              "codec": "h264",
+              "type": "video"
+            },
+            {
+              "codec": "aac",
+              "type": "audio"
+            }
+          ]
+        }
+      },
+      {
+        "name": "client reload retains approved director document and audio/output project state",
+        "evidence": {}
+      },
+      {
+        "name": "compact desktop preserves original layout without document overflow",
+        "evidence": {}
+      }
+    ],
+    "errors": [],
+    "startedAt": "2026-11-11T03:30:59.945Z",
+    "completedAt": "2026-11-11T03:31:13.312Z",
+    "evidence": "artifacts/migration-20261111/ui/verification.json",
+    "sha256": "cba43b5dbb4964e39637694e350abf4687e3bf61df5e4773922a2d842deca3e2",
+    "visualReview": "director plan, local quality scope, local SFX, historical output, and compact layout screenshots inspected"
+  },
+  "verifiedSourceHashes": {
+    "package-lock.json": "6be650cf00ea4a055d129c545f60059bf9911e2d9b311be1776c97427c4be15b",
+    "package.json": "e4db6b6cced57ca557a87cf963d97be843e6f5759c13a81209ee76d33484d531",
+    "scripts/benchmark-render.mjs": "fedc1ca1551a10a8957183aaabdba8fc27fb523efbea9641086d09f1bd4c8a5c",
+    "src/client/AudioPanel.tsx": "6f9b540f2cce57f9a16c41b1f62caabd77adbca6d87786af078910b906a43146",
+    "src/client/Dialog.tsx": "fa65e35ccbc42561841506f4bd2607be8b8a5ecc1a3a40554e4829041a6d306a",
+    "src/client/DirectorDocumentPanel.tsx": "534fb0038d938ba430bd6713d99830593403a8bc9fd1fe80a38da4537a1abd89",
+    "src/client/ExportPanel.tsx": "49bf60039ec161b2de16a53b38fd74242910fdaddb62289b251b0d3fd73afe2c",
+    "src/client/ExportQualityReport.tsx": "e830a387d59ce6b89a17765a7ce14d34d980e78619fffd714e08b8267a861cbb",
+    "src/client/LocalQualityPanel.tsx": "95b14a560f96254888ed6622839fb38df21f502b0f1e2ed27acbdea0220c8ebc",
+    "src/client/LocalSfxPanel.tsx": "5f75ac47a782568ca15c4d2c6e4a522a38b83e55ac224d46b039648206a5adae",
+    "src/client/MediaPanel.tsx": "fbf24660766dc2a793074c8929cae355759d06da5c3ae95546b594f5b5891065",
+    "src/client/ModelCenter.tsx": "be533e816946e7cd0789108cc4f3d137f6096f06f9917dabdedc0c8b14140326",
+    "src/client/Preview.tsx": "cd10198ed368b6a23bd79c88cd1828d51a83a91922b28ca1fe4f5af4dd874190",
+    "src/client/ProductionPolicySettings.tsx": "bb8b0fd480bd662cddf2ca62b7d9e5e0cf17d6107cce1045484f38c4272e58c3",
+    "src/client/ProjectHome.tsx": "8fb5c7e0d474f1a5022c8f1165aff135f4b3ba04d7e5b955e00eb3b4d97aacd1",
+    "src/client/SessionPicker.tsx": "f6f6b152a9654691b8814939ca28c2c48614fa2d98640cffd6d3e964d89abf0b",
+    "src/client/SourceEditor.tsx": "acc1e2200250969384010afa3b812aa4aacae6ec003acf97f9558526fe31ef93",
+    "src/client/Studio.tsx": "364c3f91db4e2f8ae1469f3c5c829eb697aeb8da1dc951b3a8fb2999671dc5b9",
+    "src/client/StyleLibrary.tsx": "3547d8d606c1c06f5d1ae2a21e41062550dfe334c0178ec9ca8147f340065a08",
+    "src/client/TaskPanel.tsx": "17ac814a05503885e26d62d2546ce1c19f57bb1e9972cd158b730a505decc9c8",
+    "src/client/VideoStudioIcon.tsx": "cc5a1555bf2ed51e7a06919428c33b272d11df762934d71e97ff56ef99a33351",
+    "src/client/WorkflowPanel.tsx": "6b6ae6b9fbc66357159fbddb7885c653c91ca063b7fe674648ea8443809d9021",
+    "src/client/controller.ts": "7636c1f784389018906f291b72813aea35ab90b742d79b905b747b9fd1bc74c1",
+    "src/client/director-drafts.ts": "2c6f0b0b206a8bf7598936d025d65f5ca32e1060eddf4956ddeb37bdb023186d",
+    "src/client/graph-adapter.ts": "ca2bf0a648ac4e1ee54064a843b5bd91c77bac4902db25ffe1e47c00272d3a63",
+    "src/client/index.tsx": "e752c064bfcf602d2f24f7d64eb8f0c325180d815ed8547e39742da6c9252bbf",
+    "src/client/output-settings.tsx": "a149d048723a99bcb9dff5fb016574fec446386b78194d2425b3aab86de3a9d7",
+    "src/client/project-format.ts": "8972f33555b57e990e5de696d030c23abe4e576ca7271f21c9a0bed6fcc484d6",
+    "src/client/session-directory.ts": "74885799b3e86d07e4615459b62f097d5ebb0e1f1a0c8a4b608136b974a6462c",
+    "src/client/session-host-adapter.ts": "5f06afe6b7715a5f50203b29f8d9503c3f238ec5200af70871e5332afc644c53",
+    "src/client/source-drafts.ts": "7457f98f90d4d9924a13bbfb66265c3dd077ef81e0fe25b376f2ca4c31c04c04",
+    "src/client/style-import.ts": "2e9971be18b9df1ea65527c4216cc0fe0328c2c6a6b6e4b962d44450b49b2262",
+    "src/client/styles.css": "f34e31c8a7871f6176d1c0b4d96e2c9998d11c5859fa7507846a02b0a9f19de5",
+    "src/core/default-source.ts": "339a6cbbeabcdcd84415164d8a6565a1fa15f336316ccf9dc42ebf850a2d5367",
+    "src/core/index.ts": "0c8737b2b66fdca765643436aeabc10ac441fd654c39c3d4e277053af484bb58",
+    "src/core/production-policy.ts": "08c3ef1663353b244ab88d9d0fbdaa83851fa73d0eecf44e7a33e6080823efe9",
+    "src/core/project-paths.ts": "9bbf22d95dd8060c4a8a5954b7ea557ef1a0bad36f62b023e0a2766959b44424",
+    "src/director/contracts.ts": "873744f33e787db21e33347a3f3c8f88581b32987dc10b16fd9d391f8be5844d",
+    "src/director/document.ts": "86f6fedb38c5c789cb50a51980a0b3185fa53267a8624189cb5cea084b8c69fd",
+    "src/director/index.ts": "39ab9b18a04b5507b2d331c8ad6298fee03f05a148ff37d239fbe67216019e09",
+    "src/director/rules.ts": "9017d5e6ece1228f1c65c19d2d9474e7429d8cb592599420be19816498b48727",
+    "src/host/atomic-rename.ts": "c1c97d98ab51fa208f04931f3a8a8f5982591a872e8e727103b3dae1c4418f32",
+    "src/host/audio.ts": "ca41bd03609edaf20c1db1960516e6de5e906d2422b722e22c6aacfbb919dfb9",
+    "src/host/directory-sync.ts": "dbb644af94f90b6461dc7ee57757f0a344772e0d361ceb83541227c87c5c5600",
+    "src/host/file-opener.ts": "506e6ef9ba9e03295549de2ca431fe5e56bb75b73201be2cbcfce92c51984911",
+    "src/host/generator.ts": "6a47b3cc9c5a2093ed52147ebb87caba200e319d17a44422549e3a0f5fc84270",
+    "src/host/index.ts": "e6b5ebc7416ffd2ed683d6d1bc9cb8775f0b2b69327447ad47a761f7471cb5d9",
+    "src/host/local-import.ts": "0540df6bd4721d0f49fe98a3b2d4b3729c647282e5a72aca308855201265430c",
+    "src/host/platform.ts": "ec575dca05a92408d3e1babbf1fed28bfbf37fd85bd5dd9e408deb622a7576af",
+    "src/host/project-hub.ts": "7e7d45f34912e561604d704a0446076106220e6f7aead79d54078a2105ee604c",
+    "src/host/renderer.ts": "9af0b8b08e1b1f0589220901856138548c95f4ac7095540f833b28940912c3d3",
+    "src/host/service.ts": "4041f3f64403eb6257c270d2334ee4ea740389ecf77c2d8ba507c0c16b3cdb74",
+    "src/host/session-tools.ts": "8200aafd82933a0362a564609fb082ef4bb9a54c8032fb6b5b174178a14817e8",
+    "src/host/store.ts": "2e2b8382e128db8125df04f4c60896b8de6b5fd9f05e7a4f5c5e39e8656f15f0",
+    "src/host/tool-environment.ts": "a9f69e3aed1bd9502fdba208916fa0b3da0770e15063046da74031fd547f3332",
+    "src/jobs/contracts.ts": "97fa72ec900566b87ce4c8df9353ffcf94734b289029fdf94aa270a99955b05d",
+    "src/jobs/download.ts": "4cce92eea48fe7d5f6171baa40e04fcc9545cb16e1aaa2cdb9800b44ae201c85",
+    "src/jobs/media-tasks.ts": "41c16e900fde31e0d4532bde3d2ad5970cc8ed6eb274a23f663361b2246fb388",
+    "src/media/inspect.ts": "eda38289c61decfbb5c2503ec0463ca80600cb6771602af950dfcf8f1600c87e",
+    "src/media/local-sfx.ts": "96a8fd367e307e0af5fe2125284a2710860b36ea809af3c7dd656c0d61957d05",
+    "src/media/video.ts": "6e8d624a38f71304d8d56ed47fe19a784e0d733b328eab00c97093b8dbac4841",
+    "src/models/adapters/media.ts": "0ababe2911227aab6663cad6698416b7ceabe4536fdb5bfd140a9a6e58675f31",
+    "src/models/adapters/official.ts": "138fc13efcac7c6f59ac4a66a0052fc24c3eba06e73b06984607a906d1aef6b8",
+    "src/models/capabilities.ts": "91ef11a2606a8b3b242f111d17f0badbbff2c29d55afac75d670ca43f32bf438",
+    "src/models/contracts.ts": "a29e5c9155f641ee2ea9bd059ff629107ab952d85ffb924e0695c9c92dd9d90d",
+    "src/models/protocols.ts": "48b8d5f185bf6763eec65620f135af07ef4948cc21f3a14fe063fca67819f73c",
+    "src/models/registry.ts": "e2b338cdc0c333d331fded44c7414ac841e6edd85d0a4f72d18b34cc6d34232b",
+    "src/runtime/browser.ts": "82d70d6722e7d68a3d699768fb8181af2579e3adff75899a34ebf820716ad3e9",
+    "src/shared/durable-file.ts": "8a5e4b624d9526ae08786c5dc48087f8bd35752a26e9fe8017207befcc9bbbaf",
+    "src/shared/host-contract.ts": "7d7266f9e8c7f035f9daa64fdc5e5287c63ba0c2e69d953ff54f518b25f42416",
+    "src/shared/task-diagnostic.ts": "91a91f7f7302536201ccd68c0d8831ab33205b3a45d4143b16b8f95c261f8675",
+    "src/shared/tts-capability.ts": "74b17bf76d8665648d1c38c6b10769e6a23355cbda20600057f2b5ef39d7ab97",
+    "src/shared/types.ts": "84aafd2ba3634aa59f60746df25ce134c638ac4eecb4ad957fb4d136c27765fe",
+    "src/workflows/contracts.ts": "0ebeaa19dfbb9ed6625e81d9b0823ce541f8fe3668fef7a3737a4747e8909092",
+    "src/workflows/director-plan.ts": "a2dd4f4396723f0eb231cadd92460589e220e8c86ffa9bf02412ab9ccc090445",
+    "src/workflows/local-quality.ts": "ccb747166dbce5f39064e96054b1f5bcb5bc1132e8ca1b8f4be85b683a6fccf6",
+    "src/workflows/quality.ts": "60a7392cf51ca667c92a648c4b5b6ce24b2987d628ff27c4376260a62d48076b",
+    "src/workflows/service.ts": "771f93bfdc94e3f02efa99878bdcd1c6375b66bf4aed30b25906a1e49f8180f2",
+    "tests/atomic-rename.test.ts": "5025eae48af6f03a13ff8d859e0e521d3427cda1181b69e27587eb30d118ed87",
+    "tests/audio-service.test.ts": "586a76bb1ce2752efaf06c693eefb9e9a7252225d88c0db467445b5057a95d85",
+    "tests/audio.test.ts": "2997809448b191bcdfd7360f325c69dcc8d13df61913f3dbfde810c932c1edcf",
+    "tests/candidate-playback.test.ts": "fdab00cbd23a3714a001de273f37f9a05eaa348724190437233acbb144013a01",
+    "tests/candidate-review.test.ts": "fd0d81eeb5a27a9837f626d0c6352315c00cb12102b1789ea5547fc588eb9c12",
+    "tests/client-bundle.test.ts": "c4fba294537b34a549d3116c92fe0225f9c3ff6c94212b9b218ecd535966b378",
+    "tests/client-icon.test.ts": "87efbf25d3ae693c37d2033b549c664442c4f9015f11ecc6c9a688d91f425800",
+    "tests/client-media.test.ts": "16c95efcc086cbdb515a712d4fd20d385015e5ca7baf183986d9a8279fae6b23",
+    "tests/client-runtime-lifecycle.test.ts": "c53ec63b5eef29e11b7eb23363a2ad1eae5f0207f368efa69b43ba21b2966ea5",
+    "tests/client-settings.test.ts": "52b2b864f80fded90acd97c900550f1beb904995ccc4cfff195490588dce7691",
+    "tests/client-v3.test.ts": "6901397db2771f43b89cbe06b672c2c87e950a9670c463036fa7334bbf054d73",
+    "tests/controller.test.ts": "26a4892a1722d4e5ccd9739324348adebfe6e94ad1c4f37554112de53247bc04",
+    "tests/core.test.ts": "335d4ea5fa6768a18333bd210e701201637a75b4fc3b196120676addaabb4273",
+    "tests/development-scripts.test.ts": "9531b655c922d9c36048a8c9638c70f28cfd9d8f2dbeee0051ac9546eac9af07",
+    "tests/director-draft-history.test.ts": "a2e6aeef6bda7ade7e751d6da0640bebc7b272a5b2423d13dbd98693bfee6e08",
+    "tests/director-reference-scope.test.ts": "3864eef32955076d317c893a339f8ac6042ff56469ecef5ca903de0ab26cfec2",
+    "tests/director.test.ts": "4c1f21ae44555f158f0fc0f9ebbf8a77ff6299734ec6c391228dc7194da55dfe",
+    "tests/export-quality-binding.test.ts": "b3d6f8545c36cd40e34e364492f7e821332b8e1aecb3de2485681ec264755bdd",
+    "tests/export-revision.test.ts": "e65a056064c4dccf305301a545187284263716244f5dc644d5291ac0d226c52c",
+    "tests/file-opener.test.ts": "5376f9461257a892c0d9ddd47351b64dfa65af87c7860e0ab6153f641b2d0c21",
+    "tests/fixtures/fixture-response.mjs": "38d40737031489b1804e44e865fae195404601103121a84ce15488c364611eb6",
+    "tests/fixtures/home-team-provider.mjs": "6848b7899a9396491090d48739c51f0fd6c1822bca7344c5487b8fc1f29d5c42",
+    "tests/fixtures/preview-provider.mjs": "a9cba40897b0b775ec25e45eae150ece209febd173c9251d10ced4219423ab7e",
+    "tests/fixtures/production.ts": "d271444a0ade862e5c66d836284fe1b43c17b3df848609737e9d4fdd117d275a",
+    "tests/fixtures/session-provider.mjs": "0092c78b3943ca9571cf5c2ee592c0e60ed37a38e087fe61b54fea1c592bb03b",
+    "tests/fixtures/symlink.ts": "d77bf0e07157788e994501d4830500c190e93f3f2c4bd207dad1f7005bf716d3",
+    "tests/home-controller-v04.test.ts": "1783efcf77a15b5b813ab18a65b0bbf3333f9fbd056d1ac709577ea22ca07fa4",
+    "tests/host-contract.test.ts": "4928aff099e0d62a77ae96d1c10d9d8dc2122568ec59c164a2ea5dc79e441762",
+    "tests/local-feature-host.test.ts": "21abdf696d54762c103ae9de815509a5b584396edb90b84cc8488258c50b4d68",
+    "tests/local-features.test.ts": "6ddd9e5f1caa073ade63fb08e1c298efff248aabfe590541023a24a6b80e1395",
+    "tests/local-sfx-native.test.ts": "c8da16590166f42f3b6d3fb09899fafe8a0139e0d1d2ed5d10dfcafc393029c0",
+    "tests/media-capability-boundary.test.ts": "6252c1845a649d1e47e0be9409e11b08c1feb4436521e371c1d128f6e8f01e32",
+    "tests/media-gateway.ts": "f77e9254eb2ac67407992fa1bd5378f858144b067664c917f00c5041e5c622b7",
+    "tests/media-sync-recovery.test.ts": "5533da4262e7fb866650fb3a2c0adc2d1714fcc34a0117f6cb3ba365a6a8aad2",
+    "tests/media-tasks.test.ts": "679a0823d2423dfe413c76d06ec4151eb340637b8e3347e348e3dbd68833d16b",
+    "tests/migration-reliability.test.ts": "672ca1b94aaffff111f051714954027c623773df8213812608d3ada6166264ac",
+    "tests/model-capabilities.test.ts": "24e45f2883f811547f6e79d2b365b6c6265b81e976c638e1b6b2a1be2312afb0",
+    "tests/model-media-integration.test.ts": "740a376f6eff8e908a920acccf153d9c0fba21e44820b50f67bc2f290e35295b",
+    "tests/model-pool.test.ts": "5af4fa706c4e95e2251c719359552e960db1a995b42782fc04d35c0d1eb71d30",
+    "tests/model-registry.test.ts": "ee994df8fa8435e238f2d4c636cda7a82a3fb4c2d3f662c76560c5adf7affed7",
+    "tests/preview-performance.test.ts": "f5e2abd828209bd230b910f1d1bbd46171548e795af244d7d81ee91b65905a3f",
+    "tests/production-boundary.test.ts": "50bb48e39c99b30a94abec9679cb4c64ad9fe0ff0f3d34052eecdbd0cb052652",
+    "tests/production-policy.test.ts": "3b595416aab46bae872fd6890d794edf343828e7444240b1b095f1538e1c48d2",
+    "tests/project-library.test.ts": "2287d74dab253a63ab73f683f03d864e2fac1d7d0c104cd7cfec9c2a993eca75",
+    "tests/project-paths.test.ts": "c3d48c3b37462857034c9d0db073fd59618b213a3ea8a8cdb23d2b73e1f8869d",
+    "tests/render-performance.test.ts": "ea13c7baa5fe9528a19503b9b3c5627e382d77c1e281d12a20282fc14371f2fd",
+    "tests/renderer.test.ts": "570119b9e180d96b5a57be3de9c22409899cb172cf3e41058c5e6750878b7272",
+    "tests/runtime-publication.test.ts": "ac409062d6843f69bb5b4265d241810c7cfd3669e7edd96075276a1dbd71181a",
+    "tests/service-persistence.test.ts": "8d89f23ed0bf64d2a81d0c525b5fde543c74af7a104c1c4e6a5055e02014777f",
+    "tests/service.test.ts": "cc694e3138447740402816d3f14d9689d100637ceb25cfdcc126887fbfc11ac1",
+    "tests/session-directory-v04.test.ts": "dadb74f992e47112fb7183b3ff87399ef82014d607b3bf48e3f5aee03c85a17a",
+    "tests/session-relations.test.ts": "c97f9ab2667160b54c93b9b3f57c82b2a24826ef9ecc0f64c96680e79f062cb7",
+    "tests/session-tool-migration.test.ts": "40f802d99933bb15fdb7dff8f4d51548a48563b5eae3045f5195bb6216526c5f",
+    "tests/session-tools.test.ts": "15b8a2e9dad4123c1d6a946b90278bd62d380b1d3ef776abb2f9121c4f746792",
+    "tests/source-drafts.test.ts": "fb61c5c3545f4ffffec42636b78d5def2a1a32da5a8ecc0178f919ceca640125",
+    "tests/speech-streaming.test.ts": "d9b557a4c231b2c3ab9540fdffd6b3b3a1e119fe9ee75d5c7209f143ce599ca8",
+    "tests/storage-platform.test.ts": "20a6b31fd39f8e5c54eb1935b490e817b4643a0a3a3af9533bf0e7bfa1cda181",
+    "tests/storage.test.ts": "be6282f64dbcb559524227cb8a30ec8fcf3b1689670dd98a7c0ba961898bfdec",
+    "tests/style-import.test.ts": "473b8ecbb3e9d865652c2682a28a380309050801cae7b6871a2e1d4de1390bff",
+    "tests/tool-environment.test.ts": "63d2e5219687dca42fe38cf35035afb792cebbdf80428cf6eb90ea3234bd27d4",
+    "tests/tts-capability.test.ts": "63cb587f46cc10b82397cae599b055985e521544a4dd2b050b0fc2da6686e374",
+    "tests/tts-platform-service.test.ts": "4cfb89fab945cfc2c52137cdf061d6727ab78768237313fb389aa2a85e0c28e1",
+    "tests/video-audio.test.ts": "37fa44c62fa3f42d4fa741c4cad8c484f5b1f906d92ccc96b13da6705cba7f8e",
+    "tests/video-media.test.ts": "d506c239f228aa4bb9ad2034061d9ef8de77886a7ab447de61da0741ce75d2cd",
+    "tests/workflow-durability.test.ts": "21fc2b3c63a42cbd8dc3ef8570aba42b2c2be6a5be213d57beefa0160d7123b7",
+    "tests/workflows.test.ts": "338d3dab25ca714063c29fc90a0caab00b532e6e902ce17a2a9cd8b728a6d11a"
+  },
+  "buildHashes": {
+    "lib/index.js": "67eadb5f8fc6887fc4e683375770179c8687acf2df7b23775a85dbc46c2ac069",
+    "lib/client.js": "6b821e00afea4ff4bc78c184aca6475849ac761fa1128ba3eba0e1c431223873"
+  }
+}

@@ -12,5 +12,22 @@
   ],
   "compatibility": "Keep project directories and existing source-draft storage keys unchanged",
   "baseReleaseCommit": "28a1953b8c12d922c31fba30b112554e49f6cd34",
-  "previousRelease": "0.6.1"
+  "previousRelease": "0.6.1",
+  "selectiveMigration": {
+    "date": "2026-11-11",
+    "donorRepository": "https://github.com/lakeofsky347/yingliu-agent",
+    "donorCommit": "ef3fc82e62ff57c8654e827e4e75b8eb7c7f0fc6",
+    "targetBaseline": "ae05700953a4a92b7c6f56bca64b7bf89a08ec0f",
+    "modules": [
+      "M01",
+      "M02",
+      "M03",
+      "M04",
+      "M05",
+      "M06",
+      "M07"
+    ],
+    "releaseStatus": "unreleased",
+    "documentation": "docs/MIGRATION-20261111.md"
+  }
 }

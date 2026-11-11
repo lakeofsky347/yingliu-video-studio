@@ -122,10 +122,10 @@ export function render(ctx) {
 | 工具 | 操作与关键输入 | 返回 |
 |---|---|---|
 | `video_project` | create/open/get/list/bind；target、title、topic、targetDuration 或 projectId/path | 稳定 ID、完整镜头/素材/声音片段、revision、关联 session ID |
-| `video_update` | update 含 shots、shotOrder、shotPatches、sources、target 等；imports 含 durable attachment、文字或本地文件；expectedRevision 可检查手动编辑版本 | 更新后的工程回执 |
+| `video_update` | update 含 shots、shotOrder、shotPatches、sources、target 等；imports 含 durable attachment、文字或本地文件；expectedRevision 必填；requestId 固定多文件导入的逐项身份 | 更新后的工程回执 |
 | `video_inspect` | shotId、frame、includeSource | VideoSpec、可选源码、实际 PNG 帧路径/URL/hash；卡片可定位工作台 |
 | `video_render` | preview/check/export；foreground 默认 false | 后台返回 DSH jobId；前台等待并返回工程与输出 |
-| `video_audio` | import/add/update/remove/synthesize；request 含 assetId、shotId、角色、裁剪等 | 导入/片段更新结果，合成返回后台 jobId |
+| `video_audio` | import/add/update/remove/synthesize/local_sfx；写入 expectedRevision 必填；request 含 assetId、shotId、角色、裁剪等 | 导入/片段更新结果，合成返回后台 jobId |
 
 `exec.agent.id` 是实际工具调用者 Session。Session 索引位于工程基目录 `sessions.json`，v2 bindings 保存 currentProjectId、relatedProjectIds、updatedAt；不写入影片内容版本。省略 projectId 时查当前会话显式绑定，subagent/team 成员沿真实委派链查最近祖先；普通 fork 不继承，显式空绑定停止继承。后台任务 owner 始终是实际调用者，进度、日志、完成通知及取消复用 DSH Jobs。模型提交现有对话中的要求和源码，不通过插件重复调用另一个聊天模型。
 
@@ -165,18 +165,18 @@ runtime 只解码当前镜头绑定的图片和视频，切镜释放不再使用
 
 # 0.3.0 工程管理与制作记录
 
-既有视频工具保持原有职责，当前 Session 的模型仍直接提交分镜和源码。写入支持 `expectedRevision`；提供时在实际提交前检查，过期请求返回 `REVISION_CONFLICT`。`video_update` 在导入素材后继续使用本次已确认 revision 提交，不会跳过服务侧冲突检查。
+既有视频工具保持原有职责，当前 Session 的模型仍直接提交分镜和源码。公开工程写入必须提供 `expectedRevision`；在实际提交前检查，过期请求返回 `REVISION_CONFLICT`。`video_update` 在导入素材后继续使用本次已确认 revision 提交，不会跳过服务侧冲突检查。
 
 | RPC | 输入 | 返回 |
 | --- | --- | --- |
 | `list` | `includeArchived?:boolean` | `{projects:[{id,path,title,createdAt?,updatedAt?,archived?,archivedAt?}],sessions,selected?}` |
-| `rename` | `projectId,title,expectedRevision?` | 当前工程 `StudioSnapshot` |
+| `rename` | `projectId,title,expectedRevision` | 当前工程 `StudioSnapshot` |
 | `duplicate` | `projectId,title?` | 新工程 `StudioSnapshot`；新 ID，不复制 Session、输出及历史 |
 | `archive` / `restore` | `projectId` | 当前选中工程或空工程的 `StudioSnapshot`；归档不删除文件 |
 | `history` | `projectId` | `{canUndo,canRedo,cursor,entries:[{id,label,createdAt,revision}]}` |
-| `undo` / `redo` | `projectId,expectedRevision?` | 内容恢复后的 `StudioSnapshot`；revision 递增 |
+| `undo` / `redo` | `projectId,expectedRevision` | 内容恢复后的 `StudioSnapshot`；revision 递增 |
 | `tasks` / `jobs` | `projectId` | `{tasks:[TaskState & {retryable,revision?,retryOf?}]}` |
-| `retry` / `job.retry` | `projectId,taskId,expectedRevision?` | 新任务的 `StudioSnapshot`，使用当前工程 |
+| `retry` / `job.retry` | `projectId,taskId,expectedRevision` | 新任务的 `StudioSnapshot`，使用当前工程 |
 
 同一工程的写请求和后台提交排队。工程及全部镜头源码以完整版本保存；状态指针切换是提交点，投影中断可在重开时修复。旧工程首次打开迁移到该协议，schemaVersion 仍为 1。导出以指定 revision 读取源码，历史镜头删除或移动源码路径后仍可复核旧输入。
 
@@ -193,7 +193,7 @@ runtime 只解码当前镜头绑定的图片和视频，切镜释放不再使用
 
 `expectedCurrentProjectId:null` 表示提交时应无当前工程。服务在原子索引提交中检查，关系已改变返回 `BINDING_CONFLICT`。绑定提交校验实际宿主目录；正在运行的调用者或继承其工程的后代阻止界面换绑。工具可在自己回合内创建或明确绑定工程。
 
-`video_project create` 对已继承影片的子代理返回同一工程，设置 `forceNew:true` 可创建专属工程。`video_update` 和 `video_audio` 对子代理/team 调用要求 `expectedRevision`，省略时返回 `REVISION_REQUIRED`；过期 revision 返回冲突并要求重新读取。
+`video_project create` 对已继承影片的子代理返回同一工程，设置 `forceNew:true` 可创建专属工程。`video_update` 和 `video_audio` 对所有会话（包括主会话、子代理和 team）要求 `expectedRevision`，省略时返回 `REVISION_REQUIRED`；过期 revision 返回冲突并要求重新读取。
 
 工具回执增加 `callerSessionId`（实际调用者）、`ownerSessionId`（当前工程归属会话）与 `routingSource`（`explicit-project`、`session-binding`、`subagent-ancestor` 或 `selected-project`）。显式 projectId 固定操作工程，任务启动后使用已解析工程与 revision，不随默认关联变化转向。`sessionId` 为兼容导航字段，客户端优先使用 callerSessionId 返回实际调用会话；子代理导航使用宿主 durable parent/child/mode 地址。
 
@@ -204,3 +204,27 @@ runtime 只解码当前镜头绑定的图片和视频，切镜释放不再使用
 桌面工作台提供 `styles.list`、`styles.save` 和 `styles.delete` RPC。风格库保存在 DSH 视频工程基目录的 `styles.json`，不属于单个影片工程；新建影片时选择风格，会将风格副本保存到影片 JSON 的 `videoStyle` 字段。故事板与镜头生成把这段内容作为创作参考。
 
 本地界面可导入 Markdown、TXT、JSON、ZIP 风格包和文件夹。导入器读取文字描述及常见 JSON 名称、说明和 prompt 字段，不执行导入文件中的代码。每个风格最多保存 80,000 字符的 prompt。
+
+
+## 2026-11 选择性迁移接口
+
+以下接口以工程当前 `revision` 进行 CAS。`save/apply/saveSource/restoreSource/import/audio/generate/rename/duplicate/undo/redo/retry/job.retry/audio.sfx/director.document.save/director.document.approve` 省略版本返回 `REVISION_REQUIRED`，过期返回 `REVISION_CONFLICT`。先读取工程，再提交需要修改的范围；服务端不会替外部调用者填入最新版本。
+
+| 接口 | 输入 | 返回/边界 |
+| --- | --- | --- |
+| `director.document.get` | `projectId` | `{document?}`；schemaVersion=1，版本、内容 hash、draft/approved、plan |
+| `director.document.save` | `projectId,expectedRevision,expectedVersion,plan` | `{document}`；每次编辑成为新草稿；图片和镜头引用必须仍存在 |
+| `director.document.approve` | `projectId,expectedRevision,expectedVersion,expectedHash` | 只接受可信工作台；会话工具不能代签，不等同于生成、上传或混合制作授权 |
+| `quality.check` | `projectId,expectedRevision?` | `LocalQualityReport`；固定工程/源码 hash、最多 12 个实际抽样帧、未检查范围 |
+| `quality.last` | `projectId` | 当前 revision 的报告或 null；旧结果不用于导出 |
+| `audio.sfx` | `projectId,expectedRevision,requestId,name,spec,shotId?,startSeconds?,volume?` | `StudioSnapshot`；生成 WAV、登记资产并加入音效轨 |
+
+`spec.kind` 支持 tone/sweep/chime/noise/whoosh/click；`durationSeconds` 为 0.05–10 秒；可选 frequency/endFrequency 为 20–12000 Hz、volume 为 0–1、seed 为 uint32 整数。相同参数产生相同 WAV。
+
+`import` 和 `audio` 的 import 操作接受稳定 `requestId`。重试同一内容使用同一 ID；更换内容必须换 ID。多文件 `video_update` 用顶层 requestId 派生逐项身份，已登记的项目不重复登记。仅固定本地内容的追加在存储明确报告“写前 CAS 冲突”时最多尝试 3 次，不重放用户整份工程修改、模型调用或未知外部提交。导入成功回执与待登记资产保存在工程 `.studio/imports/`；不得在恢复前清理。
+
+会话工具新增 `video_director` 的 document_get/document_save（保存需要 expectedRevision、expectedVersion）、`video_audio local_sfx`，以及只执行本地检查的 `video_quality check/last`。`workflows.run` 未显式传导演计划时，可继承已批准工程计划的固定快照；选镜头运行只取相应镜头，仍校验制作策略及本轮图片上传授权。
+
+所有 MP4 导出都会对冻结的工程版本重新执行本地检查。结构硬失败不能以 `force` 绕过；黑帧/纯色和字幕文字量是启发式提示；没有完整视频听检、动作/口型检查或实际字幕边界检测。候选审看流程和用户确认独立保留。
+
+任务状态可含脱敏 `failure:{category,operation,ioCode?,syscall?}`。字段只接受固定枚举，旧日志无该字段仍可读取。不得把文件路径、URL、请求头或凭据塞入诊断字段。
