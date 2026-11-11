@@ -161,7 +161,8 @@ export class StudioController {
     const project=this.state.snapshot?.project;if(!project||!this.dirty||this.state.conflict)return;
     const serial=this.editSerial;this.saveFailed=false;
     const operation=(async()=>{try{
-      const snapshot=await this.api.call<StudioSnapshot>('save',{project,expectedRevision:this.serverProjectId===project.id?this.serverRevision:undefined});
+      if(this.serverProjectId!==project.id||!Number.isSafeInteger(this.serverRevision))throw new StudioRequestError('尚未确认工程版本，请先读取最新工程。','REVISION_REQUIRED');
+      const snapshot=await this.api.call<StudioSnapshot>('save',{project,expectedRevision:this.serverRevision});
       if(serial===this.editSerial){this.dirty=false;this.accept(snapshot,false,true);this.update({saving:false,dirty:false,error:'',conflict:false});}
       else this.accept(snapshot,true,true);
       await this.refreshHistory();
@@ -175,9 +176,22 @@ export class StudioController {
       await this.flush();if(this.dirty)throw new Error(this.state.error||'工程尚未保存，请重试保存。');
       if(this.state.sourceDraft&&['preview','export','generate','retry','undo','redo'].includes(endpoint))throw new Error('本工程有源码草稿。请在源码面板保存或丢弃草稿后再执行此操作；切换页面会保留草稿。');
       const targetId=(payload as {projectId?:string})?.projectId??this.state.snapshot?.project?.id;
-      const guard=['saveSource','restoreSource','apply','rename','undo','redo','retry','production.set'].includes(endpoint)&&targetId===this.serverProjectId?{expectedRevision:this.serverRevision}:{};
-      const request=['create','open','focus'].includes(endpoint)?payload:{projectId:this.state.snapshot?.project?.id,...guard,...payload as object};
-      const snapshot=await this.api.call<StudioSnapshot>(endpoint,request);this.accept(snapshot,false,['saveSource','restoreSource','import','rename'].includes(endpoint));await this.refreshHistory();
+      const mutations=['save','saveSource','restoreSource','apply','rename','duplicate','undo','redo','retry','job.retry','import','audio','audio.sfx','generate','production.set','video.clip.save','video.clip.remove','video.clip.extract'];
+      let revision=(payload as {expectedRevision?:number})?.expectedRevision;
+      if(mutations.includes(endpoint)&&revision===undefined){
+        if(targetId===this.serverProjectId)revision=this.serverRevision??undefined;
+        else if(targetId&&['rename','duplicate'].includes(endpoint)){
+          const target=await this.api.call<StudioSnapshot>('current',{projectId:targetId});
+          if(target.project?.id!==targetId)throw new StudioRequestError('工程读取结果不匹配，请刷新影片列表。','REVISION_CONFLICT');
+          revision=target.project.revision;
+        }
+        if(!Number.isSafeInteger(revision))throw new StudioRequestError('修改需要已确认的 expectedRevision，请先读取最新工程。','REVISION_REQUIRED');
+      }
+      const request=['create','open','focus'].includes(endpoint)?payload:{projectId:targetId,...payload as object,...(revision!==undefined?{expectedRevision:revision}:{})};
+      const snapshot=await this.api.call<StudioSnapshot>(endpoint,request);
+      // Renaming a library row must not replace another project's visible editor or drafts.
+      if(endpoint!=='rename'||targetId===this.state.snapshot?.project?.id)this.accept(snapshot,false,['saveSource','restoreSource','import','rename'].includes(endpoint));
+      await this.refreshHistory();
       if(['create','rename','duplicate','archive','restore'].includes(endpoint))await this.refreshProjects();
       if(['create','open','focus','duplicate'].includes(endpoint))this.showStudio();
       this.update({notice,conflict:false,error:''});return true;

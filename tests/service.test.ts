@@ -4,7 +4,7 @@ import {StudioService} from '../src/host/service.ts';import {duplicateShot,reord
 import {parseModelJson,parseSceneSource} from '../src/host/generator.ts';
 import type {HostContext} from '../src/host/platform.ts';import type {StudioSnapshot} from '../src/shared/types.ts';
 const ctx={llm:{listProviders:()=>[],listModels:async()=>[],async *stream(){throw new Error('unexpected model call');}}} as unknown as HostContext;
-async function value(service:StudioService,endpoint:string,payload:unknown={}):Promise<any>{const result=await service.rpc(endpoint,payload);assert.equal(result.ok,true,result.ok?'':result.error.message);return result.ok?result.value:undefined;}
+async function value(service:StudioService,endpoint:string,payload:unknown={}):Promise<any>{const input=payload as Record<string,unknown>;const revision=['save','apply','saveSource','restoreSource','undo','redo','rename','retry','import','audio','generate','duplicate'].includes(endpoint)&&input.expectedRevision===undefined?(await service.snapshot()).project?.revision:undefined;const result=await service.rpc(endpoint,{...(revision!==undefined?{expectedRevision:revision}:{}),...input});assert.equal(result.ok,true,result.ok?'':result.error.message);return result.ok?result.value:undefined;}
 test('save broken graph, clone current source, restart project without model calls',async()=>{
   const base=await mkdtemp(join(tmpdir(),'video-studio-service-'));let service=new StudioService(ctx,{baseDirectory:base});
   try{

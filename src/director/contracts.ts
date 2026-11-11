@@ -1,7 +1,7 @@
 export type FilmKind = 'general' | 'suspense_short' | 'product' | 'explainer' | 'lyrical';
 export type AudioStrategy = 'native' | 'external' | 'silent';
 export type ReferencePurpose = 'identity' | 'style' | 'world_layout' | 'blocking' | 'camera' | 'motion';
-export interface DirectorCharacter { id:string; name:string; identity:string; objective?:string; baselineEmotion?:string }
+export interface DirectorCharacter { id:string; name:string; identity:string; objective?:string; baselineEmotion?:string; features?:string[]; referenceAssetIds?:string[]; voice?:string }
 export interface StoryBeat { id:string; function:string; change:string; shotIds:string[] }
 /** World coordinates, screen coordinates and relational descriptions are deliberately separate. */
 export interface WorldLayout { id:string; description:string; anchors:{id:string;position:[number,number,number]}[] }
@@ -30,12 +30,18 @@ export interface AcceptanceCondition {
 }
 export interface DirectorShot {
   shotId:string; title:string; visualPrompt:string; durationSeconds:number; narration:string;
+  characterIds?:string[];
   audioStrategy:AudioStrategy; performance:PerformanceBeat[]; dialogue:DialogueEvent[];
   events:ShotEvent[]; references:DirectorReference[]; acceptance:AcceptanceCondition[];
 }
 export interface DirectorPlan {
   version:1; ruleSetVersion:string; filmKind:FilmKind; characters:DirectorCharacter[];
   storyBeats:StoryBeat[]; worldLayouts:WorldLayout[]; identityMap:IdentityBinding[]; shots:DirectorShot[];
+}
+/** Approval records creative intent only; it never grants production, upload or paid-call permission. */
+export interface DirectorDocument {
+  schemaVersion:1;version:number;status:'draft'|'approved';hash:string;plan:DirectorPlan;
+  updatedAt:string;approvedAt?:string;
 }
 export interface DirectorIssue { code:string; path:string; message:string; severity:'error'|'warning' }
 export interface DirectorValidation { ok:boolean; errors:string[]; issues:DirectorIssue[]; plan?:DirectorPlan }

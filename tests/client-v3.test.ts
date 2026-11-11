@@ -60,11 +60,11 @@ test('saving source before the parameter debounce sends the revision acknowledge
   assert.equal(controller.getSourceDraft(shot.id),undefined);await controller.dispose();
 });
 
-test('management of a different project never sends the current project revision',async()=>{
-  const f=fixture(),base=f.api.call.bind(f.api),other=createProject('其他工程');f.projects.set(other.id,other);
-  f.api.call=async <T>(endpoint:string,payload:any)=>{if(endpoint==='rename'){assert.equal(payload.projectId,other.id);assert.equal(payload.expectedRevision,undefined);return structuredClone(f.snapshot) as T;}return base<T>(endpoint,payload);};
+test('management of a different project explicitly reads that project revision and preserves the visible editor',async()=>{
+  const f=fixture(),base=f.api.call.bind(f.api),other={...createProject('其他工程'),revision:19};f.projects.set(other.id,other);let targetRead=false;
+  f.api.call=async <T>(endpoint:string,payload:any)=>{if(endpoint==='current'&&payload.projectId===other.id){targetRead=true;return structuredClone({...f.snapshot,project:other}) as T;}if(endpoint==='rename'){assert.equal(targetRead,true);assert.equal(payload.projectId,other.id);assert.equal(payload.expectedRevision,19);return structuredClone({...f.snapshot,project:{...other,revision:20}}) as T;}return base<T>(endpoint,payload);};
   const controller=new StudioController(f.api,new SourceDraftStore(memoryStorage()));await controller.load();
-  assert.equal(await controller.action('rename',{projectId:other.id,title:'更名'}),true);await controller.dispose();
+  assert.equal(await controller.action('rename',{projectId:other.id,title:'更名'}),true);assert.equal(controller.getSnapshot().snapshot?.project?.id,f.snapshot.project!.id);assert.equal(controller.getSnapshot().snapshot?.project?.revision,0);await controller.dispose();
 });
 
 test('background updates and source conflicts retain draft until an explicit current-version save',async()=>{

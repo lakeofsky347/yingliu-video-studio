@@ -40,7 +40,7 @@ test('session model reads manual parameters and revision before applying a local
     const created=await run(tools,'video_project',{action:'create',title:'手动与对话编辑'},'session-edit');
     await hub.call('production.set',{projectId:created.projectId,expectedRevision:created.revision,mode:'code_animation'});
     const before=await hub.call<StudioSnapshot>('current',{projectId:created.projectId}),shotId=before.project!.shots[1]!.id;
-    before.project!.shots[1]!.params.text='用户刚刚手动改过';await hub.call('save',{project:before.project});
+    before.project!.shots[1]!.params.text='用户刚刚手动改过';await hub.call('save',{project:before.project,expectedRevision:before.project!.revision});
     const current=await run(tools,'video_project',{action:'get'},'session-edit');assert.equal(current.shots[1].params.text,'用户刚刚手动改过');assert.ok(current.revision>created.revision);
     await assert.rejects(run(tools,'video_update',{expectedRevision:created.revision,update:{title:'过期修改'}},'session-edit'),/已被用户修改/);
     const updated=await run(tools,'video_update',{expectedRevision:current.revision,update:{shotPatches:[{id:shotId,patch:{params:{...current.shots[1].params,text:'会话合并后的文字'}}}],sources:[{shotId,source:{html:'<div class="custom"></div>',css:'.custom { color:red; }',js:'export function render(ctx) { ctx.root.querySelector(".custom").textContent = ctx.params.text; }'}}]}},'session-edit');
@@ -56,7 +56,7 @@ test('durable session images and text file references become portable project as
   const hub=new ProjectHub(ctx,{baseDirectory:base}),tools=createSessionTools(ctx,hub);
   try{
     const created=await run(tools,'video_project',{action:'create',title:'会话附件'},'session-assets');
-    const result=await run(tools,'video_update',{imports:[{attachment:{attachmentId:'session-image',mediaType:'image/png',bytes:image.length,width:1,height:1,name:'会话图片.png'}},{attachment:{attachmentId:'session-text',bytes:33,name:'会话说明.md'}}],update:{}},'session-assets');
+    const result=await run(tools,'video_update',{expectedRevision:created.revision,imports:[{attachment:{attachmentId:'session-image',mediaType:'image/png',bytes:image.length,width:1,height:1,name:'会话图片.png'}},{attachment:{attachmentId:'session-text',bytes:33,name:'会话说明.md'}}],update:{}},'session-assets');
     assert.equal(result.assets.length,2);assert.equal(result.assets[0].kind,'image');assert.equal(result.assets[1].text,'这是会话中的文字素材');
     assert.deepEqual(await readFile(join(created.root,result.assets[0].path)),image);
   }finally{await hub.dispose();await rm(base,{recursive:true,force:true});}

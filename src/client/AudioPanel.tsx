@@ -2,6 +2,7 @@ import {defaultTtsSettings,ttsCapability} from '../shared/tts-capability.ts';
 import { useEffect, useState, type ReactNode } from 'react';
 import type { Asset, AudioClip, Shot, StudioSnapshot, TtsSettings, VideoProject } from '../shared/types.ts';
 import type { StudioController } from './controller.ts';
+import {LocalSfxPanel} from './LocalSfxPanel.tsx';
 function Field({label,children}:{label:string;children:ReactNode}){return <label className="vs-field"><span>{label}</span>{children}</label>;}
 function numeric(value:string):number{return Number(value)||0;}
 export function AudioPanel({project,snapshot,controller,assetUrl,selectedShot,busy}:{project:VideoProject;snapshot:StudioSnapshot;controller:StudioController;assetUrl:(asset:Asset)=>string;selectedShot?:Shot;busy:boolean}){
@@ -16,6 +17,7 @@ export function AudioPanel({project,snapshot,controller,assetUrl,selectedShot,bu
   return <div className="vs-audio-panel">
     <div className="vs-audio-heading"><div><h3>配音、音乐与音效</h3><p>导入音频后绑定镜头；全片音乐可循环。刷新预览会生成与成片相同的混音。</p></div><button onClick={()=>setSettingsOpen(!settingsOpen)}>配音模型设置</button></div>
     {settingsOpen&&<TtsConfig snapshot={snapshot} controller={controller} busy={busy}/>}
+    <LocalSfxPanel key={project.id} controller={controller} busy={busy}/>
     <div className="vs-audio-add"><Field label="音频资产"><select aria-label="音频资产" value={assetId} onChange={e=>setAssetId(e.target.value)}><option value="">选择音频</option>{assets.map(a=><option key={a.id} value={a.id}>{a.name} · {(a.duration||0).toFixed(1)}s</option>)}</select></Field><Field label="用途"><select aria-label="音频用途" value={role} onChange={e=>{const next=e.target.value as AudioClip['role'];setRole(next);if(next==='music')setShotId('');}}><option value="voice">配音</option><option value="music">背景音乐</option><option value="sfx">音效</option></select></Field><Field label="绑定范围"><select aria-label="音频绑定范围" value={shotId} onChange={e=>setShotId(e.target.value)}><option value="">整部影片</option>{project.shots.map(s=><option key={s.id} value={s.id}>{s.title}</option>)}</select></Field><button disabled={busy||!assetId} onClick={add}>添加声音片段</button></div>
     {assets.length===0&&<p className="vs-audio-empty">先在资产库导入 WAV、MP3、M4A、AAC、FLAC 或 OGG；也可以填写镜头旁白并生成配音。</p>}
     <label className="vs-audio-duration-lock"><input type="checkbox" checked={project.extensions.lockDuration===true} onChange={e=>controller.edit({...project,extensions:{...project.extensions,lockDuration:e.target.checked},revision:project.revision+1,updatedAt:new Date().toISOString()})}/>锁定镜头时长<small>解除锁定时，较长旁白可自动延长对应镜头。</small></label>

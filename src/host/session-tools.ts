@@ -1,4 +1,5 @@
 import { defineTool, type ToolDefinition, type ToolRunContext } from '@deepseek-ai/dsh-tools';
+import { createHash } from 'node:crypto';
 import type { FileAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment';
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import type { JobOutcome } from '@deepseek-ai/dsh-jobs';
@@ -16,6 +17,11 @@ const pause=(signal?:AbortSignal)=>new Promise<void>((resolve,reject)=>{
 function record(value:unknown):Input {return value!==null&&typeof value==='object'&&!Array.isArray(value)?value as Input:{};}
 function json(value:unknown):Record<string,JsonValue> {return JSON.parse(JSON.stringify(value));}
 function owner(exec:ToolRunContext):string {if(!exec.agent)throw new Error('视频工具需要在 DSH 会话中调用');return exec.agent.id;}
+function requiredRevision(value:unknown):number {if(!Number.isSafeInteger(value)||Number(value)<0)throw Object.assign(new Error('修改工程需要 expectedRevision，请先 video_project get 后合并修改'),{code:'REVISION_REQUIRED'});return Number(value);}
+function importRequestId(exec:ToolRunContext,input:unknown,index:number,provided?:string):string {
+  if(provided!==undefined){if(typeof provided!=='string'||!provided.trim())throw new Error('导入 requestId 须为非空字符串');return provided+'.'+index;}
+  return 'dsh-import-'+createHash('sha256').update(JSON.stringify([owner(exec),exec.callId,input,index])).digest('hex');
+}
 function routeMeta(routing:ProjectRouting):Input{return {...routing,sessionId:routing.ownerSessionId??routing.callerSessionId};}
 function receipt(snapshot:StudioSnapshot,extra:Input={}):Record<string,JsonValue>{
   const project=snapshot.project;if(!project)throw new Error('视频工程尚未创建');
@@ -30,7 +36,7 @@ const output={schema:{type:'object',additionalProperties:true} as const,
 const projectParameter={type:'string' as const,description:'稳定的工程 ID。省略时使用调用会话当前工程；subagent / agent team 成员继承最近的已绑定委派祖先。fork 不继承。显式 ID 可用于团队协作。'};
 
 /** Bridge session image and verbatim file references into the portable project directory. */
-async function importAttachment(ctx:HostContext,hub:ProjectHub,projectId:string,item:Input,sessionId:string,signal:AbortSignal,audio=false,expectedRevision?:number){
+async function importAttachment(ctx:HostContext,hub:ProjectHub,projectId:string,item:Input,sessionId:string,signal:AbortSignal,audio=false,expectedRevision?:number,requestId?:string){
   const attachment=record(item.attachment);let input:Input={...item};delete input.attachment;
   if(typeof attachment.attachmentId==='string'){
     if(!ctx.attachments)throw new Error('DSH 附件服务尚未加载');
@@ -44,7 +50,7 @@ async function importAttachment(ctx:HostContext,hub:ProjectHub,projectId:string,
       if(!path)throw new Error('当前 DSH 附件服务无法提供文件路径');input={...input,path,name:item.name??reference.name};
     }
   }
-  signal.throwIfAborted();return hub.call<StudioSnapshot>(audio?'audio':'import',{...input,projectId,sessionId,expectedRevision,...(audio?{action:'import'}:{})});
+  signal.throwIfAborted();return hub.call<StudioSnapshot>(audio?'audio':'import',{...input,projectId,sessionId,expectedRevision,requestId,...(audio?{action:'import'}:{})});
 }
 
 /** Reuse the DSH job roster, cancellation and durable result notices for slow local rendering. */
@@ -110,9 +116,16 @@ async function startMedia(ctx:HostContext,hub:ProjectHub,request:Input,exec:Tool
 /** Model-facing tools accept the current conversation model's decisions and code; they do not start a second chat. */
 export function createSessionTools(ctx:HostContext,hub:ProjectHub):ToolDefinition[]{
   return [
-    defineTool({name:'video_director',description:'读取带来源的导演规则，校验结构化导演计划，编译单镜头提示，或只修改指定镜头计划。不会调用生成模型、提交费用、改工程制作模式或自动采用内容。先用 rules 了解片型、表演、对白、空间与参考分层；所有时间为镜头内秒数。校验通过的 plan 可交给 video_workflow。',
-      parameters:{action:{type:'string',enum:['rules','validate','compile','patch'],required:true},plan:{type:'object',additionalProperties:true},shotId:{type:'string'},changes:{type:'object',additionalProperties:true}},output,
-      async execute(args,exec){exec.signal.throwIfAborted();owner(exec);return json({kind:'video-director',...await hub.call<Input>('director.'+args.action,args,{callerSessionId:owner(exec)})});}}),
+    defineTool({name:'video_director',description:'读取导演规则，校验/编译/局部修改结构化导演计划，或读取和保存工程的导演文档。document_save 须携带当前工程 expectedRevision 和文档 expectedVersion；只保存草案，不批准计划、不更改制作模式、不提交生成费用。计划批准由用户在工作台完成。',
+      parameters:{action:{type:'string',enum:['rules','validate','compile','patch','document_get','document_save'],required:true},projectId:projectParameter,plan:{type:'object',additionalProperties:true},expectedRevision:{type:'integer'},expectedVersion:{type:'integer'},shotId:{type:'string'},changes:{type:'object',additionalProperties:true}},output,
+      async execute(args,exec){exec.signal.throwIfAborted();const sessionId=owner(exec);
+        if(args.action==='document_get'||args.action==='document_save'){
+          if(args.action==='document_save'){requiredRevision(args.expectedRevision);if(!Number.isSafeInteger(args.expectedVersion)||Number(args.expectedVersion)<0)throw new Error('保存导演文档需要 expectedVersion，请先 document_get');}
+          const located=await hub.resolveProject({...args,signal:exec.signal},sessionId),endpoint=args.action==='document_get'?'director.document.get':'director.document.save';
+          return json({kind:'video-director',projectId:located.projectId,...await hub.call<Input>(endpoint,{...args,projectId:located.projectId},{callerSessionId:sessionId})});
+        }
+        if(!['rules','validate','compile','patch'].includes(args.action))throw new Error('导演工具不能批准计划或执行此操作');
+        return json({kind:'video-director',...await hub.call<Input>('director.'+args.action,args,{callerSessionId:sessionId})});}}),
     defineTool({name:'video_workflow',description:'在工程已由用户确认的制作模式内执行导演计划、生成候选并检查。先 video_project get 读取制作策略；代码与模型视频禁止自动互换。可传 video_director 校验后的 directorPlan；使用原生对白选 native，明确后配音选 external。maxTasks 为生成次数上限；maxCost 无可靠预报价时停止提交。apply 不代签人工审看；未检查的时序/对白必须在原工作台审看确认。返回稳定 workflow id，通过 get 查询。',
       parameters:{action:{type:'string',enum:['run','list','get','pause','retry','apply'],required:true},projectId:projectParameter,workflowId:{type:'string'},expectedRevision:{type:'integer'},prompt:{type:'string'},visual:{type:'string',enum:['code','image','video']},shotIds:{type:'array',items:{type:'string'}},narration:{type:'boolean'},review:{type:'boolean'},allowImageUpload:{type:'boolean'},imageAssetIds:{type:'array',items:{type:'string'}},maxTasks:{type:'integer'},maxCost:{type:'number'},filmKind:{type:'string',enum:['general','suspense_short','product','explainer','lyrical']},audioStrategy:{type:'string',enum:['native','external','silent']},directorPlan:{type:'object',additionalProperties:true}},output,
       async execute(args,exec){const sessionId=owner(exec),located=await hub.resolveProject({...args,signal:exec.signal},sessionId);exec.signal.throwIfAborted();
@@ -147,13 +160,20 @@ export function createSessionTools(ctx:HostContext,hub:ProjectHub):ToolDefinitio
         return receipt(snapshot,routeMeta({callerSessionId:sessionId,ownerSessionId:sessionId,routingSource:'session-binding'}));
       }}),
     defineTool({name:'video_update',description:'把本会话已讨论的制作要求写入视频工程，不另调模型。update 支持 title/topic/targetDuration/target、shots(完整分镜数组)、shotOrder、shotPatches:[{id,patch}]、sources:[{shotId,source:{html,css,js}}]。源码是 ES 模块，导出 render(ctx)，可导出 async ready(ctx)；用 ctx.root/canvas/ctx2d/params/assets/localFrame/progress/time/width/height 按帧计算，不用 Date.now 或自行播放动画，保留已有镜头 ID 和可编辑参数。imports 可接收当前会话的 durable attachment 引用、已有本地图片文件或文字；先读工程取得素材和镜头 ID，再做局部修改。',
-      parameters:{projectId:projectParameter,update:{type:'object',additionalProperties:true,required:true},imports:{type:'array',items:{type:'object',additionalProperties:true}},expectedRevision:{type:'integer',description:'video_project get 返回的 revision；subagent / agent team 修改必须填写。版本过期时先读取最新内容，再合并修改。'}},output,
+      parameters:{projectId:projectParameter,update:{type:'object',additionalProperties:true,required:true},imports:{type:'array',items:{type:'object',additionalProperties:true}},requestId:{type:'string',description:'导入的稳定请求 ID，多文件按顺序派生子 ID；相同导入重试应复用。'},expectedRevision:{type:'integer',required:true,description:'video_project get 返回的 revision；所有修改必须填写。版本过期时先读取最新内容，再合并修改。'}},output,
       async execute(args,exec){
+        const expectedRevision=requiredRevision(args.expectedRevision);
         const sessionId=owner(exec),located=await hub.resolveProject({...args,signal:exec.signal},sessionId);exec.signal.throwIfAborted();
-        if(located.requiresRevision&&args.expectedRevision===undefined)throw Object.assign(new Error('子代理或团队协作修改工程需要 expectedRevision，请先 video_project get 后合并修改'),{code:'REVISION_REQUIRED'});
-        if(args.expectedRevision!==undefined&&args.expectedRevision!==located.snapshot.project!.revision)throw new Error('视频工程已被用户修改，请先 video_project get 后合并修改');
-        let revision=located.snapshot.project!.revision;
-        for(const item of args.imports??[]){const imported=await importAttachment(ctx,hub,located.projectId,item,sessionId,exec.signal,false,revision);revision=imported.project!.revision;}
+        if(expectedRevision!==located.snapshot.project!.revision)throw Object.assign(new Error('视频工程已被用户修改，请先 video_project get 后合并修改'),{code:'REVISION_CONFLICT'});
+        let revision=expectedRevision;
+        for(const [index,item] of (args.imports??[]).entries()){
+          const requestId=typeof item.requestId==='string'?item.requestId:importRequestId(exec,item,index,args.requestId);
+          const imported=await importAttachment(ctx,hub,located.projectId,item,sessionId,exec.signal,false,revision,requestId),nextRevision=imported.project?.revision;
+          // A local append may retry its CAS and preserve another writer's edits.
+          // That does not authorize rebasing the caller's remaining mutations.
+          if(imported.project?.id!==located.projectId||(nextRevision!==revision&&nextRevision!==revision+1))throw Object.assign(new Error('导入素材已保留，但工程在导入时另有修改；已停止后续导入和更新。请先 video_project get 后合并修改，并复用相同导入 requestId'),{code:'REVISION_CONFLICT',expectedRevision:revision,actualRevision:nextRevision,requestId});
+          revision=nextRevision;
+        }
         const snapshot=await hub.call<StudioSnapshot>('apply',{...args.update,projectId:located.projectId,sessionId,expectedRevision:revision});return receipt(snapshot,routeMeta(located.routing));
       }}),
     defineTool({name:'video_inspect',description:'读取具体制作要求、源码或实际渲染的指定帧，帮助在会话中检查镜头；frame 是全片零起始整数帧。工具卡片可直接把工作台定位到工程、镜头及帧。仅检查，不会重新创作或改片。',
@@ -177,17 +197,22 @@ export function createSessionTools(ctx:HostContext,hub:ProjectHub):ToolDefinitio
           exec.signal.throwIfAborted();if(snapshot.task?.status==='failed')throw new Error(snapshot.task.error??snapshot.task.message);return receipt(snapshot,{...routeMeta(located.routing),operation:endpoint});
         }finally{exec.signal.removeEventListener('abort',cancel);}
       }}),
-    defineTool({name:'video_audio',description:'给工程导入用户配音/音效文件、绑定音频片段、改音量和开始时间、删除片段或使用工程环境页明确配置的配音提供器合成。不会读取其它插件密钥，也不默认调用远程配音。会话上传的音频是 durable 文件附件；action=import 接收 attachment 或本地 path；其它参数放 request。',
-      parameters:{projectId:projectParameter,action:{type:'string',enum:['import','add','update','remove','synthesize'],required:true},attachment:{type:'object',additionalProperties:true},path:{type:'string'},name:{type:'string'},request:{type:'object',additionalProperties:true},expectedRevision:{type:'integer',description:'读取到的工程版本；团队成员编辑音轨前先 get 并填写，版本过期需合并修改。'}},output,
+    defineTool({name:'video_audio',description:'导入用户配音/音效、编辑音频片段，或使用明确配置的配音提供器合成。local_sfx 用确定性代码在本地合成 tone/sweep/chime/noise/whoosh/click，不调用模型；把 spec、shotId、startSeconds、volume 放在 request。所有写入都必须提供 expectedRevision。import 接收 durable attachment 或本地 path。',
+      parameters:{projectId:projectParameter,action:{type:'string',enum:['import','add','update','remove','synthesize','local_sfx'],required:true},attachment:{type:'object',additionalProperties:true},path:{type:'string'},name:{type:'string'},requestId:{type:'string'},request:{type:'object',additionalProperties:true},expectedRevision:{type:'integer',required:true,description:'读取到的工程版本；所有音轨修改前先 get 并填写，版本过期需合并修改。'}},output,
       async execute(args,exec){
+        const expectedRevision=requiredRevision(args.expectedRevision);
         const sessionId=owner(exec),located=await hub.resolveProject({...args,signal:exec.signal},sessionId);exec.signal.throwIfAborted();
-        if(located.requiresRevision&&args.expectedRevision===undefined)throw Object.assign(new Error('子代理或团队协作修改音轨需要 expectedRevision，请先 video_project get 后合并修改'),{code:'REVISION_REQUIRED'});
-        const expectedRevision=args.expectedRevision??located.snapshot.project!.revision;
+        if(expectedRevision!==located.snapshot.project!.revision)throw Object.assign(new Error('视频工程已被用户修改，请先 video_project get 后合并修改'),{code:'REVISION_CONFLICT'});
         if(args.action==='synthesize')return startRender(ctx,hub,located.projectId,sessionId,'audio',{...args.request,expectedRevision,action:'synthesize',label:'生成视频配音'},exec,located.routing);
-        const snapshot=args.action==='import'?await importAttachment(ctx,hub,located.projectId,{...args,...args.request},sessionId,exec.signal,true,expectedRevision):
+        const requestId=importRequestId(exec,args.request??{attachment:args.attachment,path:args.path,name:args.name},0,args.requestId??(typeof args.request?.requestId==='string'?args.request.requestId:undefined));
+        const snapshot=args.action==='local_sfx'?await hub.call<StudioSnapshot>('audio.sfx',{...args.request,name:args.name??args.request?.name,projectId:located.projectId,sessionId,expectedRevision,requestId}):args.action==='import'?await importAttachment(ctx,hub,located.projectId,{...args,...args.request},sessionId,exec.signal,true,expectedRevision,requestId):
           await hub.call<StudioSnapshot>('audio',{...args.request,action:args.action,projectId:located.projectId,sessionId,expectedRevision});
         return receipt(snapshot,{...routeMeta(located.routing),audioClips:snapshot.project?.audioClips});
-      }})
+      }}),
+    defineTool({name:'video_quality',description:'读取当前工程的本地质检报告或执行检查。check 检查可测的画面/音频/字幕/时长等条件，last 读取上次报告；不替代人工完整审看、不批准候选、不调用视觉生成模型。',
+      parameters:{projectId:projectParameter,action:{type:'string',enum:['check','last'],required:true},expectedRevision:{type:'integer'}},output,
+      async execute(args,exec){const sessionId=owner(exec);exec.signal.throwIfAborted();if(!['check','last'].includes(args.action))throw new Error('质检操作无效');const located=await hub.resolveProject({...args,signal:exec.signal},sessionId);
+        const report=await hub.call('quality.'+args.action,{projectId:located.projectId,...(args.expectedRevision!==undefined?{expectedRevision:args.expectedRevision}:{})},{callerSessionId:sessionId});return json({kind:'video-studio',projectId:located.projectId,quality:report});}})
   ];
 }
 

@@ -14,17 +14,21 @@ export function makeDirectorPlan(value:Record<string,any>,project:VideoProject,p
     shots:plans.map((p,i)=>{const s=raw.find((s:any)=>s.shotId===p.shotId)??raw[i]??{},shot=project.shots.find(s=>s.id===p.shotId)!;return {
       shotId:p.shotId,title:s.title??shot.title,visualPrompt:s.visualPrompt??s.prompt??p.prompt,narration:p.narration,durationSeconds:shot.durationFrames/fps,
       audioStrategy:request.directorPlan?s.audioStrategy:request.audioStrategy??(request.visual==='video'?'native':request.narration?'external':'silent'),
-      performance:s.performance??[],dialogue:s.dialogue??[],events:s.events??[],references:s.references??[],acceptance:s.acceptance??[],
+      ...(s.characterIds?{characterIds:s.characterIds}:{}),performance:s.performance??[],dialogue:s.dialogue??[],events:s.events??[],references:s.references??[],acceptance:s.acceptance??[],
     };})};
   const check=validateDirectorPlan(plan);if(!check.ok)throw new Error(check.errors.join('\n'));
-  for(const binding of plan.identityMap)if(!project.assets.some(a=>a.id===binding.assetId&&a.kind==='image')||!request.imageAssetIds?.includes(binding.assetId))throw new Error('人物身份映射引用了不存在或未授权的图片：'+binding.assetId);
+  const visibleCharacters=new Set(plan.shots.flatMap(shot=>[...referencedCharacterIds(shot)]));
+  for(const binding of plan.identityMap){
+    if(!project.assets.some(a=>a.id===binding.assetId&&a.kind==='image'))throw new Error('人物身份映射引用了不存在的图片：'+binding.assetId);
+    if(visibleCharacters.has(binding.characterId)&&!request.imageAssetIds?.includes(binding.assetId))throw new Error('人物身份映射引用了本轮未授权的图片：'+binding.assetId);
+  }
   for(const shot of plan.shots){
     if(request.audioStrategy&&shot.audioStrategy!==request.audioStrategy)throw new Error('导演计划声音策略与本轮明确选择不符');
     if(request.visual==='video'&&shot.audioStrategy==='external'&&!request.narration)throw new Error('外配音策略需要明确开启配音');
     if(request.visual==='video'&&shot.audioStrategy!=='external'&&request.narration)throw new Error('原生声音或静音策略不能同时启动外配音');
     const visible=referencedCharacterIds(shot);
     for(const binding of plan.identityMap)if(visible.has(binding.characterId)&&!shot.references.some(r=>r.assetId===binding.assetId&&r.purpose==='identity'))throw new Error('身份映射必须绑定到该镜头的身份参考：'+binding.assetId);
-    for(const ref of shot.references){if(!project.assets.some(a=>a.id===ref.assetId&&a.kind==='image'))throw new Error('当前工作流参考仅支持已有图片：'+ref.assetId);const target=project.shots.find(s=>s.id===shot.shotId)!;if(![...target.assetIds,...target.referenceIds].includes(ref.assetId))throw new Error('镜头尚未关联指定参考：'+ref.assetId);if(!request.imageAssetIds?.includes(ref.assetId))throw new Error('导演不能自行增加本轮未授权的上传参考：'+ref.assetId);}
+    for(const ref of [...shot.references,...plan.characters.filter(character=>visible.has(character.id)).flatMap(character=>(character.referenceAssetIds??[]).map(assetId=>({assetId,purpose:'identity' as const})))]){if(!project.assets.some(a=>a.id===ref.assetId&&a.kind==='image'))throw new Error('当前工作流参考仅支持已有图片：'+ref.assetId);const target=project.shots.find(s=>s.id===shot.shotId)!;if(![...target.assetIds,...target.referenceIds].includes(ref.assetId))throw new Error('镜头尚未关联指定参考：'+ref.assetId);if(!request.imageAssetIds?.includes(ref.assetId))throw new Error('导演不能自行增加本轮未授权的上传参考：'+ref.assetId);}
   }
   return plan;
 }

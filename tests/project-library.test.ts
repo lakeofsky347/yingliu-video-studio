@@ -12,11 +12,11 @@ test('library rename, independent copy, archive and restore survive restart with
  const base=await mkdtemp(join(tmpdir(),'dsh-library-'));let hub=new ProjectHub(context,{baseDirectory:base});
  try{
   const created=await hub.call<StudioSnapshot>('create',{productionMode:'code_animation',title:'原工程',topic:'中文故事',sessionId:'original-session'}),id=created.project!.id,shotId=created.project!.shots[0]!.id;
-  const imported=await hub.call<StudioSnapshot>('import',{projectId:id,text:'保留的文本素材',name:'文案'});
+  const imported=await hub.call<StudioSnapshot>('import',{projectId:id,expectedRevision:created.project!.revision,text:'保留的文本素材',name:'文案'});
   const source:SceneSource={html:'<h1></h1>',css:'h1{color:#ffeeaa}',js:'export function render(ctx){ctx.root.querySelector("h1").textContent=ctx.params.text}'};
   const edited=await hub.call<StudioSnapshot>('apply',{projectId:id,expectedRevision:imported.project!.revision,sources:[{shotId,source}]});
   const renamed=await hub.call<StudioSnapshot>('rename',{projectId:id,title:'重命名影片',expectedRevision:edited.project!.revision});assert.equal(renamed.project!.title,'重命名影片');
-  const copy=await hub.call<StudioSnapshot>('duplicate',{projectId:id,title:'独立副本'});assert.notEqual(copy.project!.id,id);assert.equal(copy.project!.title,'独立副本');assert.deepEqual(copy.project!.outputs,[]);assert.deepEqual(copy.project!.sessionIds??[],[]);assert.equal(copy.project!.extensions.sessionIds,undefined);
+  const copy=await hub.call<StudioSnapshot>('duplicate',{projectId:id,expectedRevision:renamed.project!.revision,title:'独立副本'});assert.notEqual(copy.project!.id,id);assert.equal(copy.project!.title,'独立副本');assert.deepEqual(copy.project!.outputs,[]);assert.deepEqual(copy.project!.sessionIds??[],[]);assert.equal(copy.project!.extensions.sessionIds,undefined);
   assert.equal(copy.project!.assets[0]!.text,'保留的文本素材');assert.deepEqual(await hub.call('source',{projectId:copy.project!.id,shotId}),source);
   await hub.call('archive',{projectId:id});const listed=await hub.call<{projects:ProjectLocation[]}>('list');assert.equal(listed.projects.some(p=>p.id===id),false);
   const all=await hub.call<{projects:ProjectLocation[]}>('list',{includeArchived:true});assert.equal(all.projects.find(p=>p.id===id)!.archived,true);assert.ok(all.projects.find(p=>p.id===id)!.archivedAt);
@@ -58,7 +58,7 @@ test('renaming a library project leaves both host and client snapshot on the sel
  const base=await mkdtemp(join(tmpdir(),'dsh-library-rename-other-'));let hub=new ProjectHub(context,{baseDirectory:base});
  try{
   const a=await hub.call<StudioSnapshot>('create',{title:'正在编辑的 A'}),b=await hub.call<StudioSnapshot>('create',{title:'列表中的 B',select:false});
-  const renamed=await hub.call<StudioSnapshot>('rename',{projectId:b.project!.id,title:'更新后的 B'});
+  const renamed=await hub.call<StudioSnapshot>('rename',{projectId:b.project!.id,expectedRevision:b.project!.revision,title:'更新后的 B'});
   assert.equal(renamed.project!.id,a.project!.id);assert.equal((await hub.call<StudioSnapshot>('current')).project!.id,a.project!.id);
   const listed=await hub.call<{projects:ProjectLocation[]}>('list');assert.equal(listed.projects.find(p=>p.id===b.project!.id)!.title,'更新后的 B');
   await hub.dispose();hub=new ProjectHub(context,{baseDirectory:base});

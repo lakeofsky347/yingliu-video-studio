@@ -123,7 +123,7 @@ test('a title-only cached Session projection refreshes the complete catalog for 
 test('team edits require a read revision and concurrent commits cannot overwrite each other',async()=>{
   const base=await mkdtemp(join(tmpdir(),'video-team-conflict-')),rows:SessionDirectoryRow[]=[{sessionId:'lead',running:false},...['editor-A','editor-B'].map(sessionId=>({sessionId,running:false,origin:'subagent' as const,parentSessionId:'lead'}))],ctx=directory(rows),hub=new ProjectHub(ctx,{baseDirectory:base}),tools=createSessionTools(ctx,hub);
   try{
-    const project=await run(tools,'video_project',{action:'create'},'lead');await assert.rejects(run(tools,'video_update',{update:{title:'无版本'}},'editor-A'),/需要 expectedRevision/);
+    const project=await run(tools,'video_project',{action:'create'},'lead');await assert.rejects(run(tools,'video_update',{update:{title:'无版本'}},'editor-A'),/expectedRevision/);
     const [a,b]=await Promise.all(['editor-A','editor-B'].map(caller=>run(tools,'video_project',{action:'get'},caller)));
     const results=await Promise.allSettled([run(tools,'video_update',{expectedRevision:a.revision,update:{title:'A 的修改'}},'editor-A'),run(tools,'video_update',{expectedRevision:b.revision,update:{title:'B 的修改'}},'editor-B')]);
     assert.equal(results.filter(result=>result.status==='fulfilled').length,1);assert.equal(results.filter(result=>result.status==='rejected').length,1);
@@ -138,7 +138,7 @@ test('an explicit project ID permits cross-agent collaboration without changing 
     const a=await run(tools,'video_project',{action:'create',title:'A'},'lead-A'),b=await run(tools,'video_project',{action:'create',title:'B'},'lead-B');
     const listed=await run(tools,'video_project',{action:'list'},'worker');assert.equal(listed.ownerSessionId,'lead-A');assert.equal(listed.projectId,a.projectId);
     const foreign=await run(tools,'video_project',{action:'get',projectId:b.projectId},'worker');assert.equal(foreign.ownerSessionId,'worker');assert.equal(foreign.routingSource,'explicit-project');
-    await assert.rejects(run(tools,'video_update',{projectId:b.projectId,update:{title:'未读取版本'}},'worker'),/需要 expectedRevision/);
+    await assert.rejects(run(tools,'video_update',{projectId:b.projectId,update:{title:'未读取版本'}},'worker'),/expectedRevision/);
     await run(tools,'video_update',{projectId:b.projectId,expectedRevision:foreign.revision,update:{topic:'协助 B 工程'}},'worker');
     assert.equal((await run(tools,'video_project',{action:'get'},'worker')).projectId,a.projectId);assert.equal((await run(tools,'video_project',{action:'get'},'lead-A')).topic,a.topic);assert.equal((await run(tools,'video_project',{action:'get'},'lead-B')).topic,'协助 B 工程');
   }finally{await hub.dispose();await rm(base,{recursive:true,force:true});}
@@ -147,7 +147,7 @@ test('an explicit project ID permits cross-agent collaboration without changing 
 test('team projection makes the lead a versioned writer alongside its teammate',async()=>{
   const base=await mkdtemp(join(tmpdir(),'video-team-lead-version-')),rows:SessionDirectoryRow[]=[{sessionId:'lead',running:false,projections:{values:{agentTeam:{members:[{id:'lead',role:'lead'},{id:'member',role:'teammate',phase:'active'}]}}}},{sessionId:'member',running:false,origin:'subagent',parentSessionId:'lead'}],ctx=directory(rows),hub=new ProjectHub(ctx,{baseDirectory:base}),tools=createSessionTools(ctx,hub);
   try{
-    await run(tools,'video_project',{action:'create'},'lead');await assert.rejects(run(tools,'video_update',{update:{shots:[]}},'lead'),/需要 expectedRevision/);
+    await run(tools,'video_project',{action:'create'},'lead');await assert.rejects(run(tools,'video_update',{update:{shots:[]}},'lead'),/expectedRevision/);
     const [lead,member]=await Promise.all(['lead','member'].map(caller=>run(tools,'video_project',{action:'get'},caller)));
     const results=await Promise.allSettled([run(tools,'video_update',{expectedRevision:lead.revision,update:{topic:'Lead 修改'}},'lead'),run(tools,'video_update',{expectedRevision:member.revision,update:{title:'Member 修改'}},'member')]);assert.equal(results.filter(result=>result.status==='fulfilled').length,1);assert.equal(results.filter(result=>result.status==='rejected').length,1);
   }finally{await hub.dispose();await rm(base,{recursive:true,force:true});}
@@ -163,7 +163,7 @@ test('team background jobs keep caller ownership and pin the project even after 
     located.service.renderer.check=async()=>{await gate;return {ok:true,errors:[],frames:[]};};
     const job=await run(tools,'video_render',{action:'check'},'worker');assert.equal(jobOwner,'worker');assert.equal(job.projectId,a.projectId);assert.equal(job.ownerSessionId,'lead');assert.equal(job.callerSessionId,'worker');
     await hub.call('bindSession',{projectId:b.project!.id,sessionId:'lead',select:false});release();
-    const result=await hooks!.done;assert.equal(result.status,'completed');const receipt=JSON.parse(result.result!);assert.equal(receipt.projectId,a.projectId);assert.equal(receipt.callerSessionId,'worker');assert.equal(receipt.ownerSessionId,'lead');assert.equal((await run(tools,'video_project',{action:'get'},'worker')).projectId,b.project!.id);
+    const result=await hooks!.done;assert.equal(result.status,'completed',result.detail);const receipt=JSON.parse(result.result!);assert.equal(receipt.projectId,a.projectId);assert.equal(receipt.callerSessionId,'worker');assert.equal(receipt.ownerSessionId,'lead');assert.equal((await run(tools,'video_project',{action:'get'},'worker')).projectId,b.project!.id);
   }finally{release();await hub.dispose();await rm(base,{recursive:true,force:true});}
 });
 

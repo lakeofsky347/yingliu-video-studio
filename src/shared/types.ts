@@ -58,7 +58,7 @@ export interface VideoStyle {
 }
 export interface ExportResult {
   id:string; path:string; url?:string; createdAt:string; revision:number;
-  width:number; height:number; frameCount:number; duration:number; qa?:Record<string,unknown>;
+  width:number; height:number; frameCount:number; duration:number; qa?:Record<string,unknown>; localQuality?:import('../workflows/local-quality.ts').LocalQualityReport;
 }
 export interface VideoProject {
   schemaVersion:1|2|3; id:string; title:string; topic:string; targetDuration:number;
@@ -79,7 +79,7 @@ export interface TaskState {
   id:string; kind:'storyboard'|'scenes'|'modify'|'preview'|'export'|'audio';
   status:'running'|'complete'|'failed'|'cancelled'|'interrupted'; progress:number; message:string;
   startedAt:string; finishedAt?:string; error?:string; shotId?:string; logPath?:string;
-  revision?:number; retryOf?:string;
+  revision?:number; retryOf?:string; failure?:import('./task-diagnostic.ts').TaskFailureDiagnostic;
 }
 export interface TaskRecord extends TaskState { retryable:boolean }
 export interface ProjectHistory {

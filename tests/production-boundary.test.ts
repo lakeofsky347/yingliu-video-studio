@@ -32,7 +32,7 @@ test('configured video models cannot be called from code mode, including direct 
 test('model mode forbids source mutation and incomplete export, without code fallback',async()=>fixture(async hub=>{
   const {project}=await hub.call<StudioSnapshot>('create',{title:'model only',productionMode:'model_video'}),id=project!.id,shotId=project!.shots[0]!.id;
   await assert.rejects(hub.call('saveSource',{projectId:id,expectedRevision:project!.revision,shotId,source:{html:'',css:'',js:'export function render(){}'},check:false}),/不允许执行自由动画/);
-  await assert.rejects(hub.call('generate',{projectId:id,kind:'scenes',provider:'unused',model:'unused'}),/不允许执行自由动画/);
+  await assert.rejects(hub.call('generate',{projectId:id,expectedRevision:project!.revision,kind:'scenes',provider:'unused',model:'unused'}),/不允许执行自由动画/);
   await assert.rejects(hub.call('export',{projectId:id}),/尚未采用视频/);
   assert.equal((await hub.call<StudioSnapshot>('current',{projectId:id})).project!.revision,project!.revision);
 }));

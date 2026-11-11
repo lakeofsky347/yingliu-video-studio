@@ -114,6 +114,8 @@ export class ProjectStore {
     const full='project' in input?input:undefined;
     const brief=input as {title?:string;topic?:string};
     const project:VideoProject=migrateProject(full?full.project:'schemaVersion' in input?input:createProject(brief.title??'未命名视频',brief.topic??''));
+    for(const key of ['importApplications','mediaApplications','workflowApplications','workflowInitializations'])delete project.extensions[key];
+    const document=project.extensions.directorDocument as any;if(document){document.status='draft';delete document.approvedAt;}
     project.revision=0;project.createdAt=new Date().toISOString();project.updatedAt=project.createdAt;
     validateStoredProject(project);
     const sources=validateSources(project,full?.sources);
@@ -208,7 +210,7 @@ export class ProjectStore {
     const state=await this.ensureState(root),previous=state?await this.version(root,state.current):undefined;
     if(previous&&project.id!==previous.project.id)throw new Error('不能改写工程 ID');
     if(previous?.project.schemaVersion===3&&project.schemaVersion!==3)throw new Error('不能降级工程格式或丢弃制作策略');
-    if(options.expectedRevision!==undefined&&options.expectedRevision!==previous?.project.revision)throw Object.assign(new Error('工程版本已更新，请重新读取后合并修改'),{code:'REVISION_CONFLICT'});
+    if(options.expectedRevision!==undefined&&options.expectedRevision!==previous?.project.revision)throw Object.assign(new Error('工程版本已更新，请重新读取后合并修改'),{code:'REVISION_CONFLICT',localWriteNotStarted:true});
     if(previous&&project.revision<=previous.project.revision)throw Object.assign(new Error('新提交的 revision 必须递增'),{code:'REVISION_CONFLICT'});
     const sources:Record<string,SceneSource>={};
     for(const id of Object.keys(sourceChanges))if(!project.shots.some(s=>s.id===id))throw new Error('源码引用的镜头不存在');
@@ -273,6 +275,7 @@ export class ProjectStore {
     const target=await this.version(root,id),project=structuredClone(target.project);
     // Outputs and session associations outlive editable content and must not be rolled back.
     project.outputs=structuredClone(current.project.outputs);
+    if(current.project.extensions.importApplications)project.extensions.importApplications=structuredClone(current.project.extensions.importApplications);
     // Content history is not an authorization history. Revoked grants stay revoked.
     project.productionPolicy=structuredClone(current.project.productionPolicy);project.schemaVersion=3;
     if(current.project.sessionIds!==undefined)project.sessionIds=structuredClone(current.project.sessionIds);else delete project.sessionIds;
@@ -294,6 +297,8 @@ export class ProjectStore {
     const state=await this.ensureState(root);if(!state)throw new Error('未找到工程');const current=await this.version(root,state.current),project=structuredClone(current.project);
     project.id='film_'+randomUUID().replaceAll('-','');project.title=title?.trim()||project.title+'（副本）';project.outputs=[];project.sessionIds=[];delete project.extensions.sessionIds;
     if(project.productionPolicy?.mode==='hybrid'){project.productionPolicy=defaultProductionPolicy();for(const shot of project.shots)shot.visual={kind:'unresolved'};}
+    for(const key of ['importApplications','mediaApplications','workflowApplications','workflowInitializations'])delete project.extensions[key];
+    const document=project.extensions.directorDocument as any;if(document){document.status='draft';delete document.approvedAt;}
     project.revision=0;project.createdAt=new Date().toISOString();project.updatedAt=project.createdAt;validateStoredProject(project);
     const slug=project.title.replace(/[^\p{L}\p{N}_-]+/gu,'-').replace(/^-|-$/g,'').slice(0,50)||'video';
     const destination=path.join(this.baseDirectory,slug+'-'+project.id);await fs.mkdir(destination,{recursive:false});
