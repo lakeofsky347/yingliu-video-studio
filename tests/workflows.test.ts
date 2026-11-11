@@ -65,8 +65,8 @@ test('director, scene and speech candidates enter an existing project in one com
   assert.equal(done.status,'complete',done.error);assert.equal(f.calls.director,1);assert.equal(f.calls.commit.length,1);assert.equal(f.calls.scene.size,2);assert.equal(f.calls.voice.size,2);assert.equal(f.project.revision,1);assert.equal(f.project.audioClips?.length,2);assert.deepEqual(f.project.shots.map(shot=>shot.id),f.original.shots.map(shot=>shot.id));assert.equal(Object.keys(f.calls.commit[0]!.sources).length,2);
 });
 
-test('retry regenerates only failed scene work and preserves completed speech and sources',async t=>{
-  const f=await fixture(t),failedId=f.project.shots[1]!.id;let fail=true;f.hooks.scene=async id=>{if(id===failedId&&fail){fail=false;throw new Error('fixture scene failure');}};
+test('retry regenerates only a scene rejected before submission and preserves completed speech and sources',async t=>{
+  const f=await fixture(t),failedId=f.project.shots[1]!.id;let fail=true;f.hooks.scene=async id=>{if(id===failedId&&fail){fail=false;throw Object.assign(new Error('fixture scene preflight failure'),{submissionUncertain:false});}};
   const started=await f.service.run(f.request({narration:true}));assert.equal((await settled(f.service,started.id)).status,'failed');assert.equal(f.calls.commit.length,0);
   const completed=(await f.service.get(started.id)).steps.filter(step=>step.status==='complete');await f.service.retry(started.id);const done=await settled(f.service,started.id);assert.equal(done.status,'complete',done.error);assert.equal(f.calls.director,1);assert.equal(f.calls.scene.get(f.project.shots[0]!.id),1);assert.equal(f.calls.scene.get(failedId),2);assert.equal(f.calls.commit.length,1);for(const step of completed)assert.equal(done.steps.find(item=>item.id===step.id)?.status,'complete');
 });
@@ -77,11 +77,11 @@ test('CAS conflict keeps candidates pending and explicit adoption preserves newe
   await assert.rejects(f.service.apply(started.id,0),/冲突/);await f.service.apply(started.id,1);const done=await settled(f.service,started.id);assert.equal(done.status,'complete',done.error);assert.equal(f.calls.commit.length,1);assert.equal(f.project.title,'用户的新标题');assert.equal(f.project.revision,2);assert.equal(f.calls.director,1);assert.ok([...f.calls.scene.values()].every(count=>count===1));
 });
 
-test('pause and process restart reuse completed scene output without another director request',async t=>{
+test('pause and process restart preserve completed sources and do not repeat an uncertain scene request',async t=>{
   const f=await fixture(t),blocked=f.project.shots[1]!.id;f.hooks.scene=async(id,signal)=>{if(id===blocked)await block(signal);};
-  const started=await f.service.run(f.request());await until(()=>f.service.get(started.id),record=>record.steps.some(step=>step.kind==='code'&&step.shotId!==blocked&&step.status==='complete')&&record.steps.some(step=>step.kind==='code'&&step.shotId===blocked&&step.status==='running'));
+  const started=await f.service.run(f.request());await until(()=>f.service.get(started.id),record=>f.calls.scene.get(blocked)===1&&record.steps.some(step=>step.kind==='code'&&step.shotId!==blocked&&step.status==='complete')&&record.steps.some(step=>step.kind==='code'&&step.shotId===blocked&&step.status==='running'));
   const paused=await f.service.pause(started.id);assert.equal(paused.status,'paused');assert.equal(f.calls.commit.length,0);await f.restart();assert.equal((await f.service.get(started.id)).status,'paused');f.hooks.scene=undefined;
-  await f.service.retry(started.id);const done=await settled(f.service,started.id);assert.equal(done.status,'complete',done.error);assert.equal(f.calls.director,1);assert.equal(f.calls.scene.get(f.project.shots[0]!.id),1);assert.equal(f.calls.scene.get(blocked),2);assert.equal(f.calls.commit.length,1);
+  await f.service.retry(started.id);const done=await settled(f.service,started.id);assert.equal(done.status,'failed');assert.match(done.error??'',/提交结果待确认/);assert.equal(f.calls.director,1);assert.equal(f.calls.scene.get(f.project.shots[0]!.id),1);assert.equal(f.calls.scene.get(blocked),1);assert.equal(f.calls.commit.length,0);assert.equal(done.steps.find(step=>step.kind==='code'&&step.shotId!==blocked)?.status,'complete');
 });
 
 test('review requires upload consent and forwards captured bytes with verifiable frame receipts',async t=>{
@@ -141,7 +141,7 @@ test('lost workflow linkage reuses a stable media request identity instead of an
 
 test('step and model-call timings are recorded once and preserved for reused results',async t=>{
   const f=await fixture(t);let failed=false;const second=f.project.shots[1]!.id;
-  f.hooks.scene=async id=>{await new Promise(resolve=>setTimeout(resolve,8));if(id===second&&!failed){failed=true;throw new Error('timed synthetic failure');}};
+  f.hooks.scene=async id=>{await new Promise(resolve=>setTimeout(resolve,8));if(id===second&&!failed){failed=true;throw Object.assign(new Error('timed synthetic preflight failure'),{submissionUncertain:false});}};
   const started=await f.service.run(f.request({review:true,allowImageUpload:true}));assert.equal((await settled(f.service,started.id)).status,'failed');
   const first=(await f.service.get(started.id)).steps.find(step=>step.kind==='code'&&step.shotId!==second)!;assert.equal(first.status,'complete');const firstTiming=copy(first);
   await f.service.retry(started.id);const done=await settled(f.service,started.id);assert.equal(done.status,'complete',done.error);
@@ -165,9 +165,9 @@ test('unknown speech submission failure is never automatically submitted again',
   await f.service.retry(started.id);const retried=await settled(f.service,started.id);assert.equal(retried.status,'failed');assert.match(retried.error??'',/结果待确认/);assert.equal(attempts,1);assert.equal(f.calls.commit.length,0);
 });
 
-test('failed candidate vision never commits; retry reuses staged assets and completed generation',async t=>{
+test('candidate vision preflight failure never commits; retry reuses staged assets and completed generation',async t=>{
   const f=await fixture(t,1);let fail=true;
-  f.hooks.vision=async()=>{assert.equal(f.calls.commit.length,0);if(fail){fail=false;throw new Error('fixture vision unavailable');}};
+  f.hooks.vision=async()=>{assert.equal(f.calls.commit.length,0);if(fail){fail=false;throw Object.assign(new Error('fixture vision preflight unavailable'),{submissionUncertain:false});}};
   const started=await f.service.run(f.request({visual:'image',review:true,allowImageUpload:true})),failed=await settled(f.service,started.id);
   assert.equal(failed.status,'failed');assert.equal(f.calls.commit.length,0);assert.equal(f.project.assets.length,0);assert.equal(f.calls.ack.length,0);assert.equal(f.calls.submissions,1);
   assert.equal(f.calls.candidates[0]!.project.assets.length,1,'capture must contain the staged generated asset');
@@ -190,11 +190,11 @@ test('review receipts survive a precommit failure and process restart without an
   await f.restart();await f.service.retry(started.id);const done=await settled(f.service,started.id);assert.equal(done.status,'complete',done.error);assert.equal(f.calls.vision.length,1);assert.equal(f.calls.capture.length,1);assert.equal(f.calls.commit.length,1);
 });
 
-test('pausing candidate review preserves the project head and completed generation',async t=>{
+test('pausing submitted candidate review preserves the project head and blocks another uncertain vision charge',async t=>{
   const f=await fixture(t,1);f.hooks.vision=async signal=>block(signal);
-  const started=await f.service.run(f.request({review:true,allowImageUpload:true}));await until(()=>f.service.get(started.id),record=>record.steps.some(step=>step.kind==='review'&&step.modelCalls?.some(call=>call.status==='running')));
+  const started=await f.service.run(f.request({review:true,allowImageUpload:true}));await until(()=>f.service.get(started.id),record=>f.calls.vision.length===1&&record.steps.some(step=>step.kind==='review'&&step.modelCalls?.some(call=>call.status==='running')));
   const paused=await f.service.pause(started.id);assert.equal(paused.status,'paused');assert.equal(f.calls.commit.length,0);assert.equal(f.project.revision,0);
-  f.hooks.vision=undefined;await f.service.retry(started.id);const done=await settled(f.service,started.id);assert.equal(done.status,'complete',done.error);assert.equal(f.calls.director,1);assert.ok([...f.calls.scene.values()].every(count=>count===1));assert.equal(f.calls.commit.length,1);
+  f.hooks.vision=undefined;await f.service.retry(started.id);const done=await settled(f.service,started.id);assert.equal(done.status,'failed');assert.match(done.error??'',/提交结果待确认/);assert.equal(f.calls.director,1);assert.ok([...f.calls.scene.values()].every(count=>count===1));assert.equal(f.calls.vision.length,1);assert.equal(f.calls.commit.length,0);
 });
 
 test('long speech is fitted before candidate capture so review and commit use identical timing',async t=>{
@@ -250,7 +250,7 @@ test('unstructured or low-confidence static review needs trusted confirmation; a
 });
 
 test('retry never exceeds reserved external-call budget',async t=>{
-  const f=await fixture(t,1);f.hooks.scene=async()=>{throw new Error('first request failed');};const started=await f.service.run(f.request({maxTasks:2}));assert.equal((await settled(f.service,started.id)).usage.externalCalls,2);
+  const f=await fixture(t,1);f.hooks.scene=async()=>{throw Object.assign(new Error('first request rejected before submission'),{submissionUncertain:false});};const started=await f.service.run(f.request({maxTasks:2}));assert.equal((await settled(f.service,started.id)).usage.externalCalls,2);
   f.hooks.scene=undefined;await f.service.retry(started.id);const failed=await settled(f.service,started.id);assert.equal(failed.status,'failed');assert.match(failed.error!,/上限/);assert.equal(f.calls.scene.size,1);assert.equal([...f.calls.scene.values()][0],1);assert.equal(f.calls.commit.length,0);
 });
 

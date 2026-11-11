@@ -10,6 +10,7 @@ export interface WorkflowRequest {
   filmKind?:FilmKind;audioStrategy?:AudioStrategy;directorPlan?:DirectorPlan;
 }
 export interface WorkflowModelCall {
+  id?:string;requestKey?:string;submissionUncertain?:boolean;
   role:'director'|'scene'|'vision';status:'running'|'complete'|'failed';startedAt:string;finishedAt?:string;durationMs?:number;
 }
 export interface WorkflowStep {
@@ -34,6 +35,8 @@ export interface WorkflowPort {
   commit(projectId:string,expectedRevision:number,project:VideoProject,sources:Record<string,SceneSource>,label:string):Promise<StudioSnapshot>;
   /** Trusted staging only: writes immutable media files, never changes the project head. */
   stageMedia(projectId:string,task:MediaTask,files:GeneratedFile[],signal:AbortSignal):Promise<Asset[]>;
-  voice(projectId:string,shotId:string,text:string,signal:AbortSignal):Promise<Asset>;
+  voice(projectId:string,shotId:string,text:string,signal:AbortSignal,expectedIdentity?:string):Promise<Asset>;
+  /** Stable identity of the effective voice configuration; excludes credentials. */
+  voiceIdentity?(projectId:string):Promise<string>;
   capture(projectId:string,frame:number,signal:AbortSignal,candidate?:WorkflowCandidate):Promise<{bytes:Uint8Array;mime:string;sha256:string}>;
 }

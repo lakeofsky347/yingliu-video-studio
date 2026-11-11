@@ -99,6 +99,12 @@ export class MediaTaskService {
     else if(remote.status==='succeeded'){task.metrics??={};task.metrics.remoteCompletedAt??=new Date().toISOString();if(task.metrics.submittedAt)task.metrics.generationMs=Date.parse(task.metrics.remoteCompletedAt)-Date.parse(task.metrics.submittedAt);task.phase='downloading';task.message='生成完成，正在获取素材';}
     else {task.phase=remote.status;task.message=remote.status==='queued'?'云端排队中':'云端生成中';}
   }
+  private canReuseSuccessfulResult(task:MediaTask):boolean {
+    // Embedded bytes are already durable; local validation failure must not poll
+    // a synchronous receipt as though it were a remote job. URL artifacts may
+    // expire, so real asynchronous jobs retain their existing refresh path.
+    return task.remoteStatus==='succeeded'&&!!task.artifacts?.length&&task.artifacts.every(artifact=>typeof artifact.base64==='string');
+  }
   private async run(task:MediaTask,signal:AbortSignal):Promise<void>{try{
     signal.throwIfAborted();let remote:RemoteJob|null=null;
     if(task.phase==='pending'){
@@ -111,7 +117,7 @@ export class MediaTaskService {
       };
       remote=this.projects.submitAuthorized?await this.projects.submitAuthorized(task.projectId,task.operation,task.shotId,task.productionPolicyFingerprint,submit):await submit();
       this.applyRemote(task,remote);await this.persist(task);
-    }else if(task.operation!=='text-to-image'){
+    }else if(!this.canReuseSuccessfulResult(task)&&task.operation!=='text-to-image'){
       remote=await pollGeneration(await this.context(task,signal),task.connection.protocol,task.operation,task.remoteJobId,task.clientRequestId);
       if(!remote){task.phase='unknown';task.observation='paused';task.message='未查到提交结果；没有重新发起计费请求';await this.persist(task);return;}this.applyRemote(task,remote);await this.persist(task);
     }else if(!task.artifacts?.length){task.phase='unknown';task.observation='paused';task.message='生图提交结果未确认，兼容接口不支持查单；请核对服务记录';await this.persist(task);return;}

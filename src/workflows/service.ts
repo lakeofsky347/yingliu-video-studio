@@ -1,6 +1,8 @@
-import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { writeDurableFile } from '../shared/durable-file.ts';
+import { safeRelativeProjectPath } from '../core/project-paths.ts';
 import { defaultSceneSource, validateProject } from '../core/index.ts';
 import {assertProductionOperation,productionPolicyFingerprint,productionMode} from '../core/production-policy.ts';
 import {DIRECTOR_RULESET_VERSION,DIRECTOR_RULES,directorShotContext,requiresNativeAudio,validateDirectorPlan,type TrustedReview,type QualityReport} from '../director/index.ts';
@@ -16,7 +18,20 @@ interface StoredWorkflow extends WorkflowRecord {
   baseline?:VideoProject; plan?:ShotPlan[]; assets?:Record<string,Asset[]>;
   initialization?:{project:VideoProject;plan:ShotPlan[]};
   candidate?:WorkflowCandidate & {expectedRevision:number};adoptionRevision?:number;
-  policyFingerprint?:string;reviewApproval?:TrustedReview;
+  policyFingerprint?:string;reviewApproval?:TrustedReview;voiceIdentity?:string;
+  successes?:Record<string,SuccessReceipt>;
+}
+interface SuccessReceipt {
+  version:1;workflowId:string;stepId:string;key:string;kind:'text'|'speech';
+  output?:string;asset?:Asset;modelCall?:WorkflowModelCall;
+}
+type Checkpoint='record'|'created'|'text-submission'|'speech-submission'|'success-receipt'|'speech-complete'|'candidate'|'before-commit'|'after-commit';
+export interface WorkflowPersistenceEvent {
+  phase:'before-write'|'after-write';checkpoint:Checkpoint;workflowId:string;stepId?:string;successKind?:SuccessReceipt['kind'];record:WorkflowRecord;
+}
+export interface WorkflowServiceOptions {
+  /** Trusted, constructor-only fault injection. Never accepted through RPC or workflow requests. */
+  onPersistPhase?:(event:WorkflowPersistenceEvent)=>Promise<void>|void;
 }
 const message=(error:unknown)=>error instanceof Error?error.message:String(error);
 function delay(signal:AbortSignal):Promise<void>{return new Promise((accept,reject)=>{const timer=setTimeout(()=>{signal.removeEventListener('abort',stop);accept();},250);const stop=()=>{clearTimeout(timer);reject(signal.reason);};signal.addEventListener('abort',stop,{once:true});if(signal.aborted)stop();});}
@@ -39,34 +54,69 @@ export class WorkflowService {
   private running=new Map<string,{controller:AbortController;promise:Promise<void>}>();
   private projectQueues=new Map<string,Promise<unknown>>();
   private stepStarts=new Map<string,number>();
-  private writes=Promise.resolve();private initialized?:Promise<void>;private stopped=false;
+  private writes=Promise.resolve();private initialized?:Promise<void>;private stopped=false;private disposal?:Promise<void>;
   private readonly directory:string;
-  constructor(directory:string,private media:MediaTaskService,private port:WorkflowPort){this.directory=join(directory,'workflows');}
+  constructor(directory:string,private media:MediaTaskService,private port:WorkflowPort,private options:WorkflowServiceOptions={}){this.directory=join(directory,'workflows');}
   private initialize(){return this.initialized??=(async()=>{
     await mkdir(this.directory,{recursive:true});
     for(const name of await readdir(this.directory)){
       if(!/^[a-zA-Z0-9_-]{1,100}\.json$/.test(name))continue;
       const record=JSON.parse(await readFile(join(this.directory,name),'utf8')) as StoredWorkflow;
       if(record.version!==1||record.id+'.json'!==name||!record.projectId||!Array.isArray(record.steps))throw new Error('协作任务记录无效');
-      if(record.status==='running'){record.status='paused';record.message='上次制作已中断；继续时复用已完成产物';for(const step of record.steps)if(step.status==='running'){step.status='pending';if(step.kind==='speech'&&!step.assetIds?.length)step.submissionUncertain=true;}}
+      if(record.status==='running'){record.status='paused';record.message='上次制作已中断；继续时复用已完成产物';for(const step of record.steps)if(step.status==='running'){step.status='pending';if(step.kind==='speech'&&!step.assetIds?.length)step.submissionUncertain=true;for(const call of step.modelCalls??[])if(call.status==='running')call.submissionUncertain??=true;}}
       this.records.set(record.id,record);
     }
   })();}
-  private public(record:StoredWorkflow):WorkflowRecord {const {baseline,plan,assets,initialization,candidate,adoptionRevision,policyFingerprint,reviewApproval,...value}=structuredClone(record);return value;}
-  private persist(record:StoredWorkflow){for(const step of record.steps)if(step.status!=='running')this.finishStep(step);record.updatedAt=new Date().toISOString();const snapshot=structuredClone(record);const work=this.writes.then(async()=>{const destination=join(this.directory,record.id+'.json'),temporary=destination+'.tmp-'+randomUUID();await writeFile(temporary,JSON.stringify(snapshot,null,2)+'\n',{mode:0o600});await rename(temporary,destination);});this.writes=work.catch(()=>{});return work;}
+  private public(record:StoredWorkflow):WorkflowRecord {const {baseline,plan,assets,initialization,candidate,adoptionRevision,policyFingerprint,reviewApproval,voiceIdentity,successes,...value}=structuredClone(record);return value;}
+  private writeCheckpoint(record:StoredWorkflow,file:string,value:unknown,checkpoint:Checkpoint,stepId?:string,successKind?:SuccessReceipt['kind']){
+    const data=JSON.stringify(value,null,2)+'\n',event={checkpoint,workflowId:record.id,stepId,successKind,record:this.public(record)};
+    const work=this.writes.then(async()=>{
+      await this.options.onPersistPhase?.({...event,phase:'before-write'});
+      await writeDurableFile(file,data);
+      await this.options.onPersistPhase?.({...event,phase:'after-write'});
+    });this.writes=work.catch(()=>{});return work;
+  }
+  private persist(record:StoredWorkflow,checkpoint:Checkpoint='record'){
+    for(const step of record.steps)if(step.status!=='running')this.finishStep(step);record.updatedAt=new Date().toISOString();
+    return this.writeCheckpoint(record,join(this.directory,record.id+'.json'),record,checkpoint);
+  }
+  private successFile(record:StoredWorkflow,step:WorkflowStep,key:string){
+    if(!/^[a-zA-Z0-9_-]{1,100}$/.test(record.id)||!/^[a-zA-Z0-9_-]{1,100}$/.test(step.id)||!/^[a-f0-9]{64}$/.test(key))throw new Error('协作成功回执 ID 无效');
+    return join(this.directory,'receipts',record.id,step.id+'-'+key+'.json');
+  }
+  private async success(record:StoredWorkflow,step:WorkflowStep,key:string,kind:SuccessReceipt['kind']):Promise<SuccessReceipt|undefined>{
+    const cached=record.successes?.[key];let receipt:SuccessReceipt;
+    if(cached)receipt=structuredClone(cached);
+    else try{receipt=JSON.parse(await readFile(this.successFile(record,step,key),'utf8'));}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return;throw Object.assign(new Error('协作成功回执无法读取，已停止以免重复调用：'+message(error)),{code:'WORKFLOW_RECEIPT_INVALID'});}
+    const asset=receipt?.asset;
+    if(!receipt||receipt.version!==1||receipt.workflowId!==record.id||receipt.stepId!==step.id||receipt.key!==key||receipt.kind!==kind
+      ||kind==='text'&&(typeof receipt.output!=='string'||!receipt.modelCall||receipt.modelCall.status!=='complete')
+      ||kind==='speech'&&(!asset||asset.kind!=='audio'||typeof asset.id!=='string'||typeof asset.name!=='string'||typeof asset.path!=='string'||!asset.path.startsWith('assets/')||!safeRelativeProjectPath(asset.path)||!Number.isFinite(asset.duration)||asset.duration!<=0))throw Object.assign(new Error('协作成功回执损坏，已保留原文件并停止以免重复调用'),{code:'WORKFLOW_RECEIPT_INVALID'});
+    (record.successes??={})[key]=structuredClone(receipt);return receipt;
+  }
+  private saveSuccess(record:StoredWorkflow,step:WorkflowStep,receipt:SuccessReceipt){
+    // Preserve a returned result in the main snapshot even if its independent receipt fails.
+    (record.successes??={})[receipt.key]=structuredClone(receipt);
+    return this.writeCheckpoint(record,this.successFile(record,step,receipt.key),receipt,'success-receipt',step.id,receipt.kind);
+  }
   private beginStep(step:WorkflowStep){
     if(step.status==='complete')return;step.status='running';step.startedAt=new Date().toISOString();delete step.finishedAt;delete step.durationMs;this.stepStarts.set(step.id,performance.now());
   }
   private finishStep(step:WorkflowStep){
     const started=this.stepStarts.get(step.id);if(started===undefined)return;step.finishedAt=new Date().toISOString();step.durationMs=Math.max(0,Math.round(performance.now()-started));this.stepStarts.delete(step.id);
   }
-  private async text(record:StoredWorkflow,step:WorkflowStep,role:'director'|'scene'|'vision',prompt:string,signal:AbortSignal,images?:{bytes:Uint8Array;mime:string}[]){
+  private async text(record:StoredWorkflow,step:WorkflowStep,role:'director'|'scene'|'vision',prompt:string,signal:AbortSignal,images?:{bytes:Uint8Array;mime:string}[],validate?:(output:string)=>void){
+    await this.assertPolicy(record);signal.throwIfAborted();
+    const key=createHash('sha256').update(JSON.stringify([step.id,role,prompt,record.request.textRoute,record.policyFingerprint,images?.map(image=>[image.mime,createHash('sha256').update(image.bytes).digest('hex')])])).digest('hex');
+    const success=await this.success(record,step,key,'text');
+    if(success){validate?.(success.output!);const existing=step.modelCalls?.find(call=>success.modelCall!.id?call.id===success.modelCall!.id:call.role===success.modelCall!.role&&call.startedAt===success.modelCall!.startedAt);if(existing)Object.assign(existing,success.modelCall);else(step.modelCalls??=[]).push(structuredClone(success.modelCall!));return success.output!;}
+    if(step.modelCalls?.some(call=>call.role===role&&call.submissionUncertain))throw Object.assign(new Error('上次 '+role+' 模型提交结果待确认，缺少可复用的成功回执；不能自动重复调用，请检查供应商记录后明确新建制作'),{code:'WORKFLOW_SUBMISSION_UNCERTAIN'});
     await this.reserveCall(record);
-    const call:WorkflowModelCall={role,startedAt:new Date().toISOString(),status:'running'};step.modelCalls??=[];step.modelCalls.push(call);await this.persist(record);
-    const started=performance.now();call.startedAt=new Date().toISOString();
-    try{const result=await this.port.text(role,prompt,signal,record.request,images);call.status='complete';return result;}
-    catch(error){call.status='failed';throw error;}
-    finally{call.finishedAt=new Date().toISOString();call.durationMs=Math.max(0,Math.round(performance.now()-started));await this.persist(record);}
+    const call:WorkflowModelCall={id:randomUUID(),role,requestKey:key,submissionUncertain:false,startedAt:new Date().toISOString(),status:'running'};step.modelCalls??=[];step.modelCalls.push(call);await this.persist(record);
+    const started=performance.now();call.startedAt=new Date().toISOString();let submitted=false,received=false,returned=false;
+    try{call.submissionUncertain=true;await this.persist(record,'text-submission');signal.throwIfAborted();submitted=true;const result=await this.port.text(role,prompt,signal,record.request,images);received=true;validate?.(result);returned=true;call.status='complete';call.submissionUncertain=false;call.finishedAt=new Date().toISOString();call.durationMs=Math.max(0,Math.round(performance.now()-started));await this.saveSuccess(record,step,{version:1,workflowId:record.id,stepId:step.id,key,kind:'text',output:result,modelCall:structuredClone(call)});return result;}
+    catch(error){if(!returned){call.status='failed';call.submissionUncertain=submitted&&!received&&(error as {submissionUncertain?:boolean})?.submissionUncertain!==false;}throw error;}
+    finally{call.finishedAt??=new Date().toISOString();call.durationMs??=Math.max(0,Math.round(performance.now()-started));await this.persist(record);}
   }
   private async assertPolicy(record:StoredWorkflow,project?:VideoProject){
     const latest=project??(await this.port.snapshot(record.projectId)).project;if(!latest)throw new Error('工程不存在');
@@ -83,10 +133,19 @@ export class WorkflowService {
   private async required(id:string){await this.initialize();const value=this.records.get(id);if(!value)throw new Error('协作任务不存在');return value;}
   async list(projectId?:string){await this.initialize();return [...this.records.values()].filter(item=>!projectId||item.projectId===projectId).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).map(item=>this.public(item));}
   async get(id:string){return this.public(await this.required(id));}
+  private assertOpen(){if(this.stopped)throw new Error('协作服务正在关闭');}
   private projectLock<T>(projectId:string,work:()=>Promise<T>):Promise<T>{
+    if(this.stopped)return Promise.reject(new Error('协作服务正在关闭'));
     const previous=this.projectQueues.get(projectId)??Promise.resolve();
     const next=previous.catch(()=>{}).then(work);this.projectQueues.set(projectId,next);
     void next.finally(()=>{if(this.projectQueues.get(projectId)===next)this.projectQueues.delete(projectId);}).catch(()=>{});return next;
+  }
+  private async drainProjectTerminals(projectId:string){
+    // Runners do not acquire the admission queue; their terminal writes can finish here.
+    for(;;){
+      const finishing=[...this.running].filter(([id])=>{const record=this.records.get(id);return record?.projectId===projectId&&record.status!=='running';}).map(([,active])=>active.promise);
+      if(!finishing.length)return;await Promise.all(finishing);
+    }
   }
   private assertProjectIdle(projectId:string,except?:string){if([...this.records.values()].some(record=>record.projectId===projectId&&record.id!==except&&(record.status==='running'||this.running.has(record.id))))throw new Error('此工程已有协作制作任务');}
   private checkTaskBudget(record:StoredWorkflow,count=record.plan?.length??record.initialization?.plan.length??1){
@@ -102,7 +161,7 @@ export class WorkflowService {
     }
   }
   async run(input:WorkflowRequest):Promise<WorkflowRecord>{
-    await this.initialize();if(this.stopped)throw new Error('协作服务正在关闭');
+    await this.initialize();this.assertOpen();
     if(!input||typeof input.projectId!=='string'||typeof input.prompt!=='string'||!input.prompt.trim()||input.prompt.length>20000||!['code','image','video'].includes(input.visual))throw new Error('请填写工程、制作要求和画面类型');
     if(input.review&&!input.allowImageUpload)throw new Error('视觉检查需要明确允许本次工作流上传关键帧');
     if(input.maxTasks!==undefined&&(!Number.isSafeInteger(input.maxTasks)||input.maxTasks<1||input.maxTasks>100))throw new Error('任务上限须为 1–100');
@@ -114,27 +173,37 @@ export class WorkflowService {
     if(input.visual==='video'&&!input.narration&&input.audioStrategy==='external')throw new Error('外配音策略需要开启配音');
     if(input.directorPlan){const check=validateDirectorPlan(input.directorPlan);if(!check.ok)throw new Error(check.errors.join('\n'));}
     return this.projectLock(input.projectId,async()=>{
+    await this.drainProjectTerminals(input.projectId);this.assertOpen();
     this.assertProjectIdle(input.projectId);
-    const snapshot=await this.port.snapshot(input.projectId);if(!snapshot.project||snapshot.project.revision!==input.expectedRevision)throw Object.assign(new Error('工程版本已变化，请刷新后制作'),{code:'REVISION_CONFLICT'});
+    const snapshot=await this.port.snapshot(input.projectId);this.assertOpen();if(!snapshot.project||snapshot.project.revision!==input.expectedRevision)throw Object.assign(new Error('工程版本已变化，请刷新后制作'),{code:'REVISION_CONFLICT'});
     assertProductionOperation(snapshot.project,input.visual,input.shotIds?.length?input.shotIds:undefined);
     if(input.visual==='image')assertProductionOperation(snapshot.project,'code',input.shotIds?.length?input.shotIds:undefined);
     if(input.imageAssetIds?.some(id=>!snapshot.project!.assets.some(a=>a.id===id&&a.kind==='image')))throw new Error('本轮图片参考不存在或类型不受支持');
     if(input.shotIds?.some(id=>!snapshot.project!.shots.some(shot=>shot.id===id)))throw new Error('所选镜头不存在');
+    const voiceIdentity=input.narration?await this.port.voiceIdentity?.(input.projectId):undefined;this.assertOpen();
     const now=new Date().toISOString(),record:StoredWorkflow={version:1,id:randomUUID(),projectId:input.projectId,request:structuredClone(input),status:'running',message:'导演正在规划',createdAt:now,updatedAt:now,startRevision:input.expectedRevision,steps:[],usage:{cost:null,generatedTasks:0},baseline:structuredClone(snapshot.project),assets:{},policyFingerprint:productionPolicyFingerprint(snapshot.project)};
-    this.records.set(record.id,record);await this.persist(record);this.start(record);return this.public(record);
+    if(voiceIdentity!==undefined)record.voiceIdentity=voiceIdentity;
+    this.records.set(record.id,record);return this.persistAndStart(record,'created');
     });
   }
-  private start(record:StoredWorkflow){if(this.running.has(record.id)||this.stopped)return;const controller=new AbortController();const promise=this.execute(record,controller.signal).finally(()=>this.running.delete(record.id));this.running.set(record.id,{controller,promise});void promise.catch(()=>{});}
+  private async persistAndStart(record:StoredWorkflow,checkpoint:Checkpoint='record'){
+    try{await this.persist(record,checkpoint);}catch(error){record.status='failed';record.error=message(error);record.message='制作记录保存失败，尚未启动本次执行';await this.persist(record).catch(()=>{});throw error;}
+    if(this.stopped){record.status='paused';record.message='应用正在关闭，尚未启动本次执行；已完成产物保留';await this.persist(record);throw new Error('协作服务正在关闭');}
+    // No await between the final closing check and registering the runner.
+    this.start(record);return this.public(record);
+  }
+  private start(record:StoredWorkflow){this.assertOpen();if(this.running.has(record.id))return;const controller=new AbortController();const promise=this.execute(record,controller.signal).finally(()=>this.running.delete(record.id));this.running.set(record.id,{controller,promise});void promise.catch(()=>{});}
   async pause(id:string){const record=await this.required(id);const active=this.running.get(id);active?.controller.abort(new Error('已停止等待'));await active?.promise;
     for(const step of record.steps)if(step.taskId){const task=await this.media.get(step.taskId);if(task.observation==='active'&&!['ready','complete','failed','cancelled'].includes(task.phase))await this.media.pause(step.taskId);}
     if(record.status!=='complete'&&record.status!=='awaiting-apply'){record.status='paused';record.message='已暂停本地制作；云端生成可能仍在执行';await this.persist(record);}return this.public(record);}
   async retry(id:string){const record=await this.required(id);return this.projectLock(record.projectId,async()=>{
-    if(record.status==='complete')return this.public(record);const finishing=this.running.get(id);if(finishing){if(record.status==='running')return this.public(record);await finishing.promise;}if(this.stopped)throw new Error('协作服务正在关闭');this.assertProjectIdle(record.projectId,id);
+    await this.drainProjectTerminals(record.projectId);this.assertOpen();
+    if(record.status==='complete'||record.status==='running'&&this.running.has(id))return this.public(record);this.assertProjectIdle(record.projectId,id);
     for(const step of record.steps)if(step.status==='failed'||step.status==='running'){
-      if(step.taskId){const task=await this.media.get(step.taskId);if(['failed','cancelled'].includes(task.phase)){step.previousTaskIds=[...(step.previousTaskIds??[]),step.taskId];delete step.taskId;step.mediaAttempt=(step.mediaAttempt??0)+1;}}
+      if(step.taskId){const task=await this.media.get(step.taskId);this.assertOpen();if(['failed','cancelled'].includes(task.phase)){step.previousTaskIds=[...(step.previousTaskIds??[]),step.taskId];delete step.taskId;step.mediaAttempt=(step.mediaAttempt??0)+1;}}
       step.status='pending';
     }
-    record.status='running';delete record.error;record.message='继续制作，复用已完成产物';await this.persist(record);this.start(record);return this.public(record);
+    record.status='running';delete record.error;record.message='继续制作，复用已完成产物';return this.persistAndStart(record);
   });}
   private step(record:StoredWorkflow,kind:WorkflowStep['kind'],shotId?:string){let step=record.steps.find(item=>item.kind===kind&&item.shotId===shotId);if(!step){step={id:randomUUID(),kind,shotId,status:'pending',message:'等待处理'};record.steps.push(step);}return step;}
   private async finishInitialization(record:StoredWorkflow){
@@ -150,6 +219,21 @@ export class WorkflowService {
     }
     record.plan=structuredClone(initialization.plan);const step=this.step(record,'plan');step.status='complete';step.message='镜头计划已确认';await this.persist(record);
   }
+  /** Invalid model output remains retryable; never durably cache a plan that cannot be adopted. */
+  private validateDirectorOutput(record:StoredWorkflow,project:VideoProject,selected:VideoProject['shots'],output:string){
+    const value=parseModelJson(output);
+    if(!Array.isArray(value.shots)||value.shots.length<1||value.shots.length>12)throw new Error('导演须返回 1–12 个镜头计划');
+    if(!project.shots.length){
+      const next=structuredClone(project);next.shots=normalizeStoryboard(value,next);
+      next.shots.forEach(shot=>{shot.referenceIds=[...new Set([...shot.referenceIds,...(record.request.imageAssetIds??[])])];});
+      const plans=next.shots.map((shot,index)=>({shotId:shot.id,prompt:String(value.shots[index]?.prompt??shot.intent??record.request.prompt),narration:String(value.shots[index]?.narration??shot.narration??'')}));
+      makeDirectorPlan(value,next,plans,record.request);
+    }else{
+      const ids=new Set(selected.map(shot=>shot.id)),plans:ShotPlan[]=value.shots.map((shot:Record<string,unknown>)=>({shotId:String(shot.shotId??''),prompt:String(shot.prompt??record.request.prompt),narration:String(shot.narration??'')}));
+      if(plans.length!==ids.size||new Set(plans.map(shot=>shot.shotId)).size!==ids.size||plans.some(shot=>!ids.has(shot.shotId)))throw new Error('导演计划必须保留本轮所有镜头 ID');
+      makeDirectorPlan(value,project,plans,record.request);
+    }
+  }
   private async plan(record:StoredWorkflow,signal:AbortSignal){
     if(record.plan){this.checkTaskBudget(record);return;}
     if(record.initialization){await this.finishInitialization(record);return;}
@@ -159,7 +243,7 @@ export class WorkflowService {
     this.checkTaskBudget(record,selected.length||1);
     const step=this.step(record,'plan');this.beginStep(step);await this.persist(record);
     const prompt=JSON.stringify({request:record.request.prompt,project:{title:project.title,topic:project.topic,targetDuration:project.targetDuration,target:project.target},shots:selected,filmKind:record.request.filmKind??'general',audioStrategy:record.request.audioStrategy??(record.request.visual==='video'?'native':record.request.narration?'external':'silent'),rules:DIRECTOR_RULES,ruleSetVersion:DIRECTOR_RULESET_VERSION,structuredFields:{characters:[{id:'C1',name:'名字',identity:'固定身份',objective:'人物真正想达成的目标'}],worldLayouts:[{id:'room',description:'世界拓扑，仅全局定义一次',anchors:[{id:'door',position:[0,0,0]}]}],identityMap:[{characterId:'C1',assetId:'已授权角色参考资产ID'}],storyBeats:[{id:'b1',function:'叙事功能',change:'这一拍改变了什么',shotIds:['选定镜头ID']}],shotOptionalFields:{performance:[{id:'p1',characterId:'C1',start:0,end:1,objective:'目的',visibleAction:'可观察动作',trigger:'触发词',voice:'声音动作',endState:'结束状态'}],dialogue:[{id:'d1',characterId:'C1',start:0,end:1,text:'精确台词',cue:'触发事件',listenerReaction:'听者反应',intentional:{truncation:false,repetition:false,overlapWith:[]}}],events:[{id:'e1',start:0,end:1,segmentId:'segment-1',worldLayoutId:'room',camera:'景别和镜头',screenPositions:[{characterId:'C1',x:.5,y:.5,facing:'朝向'}],relationships:[],action:'当前动作'}],references:[{assetId:'已授权图片ID',purpose:'identity|style|world_layout|blocking|camera|motion',usage:'reference_only'}],acceptance:[{id:'c1',category:'visual|identity|space|timing|dialogue|audio',severity:'hard|advisory',description:'可观察验收条件'}]}},authorizedImageAssetIds:record.request.imageAssetIds??[],output:selected.length?{shots:[{shotId:'必须使用给定镜头ID',prompt:'该镜头画面制作要求',narration:'旁白文字'}]}:{shots:[{shotId:'本轮唯一临时ID，例如 draft-1；storyBeats.shotIds 引用此ID',title:'镜头标题',intent:'目标',durationSeconds:6,params:{text:'屏幕标题'},prompt:'画面制作要求',narration:'旁白文字'}]},instruction:'输出严格JSON，只安排选定镜头。空工程生成1–12个镜头，每个镜头提供唯一临时 shotId；storyBeats 只引用这些 ID，宿主将统一映射为真实镜头 ID。按片型组织，不强套六拍。可在顶层返回 characters/worldLayouts/identityMap/storyBeats，每镜头返回 performance/dialogue/events/references/acceptance 的结构化约束；未提供的内容不会被假定已验证。参考只可使用授权 imageAssetIds，绝不拼入成片。不要输出API地址或凭据。'});
-    const value=record.request.directorPlan?{...structuredClone(record.request.directorPlan),shots:record.request.directorPlan.shots.map(s=>({...s,prompt:s.visualPrompt}))}:parseModelJson(await this.text(record,step,'director',prompt,signal));signal.throwIfAborted();
+    const value=record.request.directorPlan?{...structuredClone(record.request.directorPlan),shots:record.request.directorPlan.shots.map(s=>({...s,prompt:s.visualPrompt}))}:parseModelJson(await this.text(record,step,'director',prompt,signal,undefined,output=>this.validateDirectorOutput(record,project,selected,output)));signal.throwIfAborted();
     if(!Array.isArray(value.shots)||value.shots.length<1||value.shots.length>12)throw new Error('导演须返回 1–12 个镜头计划');
     if(!project.shots.length){
       const next=structuredClone(project);next.shots=normalizeStoryboard(value,next);next.shots.forEach(shot=>{shot.referenceIds=[...new Set([...shot.referenceIds,...(record.request.imageAssetIds??[])])];shot.visual={kind:record.request.visual==='video'?'model_video':productionMode(next)==='model_video'?'model_video':'code'};});next.shotOrder=next.shots.map(shot=>shot.id);delete next.extensions.graphEdges;next.shots.forEach((shot,index)=>{next.graph.positions[shot.id]=[420+index*340,160];});
@@ -181,7 +265,7 @@ export class WorkflowService {
         const project=record.baseline!,shot=project.shots.find(item=>item.id===plan.shotId)!;
         const current=await this.port.source(record.projectId,plan.shotId);
         const prompt=JSON.stringify({request:plan.prompt,shot,target:project.target,assets:project.assets.filter(asset=>shot.assetIds.includes(asset.id)||shot.referenceIds.includes(asset.id)),current,directorConstraints:record.directorPlan?directorShotContext(record.directorPlan,plan.shotId):undefined,contract:'输出严格JSON {html,css,js}；JS导出render(ctx)，按ctx.localFrame/time独立求值，使用ctx.params。无外网、Node、IPC。ctx.hasVideo为true时宿主已绘制视频底图，只叠加文字图形，不用不透明全屏背景遮住底图，也不自行启动video播放。所有用户未要求修改的字段保持。'});
-        step.source=parseSceneSource(await this.text(record,step,'scene',prompt,signal));
+        step.source=parseSceneSource(await this.text(record,step,'scene',prompt,signal,undefined,output=>{parseSceneSource(output);}));
       }else{
         let task:MediaTask;
         if(step.taskId){task=await this.media.get(step.taskId);if(!['ready','complete'].includes(task.phase))task=await this.media.retry(step.taskId);}
@@ -203,13 +287,19 @@ export class WorkflowService {
     }catch(error){step.status=signal.aborted?'pending':'failed';step.message=message(error);await this.persist(record);throw error;}
   }
   private async voice(record:StoredWorkflow,plan:ShotPlan,signal:AbortSignal){
-    if(!record.request.narration)return;const step=this.step(record,'speech',plan.shotId);if(step.status==='complete')return;
+    if(!record.request.narration)return;const step=this.step(record,'speech',plan.shotId);
+    await this.assertPolicy(record);signal.throwIfAborted();
+    if(this.port.voiceIdentity){const current=await this.port.voiceIdentity(record.projectId);if(record.voiceIdentity===undefined||current!==record.voiceIdentity)throw new Error('配音配置已变化或缺少本轮配置快照；请按当前模型、声音和端点新建制作');}if(step.status==='complete')return;
+    const key=createHash('sha256').update(JSON.stringify([step.id,plan.shotId,plan.narration,record.policyFingerprint,record.voiceIdentity])).digest('hex'),success=await this.success(record,step,key,'speech');
+    if(success){record.assets??={};record.assets[step.id]=[success.asset!];step.assetIds=[success.asset!.id];step.submissionUncertain=false;step.status='complete';step.message='已恢复成功配音回执';await this.persist(record,'speech-complete');return;}
     if(step.submissionUncertain)throw new Error('上次配音提交结果待确认，不能自动重复合成；请检查供应商记录后明确新建制作');
-    this.beginStep(step);step.submissionUncertain=true;await this.persist(record);
-    try{if(!plan.narration.trim())throw Object.assign(new Error('导演未提供该镜头旁白'),{submissionUncertain:false});
-      await this.reserveCall(record);const asset=await this.port.voice(record.projectId,plan.shotId,plan.narration,signal);
-      record.assets![step.id]=[asset];step.assetIds=[asset.id];step.submissionUncertain=false;step.status='complete';step.message='配音已就绪';await this.persist(record);signal.throwIfAborted();
-    }catch(error){if(!step.assetIds?.length){step.status=signal.aborted?'pending':'failed';step.submissionUncertain=(error as {submissionUncertain?:boolean})?.submissionUncertain!==false;}step.message=message(error);await this.persist(record);throw error;}
+    this.beginStep(step);step.submissionUncertain=true;let submitted=false;
+    try{await this.persist(record,'speech-submission');signal.throwIfAborted();if(!plan.narration.trim())throw Object.assign(new Error('导演未提供该镜头旁白'),{submissionUncertain:false});
+      await this.reserveCall(record);signal.throwIfAborted();submitted=true;const asset=await this.port.voice(record.projectId,plan.shotId,plan.narration,signal,record.voiceIdentity);
+      record.assets![step.id]=[asset];step.assetIds=[asset.id];step.submissionUncertain=false;step.status='complete';step.message='配音已就绪';this.finishStep(step);
+      await this.saveSuccess(record,step,{version:1,workflowId:record.id,stepId:step.id,key,kind:'speech',asset:structuredClone(asset)});
+      await this.persist(record,'speech-complete');signal.throwIfAborted();
+    }catch(error){if(!step.assetIds?.length){step.status=signal.aborted?'pending':'failed';step.submissionUncertain=submitted&&(error as {submissionUncertain?:boolean})?.submissionUncertain!==false;}step.message=message(error);await this.persist(record);throw error;}
   }
   private async updateUsage(record:StoredWorkflow){
     let total=0,known=true,currency:string|undefined,count=0;
@@ -268,7 +358,7 @@ export class WorkflowService {
     await this.reconcile(record);if(record.committedRevision!==undefined)return;
     const latest=(await this.port.snapshot(record.projectId)).project!;await this.assertPolicy(record,latest);
     if(latest.revision!==expectedRevision||!explicit&&expectedRevision!==record.startRevision)throw Object.assign(new Error('工程版本冲突；候选结果不会覆盖新修改'),{code:'REVISION_CONFLICT'});
-    if(record.candidate?.expectedRevision!==expectedRevision){record.candidate=this.buildCandidate(record,latest,expectedRevision);await this.persist(record);}
+    if(record.candidate?.expectedRevision!==expectedRevision){record.candidate=this.buildCandidate(record,latest,expectedRevision);await this.persist(record,'candidate');}
     const candidate=record.candidate!;
     // Review the exact durable candidate before changing the project head. A restarted
     // review may reuse its receipt only while this candidate and base revision match.
@@ -280,7 +370,8 @@ export class WorkflowService {
 
     if((await this.port.snapshot(record.projectId)).project?.revision!==expectedRevision)throw Object.assign(new Error('工程在候选审片期间已变化；请确认采用最新版本后重新审片'),{code:'REVISION_CONFLICT'});
     const step=this.step(record,'commit');this.beginStep(step);await this.persist(record);
-    const saved=await this.port.commit(record.projectId,expectedRevision,candidate.project,candidate.sources,'采用协作制作结果');record.committedRevision=saved.project!.revision;step.status='complete';step.message='结果已保存为工程 v'+record.committedRevision;await this.persist(record);
+    await this.persist(record,'before-commit');signal.throwIfAborted();
+    const saved=await this.port.commit(record.projectId,expectedRevision,candidate.project,candidate.sources,'采用协作制作结果');record.committedRevision=saved.project!.revision;step.status='complete';step.message='结果已保存为工程 v'+record.committedRevision;await this.persist(record,'after-commit');
   }
   private async review(record:StoredWorkflow,signal:AbortSignal,candidate:WorkflowCandidate){
     const hash=candidateHash(candidate);
@@ -306,9 +397,11 @@ export class WorkflowService {
     return {candidate:structuredClone(record.candidate),qualityReport:structuredClone(record.qualityReport)};
   }
   async apply(id:string,expectedRevision:number,trustedReview?:TrustedReview){const record=await this.required(id);return this.projectLock(record.projectId,async()=>{
+    await this.drainProjectTerminals(record.projectId);this.assertOpen();
     if(this.stopped)throw new Error('协作服务正在关闭');const finishing=this.running.get(id);if(finishing){if(record.status==='running')throw new Error('制作仍在运行');await finishing.promise;}this.assertProjectIdle(record.projectId,id);
     if(record.status!=='awaiting-apply')throw new Error('此制作没有待采用结果');
-    if(!Number.isSafeInteger(expectedRevision)||(await this.port.snapshot(record.projectId)).project?.revision!==expectedRevision)throw Object.assign(new Error('工程版本冲突；请刷新后采用候选结果'),{code:'REVISION_CONFLICT'});
+    if(!Number.isSafeInteger(expectedRevision))throw Object.assign(new Error('工程版本冲突；请刷新后采用候选结果'),{code:'REVISION_CONFLICT'});
+    const snapshot=await this.port.snapshot(record.projectId);this.assertOpen();if(snapshot.project?.revision!==expectedRevision)throw Object.assign(new Error('工程版本冲突；请刷新后采用候选结果'),{code:'REVISION_CONFLICT'});
     await this.assertPolicy(record);
     if(trustedReview){
       const report=record.qualityReport;
@@ -316,7 +409,11 @@ export class WorkflowService {
       if(!Array.isArray(trustedReview.checkIds)||!trustedReview.checkIds.length||new Set(trustedReview.checkIds).size!==trustedReview.checkIds.length||trustedReview.checkIds.some(id=>!report.checks.some(c=>c.id===id&&['unchecked','needs-review'].includes(c.status))))throw new Error('审看确认包含无效条件；硬失败不能被确认覆盖');
       record.reviewApproval=structuredClone(trustedReview);
     }
-    record.adoptionRevision=expectedRevision;record.status='running';delete record.error;record.message=record.request.review?'按最新版本重新检查候选关键帧':'正在采用候选结果';await this.persist(record);this.start(record);return this.public(record);
+    record.adoptionRevision=expectedRevision;record.status='running';delete record.error;record.message=record.request.review?'按最新版本重新检查候选关键帧':'正在采用候选结果';return this.persistAndStart(record);
   });}
-  async dispose(){this.stopped=true;for(const active of this.running.values())active.controller.abort(new Error('应用正在关闭'));await Promise.allSettled([...this.running.values()].map(item=>item.promise));await this.writes;}
+  dispose(){
+    if(this.disposal)return this.disposal;this.stopped=true;for(const active of this.running.values())active.controller.abort(new Error('应用正在关闭'));
+    const admissions=[...this.projectQueues.values()];
+    return this.disposal=(async()=>{await Promise.allSettled(admissions);await Promise.allSettled([...this.running.values()].map(item=>item.promise));await this.writes;})();
+  }
 }
