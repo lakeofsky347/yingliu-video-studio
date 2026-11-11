@@ -41,7 +41,7 @@ try{
     let sampling,peakRssMiB=null,peakProcesses=[];
     const timer=setInterval(()=>{if(!sampling)sampling=treeRss().then(value=>{if(value!==null&&value.rssMiB>(peakRssMiB??0)){peakRssMiB=value.rssMiB;peakProcesses=value.processes;}}).catch(()=>{}).finally(()=>{sampling=undefined;});},250);
     try{
-      let project=createProject('渲染性能基准');project.id='render-benchmark-'+width;project.shots=project.shots.slice(0,2);
+      let project=createProject('渲染性能基准','','code_animation');project.id='render-benchmark-'+width;project.shots=project.shots.slice(0,2);
       project.shots.forEach((shot,index)=>{shot.id='benchmark-'+index;shot.sourcePath='shots/'+shot.id;shot.durationFrames=index===0?Math.floor(frames/2):frames-Math.floor(frames/2);shot.params.text='渲染性能 · '+width+' × '+height;shot.params.subtitle='中文排版、图片、Canvas、淡入与逆序跳帧';shot.params.motion='slide';});
       project.shotOrder=project.shots.map(shot=>shot.id);project.target={width,height,fps:{num:30,den:1},audioMode:'none',quality:'standard'};project.targetDuration=frames/30;
       const created=await store.create(project),asset=await store.importAsset(created.root,{path:fixture},env);

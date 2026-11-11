@@ -51,9 +51,11 @@ test('real Chromium candidate capture changes pixels without mutating live head,
     const { root, project } = await store.create({ project: initial, sources: [{ shotId: shot.id, source: blue }] });
     const baseline = await renderer.capture(root, project, environment, 6);
     const baselineBytes = await fs.readFile(baseline.path), liveFiles = await fileHashes(root);
-    for (const file of ['project.json', '.studio/state.json', shot.sourcePath + '/source.json', 'runtime/spec.json', 'runtime/scenes/' + shot.id + '.mjs']) {
+    for (const file of ['project.json', '.studio/state.json', shot.sourcePath + '/source.json', 'index.html']) {
       assert.ok(liveFiles[file], 'Baseline must include ' + file);
     }
+    assert.ok(Object.keys(liveFiles).some(file=>/^runtime\/spec-[a-f0-9]{64}\.json$/.test(file)), 'Baseline must include its immutable compositor manifest');
+    assert.ok(Object.keys(liveFiles).some(file=>file.startsWith('runtime/scenes/'+shot.id+'-')&&file.endsWith('.mjs')), 'Baseline must include its immutable scene source');
     const originalProject = structuredClone(project);
     const candidate = await renderer.captureCandidate(root, project, { [shot.id]: scene('#ff0000') }, environment, 6);
 

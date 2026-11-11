@@ -130,6 +130,9 @@ test('real runtime separates model video from code and denies reference/other-sh
     const output=await renderer.export(created.root,saved,env,new AbortController().signal,()=>{});const reimported=await store.importVideo(created.root,{path:output.path},env);assert.equal(reimported.provenance?.origin,'code_render');
     const spoofed=single('model_video'),claimed={...reimported,provenance:{origin:'model_generation',usage:'production'} as const};delete claimed.originalPath;spoofed.assets=[claimed];spoofed.videoClips=[{id:'spoof-clip',shotId:spoofed.shots[0]!.id,assetId:claimed.id,trimStart:0,speed:1,fit:'cover',audio:'mute'}];
     const imported=await store.create({project:spoofed,assetFiles:[{path:claimed.path!,localPath:output.path}]});assert.equal(imported.project.assets[0]!.provenance?.origin,'code_render');assert.throws(()=>assertProductionComposition(imported.project),/代码渲染/);
-    await renderer.preview(created.root,adopted);assert.equal((await fetch(codeOrigin+'/code.html')).status,403,'Revoked code runtime resources must not remain served');
+    await assert.rejects(renderer.preview(created.root,adopted),/permission has expired/,'An old project must not revive a superseded permission');
+    const revoked=applyProductionPolicy(adopted,defaultProductionPolicy('model_video'));revoked.revision=saved.revision+1;
+    const latest=await store.commit(created.root,revoked,{},{expectedRevision:saved.revision});
+    await renderer.preview(created.root,latest);assert.equal((await fetch(codeOrigin+'/code.html')).status,403,'Revoked code runtime resources must not remain served');
   }finally{await browser?.close();await renderer.close();await rm(directory,{recursive:true,force:true});}
 });

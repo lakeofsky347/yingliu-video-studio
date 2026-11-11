@@ -17,6 +17,18 @@ import type {Page} from 'playwright-core';
 const env=detectEnvironment(),exec=promisify(execFile);
 const mediaAvailable=env.browserAvailable&&env.ffmpegAvailable&&env.ffprobeAvailable;
 
+test('isolated scene render waits for fonts introduced by frame-dependent text and font sizes',{
+  skip:!env.browserAvailable,timeout:60_000,
+},async()=>{
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'render-dynamic-font-')),store=new ProjectStore({baseDirectory:directory}),renderer=new VideoRenderer(store);
+  try{
+    let project=createProject('动态字体逐帧');project.shots=project.shots.slice(0,1);project.shotOrder=project.shots.map(shot=>shot.id);project.shots[0]!.durationFrames=6;project.target={width:320,height:180,fps:{num:12,den:1},audioMode:'none'};
+    const created=await store.create(project);project=created.project;project.revision++;
+    project=await store.commit(created.root,project,{[project.shots[0]!.id]:{html:'<div data-text></div>',css:'@font-face{font-family:FrameFont;src:local("Arial")} [data-text]{color:white;font-family:FrameFont,serif}',js:'export function render(ctx){const text=ctx.root.querySelector("[data-text]");text.textContent="Font frame "+ctx.frame;text.style.fontSize=(18+ctx.frame*7)+"px";}'} });
+    const result=await renderer.check(created.root,project,env);assert.equal(result.ok,true,JSON.stringify(result.errors));assert.equal(result.frames.length,3);
+  }finally{await renderer.close();await fs.rm(directory,{recursive:true,force:true});}
+});
+
 async function pixels(bytes:Buffer):Promise<string>{
   // Compression is intentionally different between CDP's fast PNG and the generic screenshot.
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'render-pixel-'));

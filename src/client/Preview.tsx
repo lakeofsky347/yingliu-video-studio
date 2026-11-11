@@ -18,10 +18,13 @@ function FrameThumb({url,frame,onSelect,label,failed}:{url?:string;frame:number;
 
 export function Preview({snapshot,project,selectedShot,controller,focusFrame,focusSerial,busy=false}:{snapshot:StudioSnapshot;project:VideoProject;selectedShot?:Shot;controller:StudioController;focusFrame?:number|null;focusSerial?:number;busy?:boolean}){
   const iframe=useRef<HTMLIFrameElement>(null),audio=useRef<HTMLAudioElement>(null),currentFrame=useRef(0);
-  const [ready,setReady]=useState(false),[frame,setFrame]=useState(0),[playing,setPlaying]=useState(false),[sceneId,setSceneId]=useState(''),[showOutput,setShowOutput]=useState(false),[expanded,setExpanded]=useState(false),[jump,setJump]=useState('0'),[audioError,setAudioError]=useState(''),[capturing,setCapturing]=useState(false),[capture,setCapture]=useState<{path:string;url:string}|null>(null);
+  const [readyKey,setReadyKey]=useState(''),[frame,setFrame]=useState(0),[playing,setPlaying]=useState(false),[sceneId,setSceneId]=useState(''),[showOutput,setShowOutput]=useState(false),[expanded,setExpanded]=useState(false),[jump,setJump]=useState('0'),[audioError,setAudioError]=useState(''),[capturing,setCapturing]=useState(false),[capture,setCapture]=useState<{path:string;url:string}|null>(null),[previewError,setPreviewError]=useState(''),[reload,setReload]=useState(0);
   const duration=project.shots.reduce((n,s)=>n+s.durationFrames,0),fps=project.target.fps.num/project.target.fps.den;
   currentFrame.current=frame;
   const maxFrame=Math.max(0,duration-1),origin=snapshot.previewUrl?new URL(snapshot.previewUrl).origin:'';
+  const previewKey=JSON.stringify([project.id,snapshot.previewUrl,snapshot.previewRevision,reload,showOutput]),ready=!!snapshot.previewUrl&&readyKey===previewKey;
+  const requestFrame=useRef<(frame:number)=>void>(()=>{});
+  const previewUrl=useMemo(()=>{if(!snapshot.previewUrl)return '';const value=new URL(snapshot.previewUrl);value.searchParams.set('render','manual');return value.href;},[snapshot.previewUrl]);
   const range=useMemo(()=>shotFrameRange(project,selectedShot?.id),[project.shotOrder,project.shots,selectedShot?.id]);
   const currentRange=useMemo(()=>frameShotRange(project,frame),[project.shotOrder,project.shots,frame]);
   const marks=useMemo(()=>keyframeNumbers(range.start,range.end),[range.start,range.end]);
@@ -35,9 +38,25 @@ export function Preview({snapshot,project,selectedShot,controller,focusFrame,foc
     return()=>{active=false;clearTimeout(timer);};
   },[thumbnailKey,ready,showOutput,busy,controller,project.id,snapshot.previewRevision]);
   const seek=(value:number)=>{setPlaying(false);setShowOutput(false);setFrame(Math.max(0,Math.min(maxFrame,Math.round(value))));};
-  useEffect(()=>{setReady(false);setCapture(null);},[snapshot.previewUrl]);
-  useEffect(()=>{const listener=(e:MessageEvent)=>{if(e.source!==iframe.current?.contentWindow||e.origin!==origin)return;const data=e.data;if(data?.type==='video-studio/ready'){setReady(true);iframe.current?.contentWindow?.postMessage({type:'video-studio/render',frame:currentFrame.current},origin);}if(data?.type==='video-studio/frame')setSceneId(typeof data.sceneId==='string'?data.sceneId:'');if(data?.type==='video-studio/error'){controller.notify(`预览错误：${data.message||'渲染失败'}`);setPlaying(false);}};window.addEventListener('message',listener);return()=>window.removeEventListener('message',listener);},[origin,controller]);
-  useEffect(()=>{if(ready)iframe.current?.contentWindow?.postMessage({type:'video-studio/render',frame},origin);setJump(String(frame));},[frame,ready,origin]);
+  useEffect(()=>{
+    setCapture(null);setPlaying(false);setSceneId('');setPreviewError('');
+    const target=iframe.current?.contentWindow;if(!target||!previewUrl||showOutput)return;
+    let active=true,initialized=false,timer:ReturnType<typeof setTimeout>|undefined;
+    const clear=()=>{if(timer)clearTimeout(timer);timer=undefined;};
+    const watch=()=>{if(timer)return;timer=setTimeout(()=>{timer=undefined;if(active){setReadyKey('');setPlaying(false);setPreviewError('预览等待画面超时，可重新加载当前版本。');}},30_000);};
+    const send=(value:number)=>{if(!active||!initialized)return;watch();target.postMessage({type:'video-studio/render',frame:value},origin);};
+    requestFrame.current=send;watch();
+    const listener=(event:MessageEvent)=>{
+      if(!active||event.source!==target||event.origin!==origin)return;const data=event.data;
+      if(data?.type==='video-studio/ready'){initialized=true;send(currentFrame.current);}
+      if(data?.type==='video-studio/frame'&&initialized&&Number.isSafeInteger(data.frame)){
+        clear();setReadyKey(previewKey);setPreviewError('');setSceneId(typeof data.sceneId==='string'?data.sceneId:'');
+      }
+      if(data?.type==='video-studio/error'){clear();setReadyKey('');setPlaying(false);setPreviewError(`预览错误：${String(data.message||'渲染失败')}`);}
+    };
+    window.addEventListener('message',listener);return()=>{active=false;clear();requestFrame.current=()=>{};window.removeEventListener('message',listener);};
+  },[previewKey,previewUrl,origin]);
+  useEffect(()=>{if(ready)requestFrame.current(frame);setJump(String(frame));},[frame,ready]);
   useEffect(()=>{if(!playing||!ready)return;let animation=0;const start=performance.now(),from=frame;const tick=(now:number)=>{const clock=project.target.audioMode==='mixed'&&snapshot.audioUrl&&audio.current;const next=clock?Math.floor(clock.currentTime*fps):from+Math.floor((now-start)*fps/1000);if(next>=duration){setFrame(maxFrame);setPlaying(false);return;}setFrame(next);animation=requestAnimationFrame(tick);};animation=requestAnimationFrame(tick);return()=>cancelAnimationFrame(animation);},[playing,ready,duration,fps,snapshot.audioUrl,project.target.audioMode]);
   useEffect(()=>{if(!selectedShot)return;seek(range.start);},[selectedShot?.id,range.start]);
   useEffect(()=>{if(focusFrame==null)return;seek(focusFrame);},[focusSerial]);
@@ -53,7 +72,7 @@ export function Preview({snapshot,project,selectedShot,controller,focusFrame,foc
   return <div className={`vs-preview ${expanded?'is-expanded':''}`}>
     <div className="vs-preview-heading"><span data-testid="current-shot-heading" data-shot-id={currentRange.shot?.id}>{currentRange.shot?`「${currentRange.shot.title}」· 帧 [${currentRange.start}, ${currentRange.end})`:'整片逐帧查看'}</span><button aria-label={expanded?'关闭大预览':'打开大预览'} onClick={()=>setExpanded(!expanded)}>{expanded?'收起 ✕':'大预览 ↗'}</button></div>
     <div className="vs-preview-screen" style={{'--vs-preview-ratio':`${project.target.width}/${project.target.height}`} as CSSProperties}>
-      {showOutput&&output?.url?<video src={output.url} controls className="vs-output-video"/>:snapshot.previewUrl?<iframe ref={iframe} src={snapshot.previewUrl} title="影片画面预览" sandbox="allow-scripts allow-same-origin"/>:<div className="vs-preview-empty"><strong>画面从这里开始</strong><p>生成画面后，点击「预览」。<br/>手动编辑的镜头也可以直接预览。</p></div>}
+      {showOutput&&output?.url?<video src={output.url} controls className="vs-output-video"/>:snapshot.previewUrl?<iframe key={previewKey} ref={iframe} src={previewUrl} title="影片画面预览" sandbox="allow-scripts allow-same-origin"/>:<div className="vs-preview-empty"><strong>画面从这里开始</strong><p>生成画面后，点击「预览」。<br/>手动编辑的镜头也可以直接预览。</p></div>}
       {outdated&&<span className="vs-preview-badge">参数已更新 · 刷新预览</span>}
     </div>
     {snapshot.audioUrl&&project.target.audioMode==='mixed'&&<audio ref={audio} src={snapshot.audioUrl} preload="auto" onError={()=>setAudioError('混音预览加载失败，可刷新预览后重试。')}/>}
@@ -61,6 +80,7 @@ export function Preview({snapshot,project,selectedShot,controller,focusFrame,foc
     <div className="vs-frame-jump"><span>F<span data-testid="current-frame">{frame}</span> / {maxFrame}</span>{currentRange.shot&&<span data-testid="current-shot-local-frame">镜头 F{localFrame} · {(localFrame/fps).toFixed(3)}s</span>}<label>跳转帧 <input aria-label="跳转帧" type="number" min="0" max={maxFrame} value={jump} disabled={disabled} onChange={e=>setJump(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&Number.isFinite(Number(jump)))seek(Number(jump));}}/></label><button disabled={disabled||!Number.isFinite(Number(jump))} onClick={()=>seek(Number(jump))}>定位</button><button disabled={disabled||busy||capturing} onClick={()=>void capturePng()}>{capturing?'正在保存…':'导出当前帧 PNG'}</button><span>{snapshot.audioUrl&&project.target.audioMode==='mixed'?'声音已同步':'无声预览'}</span></div>{capture&&<div className="vs-captured-frame"><a href={capture.url} target="_blank" rel="noreferrer">查看已保存 PNG ↗</a><button onClick={()=>void controller.action('reveal',{path:capture.path})}>打开 PNG 文件</button></div>}
     {snapshot.previewUrl&&ready&&!showOutput&&<><div className="vs-eyebrow" data-testid="keyframe-scope">{selectedShot?`选中「${selectedShot.title}」的关键帧`:'全片关键帧'}</div><div className="vs-keyframes" aria-label="镜头关键帧">{marks.map((number,index)=><FrameThumb key={`${thumbnailKey}:${number}`} url={thumbnails.key===thumbnailKey?thumbnails.urls[number]:undefined} failed={thumbnails.key===thumbnailKey&&thumbnails.failed} frame={number} label={index===0?'首帧':index===marks.length-1?'末帧':'中帧'} onSelect={seek}/>)}</div></>}
     {audioError&&<p className="vs-inline-error">{audioError}</p>}
-    <div className="vs-preview-foot"><span>{showOutput?'已导出 MP4':sceneId?project.shots.find(s=>s.id===sceneId)?.title||sceneId:'逐帧预览'}</span>{output?.url&&<button onClick={()=>{setPlaying(false);setReady(false);setShowOutput(value=>!value);}}>{showOutput?'返回逐帧':'播放成片'}</button>}{output&&<button onClick={()=>void controller.action('reveal',{path:output.path})}>打开成片 →</button>}</div>
+    {previewError&&<p className="vs-inline-error" role="alert">{previewError}<button onClick={()=>setReload(value=>value+1)}>重新加载预览</button></p>}
+    <div className="vs-preview-foot"><span>{showOutput?'已导出 MP4':sceneId?project.shots.find(s=>s.id===sceneId)?.title||sceneId:'逐帧预览'}</span>{output?.url&&<button onClick={()=>{setPlaying(false);setReadyKey('');setShowOutput(value=>!value);}}>{showOutput?'返回逐帧':'播放成片'}</button>}{output&&<button onClick={()=>void controller.action('reveal',{path:output.path})}>打开成片 →</button>}</div>
   </div>;
 }

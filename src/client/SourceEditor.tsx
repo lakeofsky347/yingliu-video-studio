@@ -1,16 +1,19 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { SceneSource, Shot } from '../shared/types.ts';
 import type { StudioController } from './controller.ts';
 
 function downloadDraft(name:string,source:SceneSource){const url=URL.createObjectURL(new Blob([JSON.stringify(source,null,2)],{type:'application/json;charset=utf-8'})),link=document.createElement('a');link.href=url;link.download=name+'-源码草稿.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 export function SourceEditor({controller,selectedShot,busy,version}:{controller:StudioController;selectedShot?:Shot;busy:boolean;version:string}){
   const state=useSyncExternalStore(controller.subscribe,controller.getSnapshot,controller.getSnapshot),project=state.snapshot?.project,projectId=project?.id;
-  const [saved,setSaved]=useState<SceneSource|null>(null),[loadedRevision,setLoadedRevision]=useState(0),[language,setLanguage]=useState<'html'|'css'|'js'>('html'),[loading,setLoading]=useState(false),[error,setError]=useState(''),[reload,setReload]=useState(0),[confirm,setConfirm]=useState<'discard'|'restore'|null>(null);
-  const draft=selectedShot?controller.getSourceDraft(selectedShot.id,projectId):undefined,source=draft?.source||saved;
-  useEffect(()=>{let active=true;setSaved(null);setError('');setConfirm(null);if(!selectedShot){setLoading(false);return;}setLoading(true);const revision=controller.confirmedRevision??0;controller.readSource(selectedShot.id).then(value=>{if(active){setSaved(value);setLoadedRevision(revision);}}).catch(cause=>{if(active)setError(cause instanceof Error?cause.message:'读取源码失败');}).finally(()=>{if(active)setLoading(false);});return()=>{active=false;};},[controller,projectId,selectedShot?.id,version,reload]);
+  const [loaded,setLoaded]=useState<{key:string;source:SceneSource;revision:number}|null>(null),[language,setLanguage]=useState<'html'|'css'|'js'>('html'),[loading,setLoading]=useState(false),[error,setError]=useState(''),[reload,setReload]=useState(0),[confirm,setConfirm]=useState<'discard'|'restore'|null>(null);
+  const identity=JSON.stringify([projectId,selectedShot?.id,version,reload]),activeIdentity=useRef(identity);activeIdentity.current=identity;
+  // Hide a previous shot in the first render, before passive effects can clear state.
+  const saved=loaded?.key===identity?loaded.source:null;
+  const draft=selectedShot?controller.getSourceDraft(selectedShot.id,projectId):undefined,source=draft?.source||saved,loadedRevision=draft?.baseRevision??(loaded?.key===identity?loaded.revision:controller.confirmedRevision??0);
+  useEffect(()=>{let active=true;setError('');setConfirm(null);if(!selectedShot){setLoading(false);return;}setLoading(true);const revision=controller.confirmedRevision??0;controller.readSource(selectedShot.id).then(value=>{if(active&&activeIdentity.current===identity)setLoaded({key:identity,source:value,revision});}).catch(cause=>{if(active)setError(cause instanceof Error?cause.message:'读取源码失败');}).finally(()=>{if(active)setLoading(false);});return()=>{active=false;};},[controller,identity]);
   const stale=!!draft&&draft.baseRevision!==(controller.confirmedRevision??draft.baseRevision);
-  async function save(useCurrentRevision=false){if(!source||!selectedShot)return;const success=await controller.saveSource(selectedShot.id,source,useCurrentRevision);if(success){setSaved(source);setError('');setConfirm(null);}else setError(controller.getSnapshot().error||'源码尚未保存，草稿仍保留。');}
-  async function restore(){if(!selectedShot)return;if(await controller.restoreSource(selectedShot.id)){setConfirm(null);setReload(value=>value+1);}else setError(controller.getSnapshot().error||'恢复失败，草稿仍保留。');}
+  async function save(useCurrentRevision=false){if(!source||!selectedShot)return;const success=await controller.saveSource(selectedShot.id,source,useCurrentRevision);if(activeIdentity.current!==identity)return;if(success){setLoaded({key:identity,source,revision:controller.confirmedRevision??loadedRevision});setError('');setConfirm(null);}else setError(controller.getSnapshot().error||'源码尚未保存，草稿仍保留。');}
+  async function restore(){if(!selectedShot)return;const success=await controller.restoreSource(selectedShot.id);if(activeIdentity.current!==identity)return;if(success){setConfirm(null);setReload(value=>value+1);}else setError(controller.getSnapshot().error||'恢复失败，草稿仍保留。');}
   const drafts=controller.sourceDrafts(projectId);
   const shelf=drafts.length>0&&<div className="vs-source-draft-list"><span>本工程的源码草稿</span>{drafts.map(item=>{const shot=project?.shots.find(value=>value.id===item.shotId);return <div key={item.shotId}><button disabled={!shot} onClick={()=>controller.select(item.shotId)}>{shot?.title||'已移除镜头的草稿'}</button><button onClick={()=>downloadDraft(shot?.title||item.shotId,item.source)}>下载草稿</button>{!shot&&<button onClick={()=>controller.discardSourceDraft(item.shotId)}>丢弃草稿</button>}</div>;})}</div>;
   if(!selectedShot)return <div className="vs-source">{shelf}<div className="vs-dock-empty"><p>选中镜头查看与编辑前端源码。切换面板或离开 DSH 工作台会保留草稿。</p></div></div>;

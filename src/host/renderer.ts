@@ -8,22 +8,25 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { chromium, type Browser, type CDPSession, type Page } from 'playwright-core';
 import type { Asset, EnvironmentInfo, EnvironmentSettings, ExportResult, SceneSource, VideoProject, VideoSpec } from '../shared/types.js';
 import { compileSpec } from '../core/index.js';
-import {assertProductionComposition,usesCodeVisual,usesVideoVisual} from '../core/production-policy.js';
+import {assertProductionComposition,productionPolicyFingerprint,usesCodeVisual,usesVideoVisual} from '../core/production-policy.js';
 import {hashMediaFile} from '../media/video.js';
 import { ProjectStore, projectPath } from './store.js';
 import { browserRuntime, runtimeHtml } from '../runtime/browser.js';
 import {AudioMixer, type AudioMix} from './audio.js';
 import {inspectToolEnvironment, type ToolEnvironmentOptions} from './tool-environment.js';
 import {atomicRename} from './atomic-rename.js';
+import {syncDirectory} from './directory-sync.js';
+import {taskFailure,withTaskFailure,type TaskFailureDiagnostic} from '../shared/task-diagnostic.js';
 
 export interface FrameCapture { frame:number; shotId:string; path:string; sha256:string }
-export interface RenderIssue { shotId?:string; frame?:number; message:string }
+export interface RenderIssue { shotId?:string; frame?:number; message:string;failure?:TaskFailureDiagnostic }
 export interface RenderCheckResult { ok:boolean; errors:RenderIssue[]; frames:FrameCapture[]; reportPath?:string }
+export function renderCheckError(result:RenderCheckResult):Error {const error=new Error(result.errors.map(issue=>issue.message).join('\n'));return Object.assign(error,{failure:result.errors.find(issue=>issue.failure)?.failure??taskFailure(error,'render_check')});}
 export interface CandidatePlayback {candidateHash:string;url:string;mime:'video/mp4';duration:number;frameCount:number;shotIds:string[]}
 export interface CandidatePlaybackInput {project:VideoProject;sources:Record<string,SceneSource>;expectedRevision?:number}
 interface CandidatePlaybackEntry {controller:AbortController;promise:Promise<CandidatePlayback>;root?:string;renderer?:VideoRenderer;server?:ProjectServer;complete:boolean}
 type ServerRole='render'|'assets'|`code:${string}`;
-interface ResourcePolicy {allowed:Set<string>;frameOrigin?:string}
+interface ResourcePolicy {allowed:Set<string>;frameOrigin?:string;aliases?:Record<string,string>}
 interface ProjectServer { server:Server; origin:string; root:string;role:ServerRole }
 const mime:Record<string,string>={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json; charset=utf-8','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.txt':'text/plain; charset=utf-8','.woff2':'font/woff2','.mp4':'video/mp4','.wav':'audio/wav','.mp3':'audio/mpeg','.m4a':'audio/mp4','.aac':'audio/aac','.flac':'audio/flac','.ogg':'audio/ogg'};
 
@@ -32,6 +35,32 @@ export function detectEnvironment(settings:Partial<EnvironmentSettings>={},optio
 }
 function hash(buffer:Buffer|string):string { return createHash('sha256').update(buffer).digest('hex'); }
 function json(value:unknown):string { return JSON.stringify(value,null,2)+'\n'; }
+/** Retry only the observed Windows runtime publication lock, never a paid action. */
+export async function writeRuntimeFile(file:string,content:string,platform:NodeJS.Platform=process.platform):Promise<void>{
+  const end=performance.now()+750;let firstError:unknown;
+  for(let attempt=1;;attempt++){
+    try{
+      const directory=path.dirname(file),temporary=file+'.tmp-'+randomUUID();await fs.mkdir(directory,{recursive:true});
+      try{
+        const handle=await fs.open(temporary,'wx',0o600);try{await handle.writeFile(content);await handle.sync();}finally{await handle.close();}
+        await fs.rename(temporary,file);await syncDirectory(directory);
+      }finally{await fs.rm(temporary,{force:true});}
+      return;
+    }
+    catch(error){
+      const io=error&&typeof error==='object'?error as NodeJS.ErrnoException:undefined;
+      if(platform!=='win32'||io?.code!=='EPERM'||io.syscall!=='rename')throw error;
+      firstError??=error;if(attempt>=8||performance.now()+100>=end)throw firstError;
+      await new Promise(resolve=>setTimeout(resolve,100));if(performance.now()>=end)throw firstError;
+    }
+  }
+}
+async function writeImmutableRuntime(file:string,content:string):Promise<void>{
+  const expected=Buffer.from(content);let handle:Awaited<ReturnType<typeof fs.open>>|undefined;
+  try{handle=await fs.open(file,'r');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+  if(handle)try{if((await handle.stat()).size===expected.length&&(await handle.readFile()).equals(expected))return;}finally{await handle.close();}
+  await writeRuntimeFile(file,content);
+}
 function aborted(signal?:AbortSignal):void { if(signal?.aborted)throw new Error('Task cancelled'); }
 function keyFrames(spec:VideoSpec):number[] { return [...new Set(spec.shots.flatMap(shot=>[shot.startFrame,Math.floor((shot.startFrame+shot.endFrame-1)/2),shot.endFrame-1]))].sort((a,b)=>a-b); }
 function safeId(id:string):string { if(!/^[a-zA-Z0-9_-]{1,100}$/.test(id))throw new Error('Unsafe scene ID');return id; }
@@ -51,6 +80,7 @@ function stopChild(child:ChildProcess):void {
 async function projectServer(root:string,role:ServerRole,policy:()=>ResourcePolicy|undefined,assertAuthorized?:()=>void):Promise<ProjectServer> {
   const absoluteRoot=path.resolve(root);
   const server=createServer(async(req,res)=>{
+    let file:Awaited<ReturnType<typeof fs.open>>|undefined;
     try {
       try{assertAuthorized?.();}catch{res.writeHead(403);res.end('Candidate review authorization has expired');return;}
       if(!['GET','HEAD'].includes(req.method??'')){res.writeHead(405);res.end();return;}
@@ -61,9 +91,9 @@ async function projectServer(root:string,role:ServerRole,policy:()=>ResourcePoli
       const relative=pathname.replace(/^\//,'')||'index.html';
       const access=policy();
       if(role!=='assets'&&(!access||!access.allowed.has(relative))){res.writeHead(403);res.end('Resource not approved for this renderer');return;}
-      const full=await projectPath(absoluteRoot,relative),type=mime[path.extname(full).toLowerCase()];
+      const full=await projectPath(absoluteRoot,access?.aliases?.[relative]??relative),type=mime[path.extname(full).toLowerCase()];
       if(!type){res.writeHead(415);res.end('Unsupported file type');return;}
-      const stat=await fs.stat(full);if(!stat.isFile())throw new Error('File expected');
+      file=await fs.open(full,'r');const stat=await file.stat();if(!stat.isFile())throw new Error('File expected');
       const headers:Record<string,string|number>={'Content-Type':type,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff',
         'Content-Security-Policy':"default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src "+(role.startsWith('code:')?"'none'":"'self'")+"; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; worker-src 'none'; frame-src "+(access?.frameOrigin??"'none'")};
       const media=type==='video/mp4'||type.startsWith('audio/');if(media)headers['Accept-Ranges']='bytes';
@@ -77,10 +107,10 @@ async function projectServer(root:string,role:ServerRole,policy:()=>ResourcePoli
         status=206;headers['Content-Range']='bytes '+start+'-'+end+'/'+stat.size;
       }
       headers['Content-Length']=Math.max(0,end-start+1);res.writeHead(status,headers);
-      if(req.method==='HEAD'){res.end();return;}
-      const file=await fs.open(full,'r');
-      const stream=file.createReadStream({start,end,autoClose:true});stream.on('error',()=>res.destroy());res.on('close',()=>stream.destroy());stream.pipe(res);
+      if(req.method==='HEAD'||stat.size===0){res.end();return;}
+      const stream=file.createReadStream({start,end,autoClose:true});file=undefined;stream.on('error',()=>res.destroy());res.on('close',()=>stream.destroy());stream.pipe(res);
     }catch { if(!res.headersSent)res.writeHead(404);res.end('Not found'); }
+    finally{if(file)await file.close().catch(()=>res.destroy());}
   });
   await new Promise<void>((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',()=>{server.off('error',reject);resolve();});});
   const address=server.address();if(!address||typeof address==='string')throw new Error('Unable to bind preview server');
@@ -94,6 +124,9 @@ export class VideoRenderer {
   private servers=new Map<string,ProjectServer>();
   private pendingServers=new Map<string,Promise<ProjectServer>>();
   private resourcePolicies=new Map<string,ResourcePolicy>();
+  private runtimePolicies=new Map<string,{fingerprint:string;revision:number}>();
+  private runtimeUrls=new WeakMap<VideoSpec,string>();
+  private preparations=new Map<string,Promise<unknown>>();
   private browsers=new Set<Browser>();
   private captureSessions=new WeakMap<Page,CDPSession>();
   private pendingThumbnails=new Map<string,Promise<(FrameCapture&{url:string})[]>>();
@@ -105,8 +138,7 @@ export class VideoRenderer {
   private readonly store:ProjectStore;
   constructor(store:ProjectStore=new ProjectStore()) { this.store=store; }
   async preview(root:string,project:VideoProject):Promise<string> {
-    await this.prepare(root,project);
-    const server=await this.server(root);return server.origin+'/index.html?revision='+project.revision;
+    const spec=await this.prepare(root,project);return this.runtimeUrl(spec)+'?revision='+project.revision;
   }
   async assetBaseUrl(root:string):Promise<string> {return (await this.server(root,'assets')).origin+'/';}
   async assetUrl(root:string,asset:Asset):Promise<string> {
@@ -126,44 +158,69 @@ export class VideoRenderer {
     try{const server=await pending;this.servers.set(key,server);return server;}
     finally{if(this.pendingServers.get(key)===pending)this.pendingServers.delete(key);}
   }
-  private async prepare(root:string,project:VideoProject):Promise<VideoSpec> {
+  private runtimeUrl(spec:VideoSpec):string {const url=this.runtimeUrls.get(spec);if(!url)throw new Error('Runtime publication is unavailable');return url;}
+  private prepare(root:string,project:VideoProject):Promise<VideoSpec> {
+    const key=path.resolve(root),snapshot=structuredClone(project),previous=this.preparations.get(key)??Promise.resolve();
+    const next=previous.catch(()=>{}).then(()=>this.publishRuntime(key,snapshot));this.preparations.set(key,next);
+    void next.finally(()=>{if(this.preparations.get(key)===next)this.preparations.delete(key);}).catch(()=>{});return next;
+  }
+  private async publishRuntime(root:string,project:VideoProject):Promise<VideoSpec> {
     this.renderAuthorization?.();
+    const fingerprint=productionPolicyFingerprint(project),prior=this.runtimePolicies.get(root);
+    if(prior&&prior.fingerprint!==fingerprint&&project.revision<prior.revision)throw new Error('Runtime production permission has expired');
+    if(prior?.fingerprint!==fingerprint){for(const key of this.resourcePolicies.keys())if(key.startsWith(root+'::'))this.resourcePolicies.delete(key);}
+    this.runtimePolicies.set(root,{fingerprint,revision:Math.max(prior?.revision??0,project.revision)});
+    // Revocation takes effect even if the newly selected mode cannot yet render.
     assertProductionComposition(project);
-    for(const key of this.resourcePolicies.keys())if(key.startsWith(path.resolve(root)+'::code:'))this.resourcePolicies.delete(key);
-    const spec=compileSpec(project);const sources:{id:string;html:string;css:string;moduleUrl:string}[]=[];
-    await fs.mkdir(await projectPath(root,'runtime/scenes'),{recursive:true});
-    for(const shot of spec.shots){
-      if(!usesCodeVisual(shot))continue;
-      try{
-        const source=await this.store.readSource(root,shot,project.revision);safeId(shot.id);
-        // ESM modules are files served under a restrictive self-only CSP; no privileged APIs are exposed.
-        await fs.writeFile(await projectPath(root,'runtime/scenes/'+shot.id+'.mjs'),source.js);
-        sources.push({id:shot.id,html:source.html,css:source.css,moduleUrl:'./scenes/'+shot.id+'.mjs'});
-      }catch(error){const e=error as Error&RenderIssue;e.shotId=shot.id;throw e;}
-    }
-    const server=await this.server(root),codeOrigins:Record<string,string>={};
-    for(const shot of spec.shots.filter(usesCodeVisual)){
-      const codeServer=await this.server(root,`code:${shot.id}`),source=sources.find(source=>source.id===shot.id)!;codeOrigins[shot.id]=codeServer.origin;
-      const codeAssets=shot.assets.filter(asset=>asset.kind==='image').map(asset=>asset.path).filter((file):file is string=>!!file);
-      this.resourcePolicies.set(path.resolve(root)+'::code:'+shot.id,{allowed:new Set(['code.html','runtime/frame.mjs','runtime/code-spec-'+shot.id+'.json','runtime/scenes/'+shot.id+'.mjs',...codeAssets])});
-      const codeSpec={...spec,shots:[{...shot,hasVideo:!!shot.videoClip,videoClip:undefined,assets:shot.assets.filter(asset=>asset.kind==='image'||asset.kind==='text')}]};
-      await fs.writeFile(await projectPath(root,'runtime/code-spec-'+shot.id+'.json'),json({spec:codeSpec,sources:[source],role:'code'}));
-    }
-    const videoAssets=spec.shots.flatMap(shot=>shot.assets.filter(asset=>asset.id===shot.videoClip?.assetId).map(asset=>asset.path).filter((file):file is string=>!!file));
-    this.resourcePolicies.set(path.resolve(root)+'::render',{allowed:new Set(['index.html','runtime/frame.mjs','runtime/spec.json',...videoAssets]),frameOrigin:Object.values(codeOrigins).join(' ')||undefined});
-    await fs.writeFile(await projectPath(root,'runtime/frame.mjs'),browserRuntime);
-    await fs.writeFile(await projectPath(root,'runtime/spec.json'),json({spec,sources:[],role:'compositor',codeOrigins}));
-    if(sources.length)await fs.writeFile(await projectPath(root,'code.html'),runtimeHtml(spec.target.width,spec.target.height));
-    await fs.writeFile(await projectPath(root,'index.html'),runtimeHtml(spec.target.width,spec.target.height));
-    return spec;
+    const spec=compileSpec(project),sources:{id:string;html:string;css:string;moduleUrl:string}[]=[];
+    let operation:TaskFailureDiagnostic['operation']='runtime_directory_create';
+    try{
+      await fs.mkdir(await projectPath(root,'runtime/scenes'),{recursive:true});
+      for(const shot of spec.shots.filter(usesCodeVisual)){
+        try{
+          operation='runtime_scene_source_read';const source=await this.store.readSource(root,shot,project.revision);safeId(shot.id);
+          const moduleName=shot.id+'-'+hash(source.js)+'.mjs';operation='runtime_scene_publish';
+          await writeImmutableRuntime(await projectPath(root,'runtime/scenes/'+moduleName),source.js);
+          sources.push({id:shot.id,html:source.html,css:source.css,moduleUrl:'./scenes/'+moduleName});
+        }catch(error){throw Object.assign(withTaskFailure(error,operation),{shotId:shot.id});}
+      }
+      const runtimePath='runtime/frame-'+hash(browserRuntime)+'.mjs';operation='runtime_frame_publish';
+      await writeImmutableRuntime(await projectPath(root,runtimePath),browserRuntime);
+      const server=await this.server(root),codeOrigins:Record<string,string>={};
+      for(const shot of spec.shots.filter(usesCodeVisual)){
+        const source=sources.find(source=>source.id===shot.id)!;
+        const codeSpec={...spec,shots:[{...shot,hasVideo:!!shot.videoClip,videoClip:undefined,assets:shot.assets.filter(asset=>asset.kind==='image'||asset.kind==='text')}]};
+        const manifest=json({spec:codeSpec,sources:[source],role:'code'}),contentHash=hash(manifest),specPath='runtime/code-spec-'+contentHash+'.json';
+        const document=runtimeHtml(spec.target.width,spec.target.height,{runtimeUrl:'/'+runtimePath,specUrl:'/'+specPath,role:'code'}),documentPath='runtime/code-'+hash(document)+'.html';
+        operation='runtime_code_spec_publish';await writeImmutableRuntime(await projectPath(root,specPath),manifest);
+        operation='runtime_code_document_publish';await writeImmutableRuntime(await projectPath(root,documentPath),document);
+        // Each immutable scene document owns an origin. Old snapshots cannot widen a new scene's whitelist.
+        const role:ServerRole=`code:${shot.id}:${hash(fingerprint+manifest)}`,codeServer=await this.server(root,role);codeOrigins[shot.id]=codeServer.origin;
+        const codeAssets=shot.assets.filter(asset=>asset.kind==='image').map(asset=>asset.path).filter((file):file is string=>!!file);
+        const modulePath='runtime/'+source.moduleUrl.slice(2),specAlias='runtime/code-spec-'+shot.id+'.json',moduleAlias='runtime/scenes/'+shot.id+'.mjs';
+        this.resourcePolicies.set(root+'::'+role,{allowed:new Set(['code.html',specAlias,moduleAlias,'runtime/frame.mjs',documentPath,runtimePath,specPath,modulePath,...codeAssets]),aliases:{'code.html':documentPath,[specAlias]:specPath,[moduleAlias]:modulePath,'runtime/frame.mjs':runtimePath}});
+      }
+      const manifest=json({spec,sources:[],role:'compositor',codeOrigins}),specPath='runtime/spec-'+hash(manifest)+'.json';operation='runtime_spec_publish';
+      await writeImmutableRuntime(await projectPath(root,specPath),manifest);
+      const document=runtimeHtml(spec.target.width,spec.target.height,{runtimeUrl:'/'+runtimePath,specUrl:'/'+specPath}),documentPath='runtime/view-'+hash(document)+'.html';
+      operation='runtime_index_publish';await writeImmutableRuntime(await projectPath(root,documentPath),document);
+      const previous=this.resourcePolicies.get(root+'::render');
+      const videoAssets=spec.shots.flatMap(shot=>shot.assets.filter(asset=>asset.id===shot.videoClip?.assetId).map(asset=>asset.path).filter((file):file is string=>!!file));
+      const frameOrigins=new Set([...(previous?.frameOrigin?.split(' ')??[]),...Object.values(codeOrigins)]);
+      this.resourcePolicies.set(root+'::render',{allowed:new Set([...(previous?.allowed??[]),'index.html','runtime/frame.mjs','runtime/spec.json',documentPath,runtimePath,specPath,...videoAssets]),aliases:{'runtime/frame.mjs':runtimePath,'runtime/spec.json':specPath},frameOrigin:[...frameOrigins].filter(Boolean).join(' ')||undefined});
+      // Only this mutable entry point changes after every immutable dependency is complete.
+      await writeRuntimeFile(await projectPath(root,'index.html'),document);
+      this.runtimeUrls.set(spec,server.origin+'/'+documentPath);return spec;
+    }catch(error){throw withTaskFailure(error,operation);}
   }
   private async openPage(url:string,spec:VideoSpec,settings:EnvironmentSettings,issues:RenderIssue[],signal?:AbortSignal):Promise<{browser:Browser;page:Page;removeAbort:()=>void}> {
+    let operation:TaskFailureDiagnostic['operation']='render_browser_launch';
     aborted(signal);const env=detectEnvironment(settings);if(!env.browserAvailable)throw new Error('Chrome/Chromium unavailable. Set browserPath in environment settings.');
     await fs.access(env.browserPath,constants.X_OK);
     // 逐帧契约要求同一帧可复现：GPU 光栅的 2D canvas 在不同页面状态下会出现 ±1 的采样差异，
     // 会让逆序 seek / 冷启动的字节比对偶发失败。固定用 Skia 软件光栅画 2D canvas，
     // 合成与 WebGL 仍走原路径，渲染结果与截图因此稳定可复现。
-    const browser=await chromium.launch({executablePath:env.browserPath,headless:true,args:['--disable-background-timer-throttling','--disable-renderer-backgrounding','--disable-accelerated-2d-canvas','--disable-accelerated-video-decode','--disable-frame-rate-limit','--renderer-process-limit=1']});this.browsers.add(browser);
+    const browser=await chromium.launch({executablePath:env.browserPath,headless:true,args:['--disable-background-timer-throttling','--disable-renderer-backgrounding','--disable-accelerated-2d-canvas','--disable-accelerated-video-decode','--disable-frame-rate-limit','--renderer-process-limit=1']}).catch(error=>{throw withTaskFailure(error,operation);});this.browsers.add(browser);
     const cancel=()=>{void browser.close().catch(()=>{});};signal?.addEventListener('abort',cancel,{once:true});
     try {
       const context=await browser.newContext({viewport:{width:spec.target.width,height:spec.target.height},deviceScaleFactor:1,serviceWorkers:'block'});
@@ -181,8 +238,9 @@ export class VideoRenderer {
       page.on('response',response=>{if(response.status()>=400)issues.push({message:'HTTP '+response.status()+': '+new URL(response.url()).pathname});});
       // The host requests every frame explicitly; do not race an automatic frame-zero render.
       const renderUrl=new URL(url);renderUrl.searchParams.set('render','manual');
-      await page.goto(renderUrl.href,{waitUntil:'load',timeout:30_000});
+      operation='render_page_load';await page.goto(renderUrl.href,{waitUntil:'load',timeout:30_000});
       await page.waitForFunction(()=>!!(window as any).__VIDEO_WORKPACK__);
+      operation='render_scene_ready';
       const ready=await deadline(page.evaluate(async()=>{
         try{await (window as any).__VIDEO_WORKPACK__.ready();return {ok:true};}
         catch(error){const e=error as any;return {ok:false,message:e.message,shotId:e.shotId};}
@@ -190,7 +248,7 @@ export class VideoRenderer {
       if(!ready.ok){issues.push({shotId:ready.shotId,message:ready.message??'Renderer ready failed'});throw new Error(ready.message);}
       this.captureSessions.set(page,await context.newCDPSession(page));
       return {browser,page,removeAbort:()=>signal?.removeEventListener('abort',cancel)};
-    }catch(error){signal?.removeEventListener('abort',cancel);await browser.close().catch(()=>{});this.browsers.delete(browser);throw error;}
+    }catch(error){signal?.removeEventListener('abort',cancel);await browser.close().catch(()=>{});this.browsers.delete(browser);throw withTaskFailure(error,operation);}
   }
   private async frame(page:Page,spec:VideoSpec,frame:number,scale=1):Promise<{buffer:Buffer;shotId:string}> {
     this.renderAuthorization?.();
@@ -202,14 +260,14 @@ export class VideoRenderer {
         void document.body.offsetHeight;await document.fonts.ready;
         return {ok:true,info};
       }catch(error){const e=error as any;return {ok:false,message:e.message,shotId:e.shotId,frame:e.frame};}
-    },{frame,fps:spec.target.fps}),'Frame '+frame);
-    if(!result.ok){const error=new Error(result.message) as Error&RenderIssue;error.shotId=result.shotId;error.frame=result.frame;throw error;}
+    },{frame,fps:spec.target.fps}),'Frame '+frame).catch(error=>{throw withTaskFailure(error,'render_frame');});
+    if(!result.ok){const error=new Error(result.message) as Error&RenderIssue;error.shotId=result.shotId;error.frame=result.frame;throw withTaskFailure(error,'render_frame');}
     this.renderAuthorization?.();
     const session=this.captureSessions.get(page);if(!session)throw new Error('Frame capture session unavailable');
     // Lossless PNG with fast compression. The viewport and scale are fixed at openPage(),
     // so repeated caret/style/font preparation and viewport probes are unnecessary.
     const capture=await deadline(session.send('Page.captureScreenshot',{format:'png',optimizeForSpeed:true,
-      clip:{x:0,y:0,width:spec.target.width,height:spec.target.height,scale},captureBeyondViewport:false}),'Screenshot '+frame);
+      clip:{x:0,y:0,width:spec.target.width,height:spec.target.height,scale},captureBeyondViewport:false}),'Screenshot '+frame).catch(error=>{throw withTaskFailure(error,'render_frame');});
     return {buffer:Buffer.from(capture.data,'base64'),shotId:result.info.sceneId};
   }
   /** Static previews share one short-lived browser and are cached against the render inputs. */
@@ -231,7 +289,7 @@ export class VideoRenderer {
     if(cached.every(bytes=>bytes!==null))return captures.map((capture,index)=>({...capture,sha256:hash(cached[index]!)}));
     const errors:RenderIssue[]=[];let connection:Awaited<ReturnType<VideoRenderer['openPage']>>|undefined;
     try{
-      await this.prepare(root,project);connection=await this.openPage(server.origin+'/index.html',spec,settings,errors,signal);
+      const published=await this.prepare(root,project);connection=await this.openPage(this.runtimeUrl(published),spec,settings,errors,signal);
       const scale=Math.min(1,320/spec.target.width,180/spec.target.height),results=[];
       for(const capture of captures){
         aborted(signal);const result=await this.frame(connection.page,spec,capture.frame,scale);aborted(signal);
@@ -248,7 +306,7 @@ export class VideoRenderer {
     if(!Number.isSafeInteger(frame)||frame<0||frame>=spec.durationFrames)throw new Error('Frame outside project: '+frame);
     let connection:Awaited<ReturnType<VideoRenderer['openPage']>>|undefined;
     try{
-      const server=await this.server(root);connection=await this.openPage(server.origin+'/index.html',spec,settings,errors,signal);
+      connection=await this.openPage(this.runtimeUrl(spec),spec,settings,errors,signal);
       const result=await this.frame(connection.page,spec,frame);aborted(signal);
       if(errors.length)throw new Error(errors.map(error=>error.message).join('; '));
       const relative='.studio/inspection/'+project.revision+'-'+frame+'-'+randomUUID()+'.png',file=await projectPath(root,relative);await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(file,result.buffer);
@@ -353,7 +411,7 @@ export class VideoRenderer {
     const errors:RenderIssue[]=[],frames:FrameCapture[]=[];let connection:Awaited<ReturnType<VideoRenderer['openPage']>>|undefined;
     const reportRoot=await projectPath(root,'validation/check-'+randomUUID());await fs.mkdir(reportRoot,{recursive:true});
     try {
-      const spec=await this.prepare(root,project),url=(await this.server(root)).origin+'/index.html';
+      const spec=await this.prepare(root,project),url=this.runtimeUrl(spec);
       connection=await this.openPage(url,spec,settings,errors,signal);
       for(const frame of keyFrames(spec)){
         aborted(signal);const result=await this.frame(connection.page,spec,frame);
@@ -361,22 +419,22 @@ export class VideoRenderer {
         frames.push({frame,shotId:result.shotId,path:file,sha256:hash(result.buffer)});
       }
       await this.verifySeek(connection.page,spec,frames,errors,signal);
-      if(errors.length===0)for(const shot of project.shots.filter(usesCodeVisual))await this.store.markSourceGood(root,shot);
-    }catch(error){const e=error as Error&RenderIssue;errors.push({shotId:e.shotId,frame:e.frame,message:signal?.aborted?'Task cancelled':e.message});}
+      if(errors.length===0)for(const shot of project.shots.filter(usesCodeVisual))await this.store.markSourceGood(root,shot).catch(error=>{throw withTaskFailure(error,'source_mark_good');});
+    }catch(error){const e=error as Error&RenderIssue;errors.push({shotId:e.shotId,frame:e.frame,message:signal?.aborted?'Task cancelled':e.message,failure:taskFailure(error,'render_check')});}
     finally{if(connection){connection.removeAbort();await connection.browser.close().catch(()=>{});this.browsers.delete(connection.browser);}}
     const reportPath=path.join(reportRoot,'check.json');const result={ok:errors.length===0,errors:deduplicate(errors),frames,reportPath};
-    await fs.writeFile(reportPath,json(result));return result;
+    await fs.writeFile(reportPath,json(result)).catch(error=>{throw withTaskFailure(error,'render_report_write');});return result;
   }
   private async verifySeek(page:Page,spec:VideoSpec,frames:FrameCapture[],errors:RenderIssue[],signal?:AbortSignal):Promise<void> {
     const expected=new Map(frames.map(frame=>[frame.frame,frame.sha256]));
     for(const frame of [...expected.keys()].reverse()){
       aborted(signal);const result=await this.frame(page,spec,frame);
-      if(hash(result.buffer)!==expected.get(frame))errors.push({shotId:result.shotId,frame,message:'Frame is not repeatable after seeking backwards'});
+      if(hash(result.buffer)!==expected.get(frame))errors.push({shotId:result.shotId,frame,message:'Frame is not repeatable after seeking backwards',failure:{category:'FRAME_NOT_REPEATABLE',operation:'render_seek'}});
     }
     await page.reload({waitUntil:'load'});await page.waitForFunction(()=>!!(window as any).__VIDEO_WORKPACK__);await deadline(page.evaluate(()=>(window as any).__VIDEO_WORKPACK__.ready()),'Cold scene ready');
     for(const frame of expected.keys()){
       aborted(signal);const result=await this.frame(page,spec,frame);
-      if(hash(result.buffer)!==expected.get(frame))errors.push({shotId:result.shotId,frame,message:'Frame is not repeatable after a cold page reload'});
+      if(hash(result.buffer)!==expected.get(frame))errors.push({shotId:result.shotId,frame,message:'Frame is not repeatable after a cold page reload',failure:{category:'FRAME_NOT_REPEATABLE',operation:'render_seek'}});
     }
   }
   async export(root:string,project:VideoProject,settings:EnvironmentSettings,signal:AbortSignal,onProgress:(progress:number,message:string)=>void):Promise<ExportResult> {
@@ -407,7 +465,7 @@ export class VideoRenderer {
     try {
       onProgress(0.03,'制作输入已保存快照');audioMix=await this.audioMixer.mix(snapshotRoot,this.activeMedia(snapshot),env,signal);
       if(audioMix){await fs.writeFile(path.join(outputRoot,'audio-plan.json'),json(audioMix.plan));onProgress(.06,'配音、音乐与音效已完成混音');}
-      connection=await this.openPage(snapshotServer.origin+'/index.html',spec,env,errors,signal);
+      connection=await this.openPage(this.runtimeUrl(spec),spec,env,errors,signal);
       const audioArgs=audioMix?['-i',audioMix.path,'-map','0:v:0','-map','1:a:0','-c:a','aac','-b:a','192k','-ar','48000','-ac','2','-t',String(spec.durationSeconds)]:['-an'];
       const crf=spec.target.quality==='high'?'16':spec.target.quality==='small'?'23':'18';
       // PNG is fed one frame at a time. FFmpeg's automatic frame-thread decoder can
@@ -444,11 +502,12 @@ export class VideoRenderer {
       result.url=(await this.server(root,'assets')).origin+'/exports/'+id+'/video.mp4';onProgress(1,'视频导出完成');return result;
     }catch(error){
       if(encoder)stopChild(encoder);await encoderResult?.catch(()=>{});
-      await fs.writeFile(logPath,log);await fs.writeFile(path.join(outputRoot,'failure.json'),json({status:signal.aborted?'cancelled':'failed',message:(error as Error).message,errors:deduplicate(errors),frames,inputHashes,snapshotRoot}));
-      await fs.rm(mp4Path,{force:true});throw new Error(signal.aborted?'Task cancelled':(error as Error).message);
+      const failure=taskFailure(error,'render_check');await fs.writeFile(logPath,log);await fs.writeFile(path.join(outputRoot,'failure.json'),json({status:signal.aborted?'cancelled':'failed',message:(error as Error).message,failure,errors:deduplicate(errors),frames,inputHashes,snapshotRoot}));
+      await fs.rm(mp4Path,{force:true});throw signal.aborted?withTaskFailure(new Error('Task cancelled'),'render_check'):withTaskFailure(error,'render_check');
     }finally{
       signal.removeEventListener('abort',cancel);if(connection){connection.removeAbort();await connection.browser.close().catch(()=>{});this.browsers.delete(connection.browser);}
       for(const [key,server] of this.servers)if(server.root===path.resolve(snapshotRoot)){await closeServer(server.server);this.servers.delete(key);this.resourcePolicies.delete(key);}
+      this.runtimePolicies.delete(path.resolve(snapshotRoot));
     }
   }
   private async mediaQa(file:string,spec:VideoSpec,settings:EnvironmentSettings,signal:AbortSignal,expectedAudio=false):Promise<Record<string,unknown>> {
@@ -479,9 +538,9 @@ export class VideoRenderer {
     for(const child of this.children)stopChild(child);
     await this.audioMixer.close();
     await Promise.allSettled([...this.browsers].map(browser=>browser.close()));this.browsers.clear();
-    await Promise.allSettled([...this.pendingServers.values()]);
+    await Promise.allSettled([...this.preparations.values()]);await Promise.allSettled([...this.pendingServers.values()]);
     await Promise.allSettled([...this.servers.values()].map(server=>closeServer(server.server)));this.servers.clear();this.pendingServers.clear();
-    this.resourcePolicies.clear();
+    this.resourcePolicies.clear();this.runtimePolicies.clear();this.preparations.clear();
   }
 }
 function deduplicate(errors:RenderIssue[]):RenderIssue[] { return [...new Map(errors.map(error=>[JSON.stringify(error),error])).values()]; }

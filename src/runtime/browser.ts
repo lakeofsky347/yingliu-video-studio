@@ -6,7 +6,7 @@ let data, modules, images, videos, sources, templates, readyPromise, renderChain
 let frameCanvases=[],loadedShot;
 let pendingMessage, messageRendering=false;
 let codeFrame, codeReady, codeWait, codeOrigin, codeShotId,codeListener;
-const isCodePage=location.pathname==='/code.html';
+const isCodePage=document.querySelector('meta[name="video-studio-role"]')?.content==='code'||location.pathname==='/code.html';
 // Free scene code has a separate origin and cannot reach the compositor's media decoder.
 // CSP additionally denies every native media/data/blob load, child frame and worker here.
 if(isCodePage){
@@ -30,7 +30,8 @@ function decorateError(error,shot,frame) {
 }
 function assetUrl(asset){return asset.path?new URL('../'+asset.path.split('/').map(encodeURIComponent).join('/'),import.meta.url).href:undefined;}
 async function init() {
-  const response=await fetch(isCodePage?'./runtime/code-spec-'+encodeURIComponent(new URL(location.href).searchParams.get('shot'))+'.json':'./runtime/spec.json');
+  const manifest=document.querySelector('meta[name="video-studio-spec"]')?.content;
+  const response=await fetch(manifest||(isCodePage?'./runtime/code-spec-'+encodeURIComponent(new URL(location.href).searchParams.get('shot'))+'.json':'./runtime/spec.json'));
   if(!response.ok)throw new Error('Unable to read project runtime: '+response.status);
   data=await response.json();modules=new Map();images=new Map();videos=new Map();templates=new Map();
   sources=new Map(data.sources.map(source=>[source.id,source]));
@@ -164,6 +165,9 @@ async function draw(input) {
       const root=templates.get(shot.id).cloneNode(true);stage.append(root);
       const context=contextFor(shot,frame,root,canvas);context.video=input.videoInfo;
       const module=modules.get(shot.id);if(module.ready)await module.ready(context);await document.fonts.ready;await module.render(context);
+      // render() can insert new text or change the active font. Wait in this
+      // isolated document before acknowledging the compositor's capture.
+      void document.body.offsetHeight;await document.fonts.ready;
     }else{
       const code=shot.visual?.kind==='code'||shot.visual?.kind==='hybrid';
       if(code){await loadCodeFrame(shot);codeFrame.style.display='block';await new Promise((resolve,reject)=>{
@@ -212,10 +216,11 @@ ready().then(async metadata=>{if(new URL(location.href).searchParams.get('render
 });
 `;
 
-export function runtimeHtml(width:number,height:number):string {
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><title>DSH 视频预览</title><style>
+export function runtimeHtml(width:number,height:number,options:{runtimeUrl?:string;specUrl?:string;role?:'code'}={}):string {
+  const attribute=(value:string)=>value.replaceAll('&','&amp;').replaceAll('"','&quot;').replaceAll('<','&lt;');
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${options.specUrl?`<meta name="video-studio-spec" content="${attribute(options.specUrl)}">`:''}${options.role?'<meta name="video-studio-role" content="code">':''}<link rel="icon" href="data:,"><title>DSH 视频预览</title><style>
   :root{color-scheme:dark}*{box-sizing:border-box;caret-color:transparent!important}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000}
   body{position:relative}#stage{position:absolute;top:50%;left:50%;width:${width}px;height:${height}px;overflow:hidden;background:#101016;isolation:isolate;transform:translate(-50%,-50%)}
   .video-background,.video-canvas,.scene-root{position:absolute;inset:0;width:100%;height:100%}.scene-root{overflow:hidden}canvas{display:block}
-  </style><style id="scene-style"></style></head><body><main id="stage"></main><script type="module" src="./runtime/frame.mjs"></script></body></html>`;
+  </style><style id="scene-style"></style></head><body><main id="stage"></main><script type="module" src="${attribute(options.runtimeUrl??'./runtime/frame.mjs')}"></script></body></html>`;
 }
