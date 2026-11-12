@@ -11,6 +11,13 @@ export function frameShotRange(project:VideoProject,frame:number):{shot?:Shot;st
   return {start:0,end:0,localFrame:0};
 }
 export function keyframeNumbers(start:number,end:number):number[]{return [...new Set([start,start+Math.floor(Math.max(0,end-start-1)/2),Math.max(start,end-1)])];}
+/** Next preview frame. A negative animation-clock delta stays put instead of requesting frame -1. */
+export function previewPlaybackFrame(from:number,elapsedMs:number,fps:number,mediaTime:number|null,duration:number):{frame:number;ended:boolean}{
+  const maxFrame=Math.max(0,duration-1),origin=Number.isFinite(from)?Math.max(0,Math.min(maxFrame,Math.trunc(from))):0;
+  const raw=mediaTime==null?origin+Math.floor(Math.max(0,elapsedMs)*fps/1000):Math.floor(mediaTime*fps);
+  if(!Number.isFinite(raw)||raw>=Math.max(0,duration))return {frame:maxFrame,ended:true};
+  return {frame:Math.max(0,raw),ended:false};
+}
 function FrameThumb({url,frame,onSelect,label,failed}:{url?:string;frame:number;onSelect:(frame:number)=>void;label:string;failed:boolean}){
   const [imageFailed,setImageFailed]=useState(false);
   return <button className="vs-keyframe" aria-label={`${label} · 第 ${frame} 帧`} onClick={()=>onSelect(frame)}>{url&&!imageFailed?<img src={url} alt={`${label}缩略帧`} onError={()=>setImageFailed(true)}/>:<div className="vs-keyframe-placeholder">{failed||imageFailed?'画面加载失败':'正在生成缩略帧…'}</div>}<span>{label} <b>F{frame}</b></span></button>;
@@ -38,7 +45,7 @@ export function Preview({snapshot,project,selectedShot,controller,focusFrame,foc
   useEffect(()=>{setReady(false);setCapture(null);},[snapshot.previewUrl]);
   useEffect(()=>{const listener=(e:MessageEvent)=>{if(e.source!==iframe.current?.contentWindow||e.origin!==origin)return;const data=e.data;if(data?.type==='video-studio/ready'){setReady(true);iframe.current?.contentWindow?.postMessage({type:'video-studio/render',frame:currentFrame.current},origin);}if(data?.type==='video-studio/frame')setSceneId(typeof data.sceneId==='string'?data.sceneId:'');if(data?.type==='video-studio/error'){controller.notify(`预览错误：${data.message||'渲染失败'}`);setPlaying(false);}};window.addEventListener('message',listener);return()=>window.removeEventListener('message',listener);},[origin,controller]);
   useEffect(()=>{if(ready)iframe.current?.contentWindow?.postMessage({type:'video-studio/render',frame},origin);setJump(String(frame));},[frame,ready,origin]);
-  useEffect(()=>{if(!playing||!ready)return;let animation=0;const start=performance.now(),from=frame;const tick=(now:number)=>{const clock=project.target.audioMode==='mixed'&&snapshot.audioUrl&&audio.current;const next=clock?Math.floor(clock.currentTime*fps):from+Math.floor((now-start)*fps/1000);if(next>=duration){setFrame(maxFrame);setPlaying(false);return;}setFrame(next);animation=requestAnimationFrame(tick);};animation=requestAnimationFrame(tick);return()=>cancelAnimationFrame(animation);},[playing,ready,duration,fps,snapshot.audioUrl,project.target.audioMode]);
+  useEffect(()=>{if(!playing||!ready)return;let animation=0;const start=performance.now(),from=frame;const tick=(now:number)=>{const mediaTime=project.target.audioMode==='mixed'&&snapshot.audioUrl&&audio.current&&Number.isFinite(audio.current.currentTime)?audio.current.currentTime:null;const step=previewPlaybackFrame(from,now-start,fps,mediaTime,duration);setFrame(step.frame);if(step.ended){setPlaying(false);return;}animation=requestAnimationFrame(tick);};animation=requestAnimationFrame(tick);return()=>cancelAnimationFrame(animation);},[playing,ready,duration,fps,snapshot.audioUrl,project.target.audioMode]);
   useEffect(()=>{if(!selectedShot)return;seek(range.start);},[selectedShot?.id,range.start]);
   useEffect(()=>{if(focusFrame==null)return;seek(focusFrame);},[focusSerial]);
   useEffect(()=>{if(frame>maxFrame)seek(maxFrame);},[maxFrame]);

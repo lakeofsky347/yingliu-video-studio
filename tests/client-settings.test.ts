@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createProject } from '../src/core/index.ts';
 import { canvasMetrics } from '../src/client/graph-adapter.ts';
 import { aspectId, dimensionsForAspect, fpsLabel, targetLabel } from '../src/client/output-settings.tsx';
-import { frameShotRange, keyframeNumbers, shotFrameRange } from '../src/client/Preview.tsx';
+import { frameShotRange, keyframeNumbers, previewPlaybackFrame, shotFrameRange } from '../src/client/Preview.tsx';
 
 test('canvas backing pixels follow DPR while logical graph coordinates remain CSS-sized',()=>{
   assert.deepEqual(canvasMetrics(641,333,2),{width:641,height:333,dpr:2,backingWidth:1282,backingHeight:666});
@@ -44,6 +44,17 @@ test('current frame resolves the actual shot and local frame across forward and 
   }
   assert.equal(frameShotRange(p,-1).localFrame,0);
   assert.equal(frameShotRange(p,900).localFrame,299);
+});
+
+test('preview playback clamps a backwards animation clock instead of requesting frame -1',()=>{
+  assert.deepEqual(previewPlaybackFrame(0,-16,12,null,24),{frame:0,ended:false});
+  assert.deepEqual(previewPlaybackFrame(0,-0.1,30,null,24),{frame:0,ended:false});
+  assert.deepEqual(previewPlaybackFrame(5,-80,12,null,24),{frame:5,ended:false});
+  assert.deepEqual(previewPlaybackFrame(0,1000,12,null,24),{frame:12,ended:false});
+  assert.deepEqual(previewPlaybackFrame(0,5000,12,null,24),{frame:23,ended:true});
+  assert.deepEqual(previewPlaybackFrame(0,0,12,-0.02,24),{frame:0,ended:false});
+  assert.deepEqual(previewPlaybackFrame(3,0,12,1,24),{frame:12,ended:false});
+  assert.deepEqual(previewPlaybackFrame(0,0,12,null,0),{frame:0,ended:true});
 });
 
 test('current-frame identity follows playback order and edited duration rather than shot storage order',()=>{
