@@ -2,6 +2,8 @@
 
 核查与实施日期：2026-11-11（Asia/Singapore）。本批完成计划中的 M00–M07，位于本地分支 `codex/agent-feature-migration-20261111`。插件包版本仍为 0.7.0，尚未发布。
 
+后续分支完善、上游同步与清理见 [2026-11-15 记录](STABILIZATION-20261115.md)。本文保留 11 月 11 日的历史验收结论。
+
 供体是独立版 `yingliu-agent@ef3fc82e62ff57c8654e827e4e75b8eb7c7f0fc6`（1.1.0）；目标基线是插件 `ae05700953a4a92b7c6f56bca64b7bf89a08ec0f`。采用领域模块和局部可靠性设计，没有整文件替换工作流或移入第二套宿主/聊天 Agent。来源映射见 [ORIGIN.md](ORIGIN.md)，公开接口变更见 [API.md](API.md#2026-11-选择性迁移接口)。
 
 ## 已交付功能
