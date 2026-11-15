@@ -1,7 +1,7 @@
 {
   "date": "2026-11-15",
   "scope": "M00-M07 stabilization; local verification before publishing the branch",
-  "codeCommit": "5ad07632a2fd127f6e9dc093a7f14133e8c52d54",
+  "codeCommit": "13a356a74f223cf9021de38435f659605a0b2f2f",
   "upstreamMain": "25928711e4109e81fd6d7a84853d7e1f4a372013",
   "upstreamArchitecture": "cf5fba6c7871d168df2b6504d03b021014507f31",
   "environment": {
@@ -15,8 +15,8 @@
   },
   "verification": {
     "command": "npm run verify:compat",
-    "tests": 486,
-    "pass": 485,
+    "tests": 490,
+    "pass": 489,
     "fail": 0,
     "skipped": 1,
     "typecheck": "PASS",
@@ -24,8 +24,8 @@
     "hostCompatibility": "PASS",
     "skipReason": "macOS provides native say; unavailable-native-voice branch does not apply",
     "log": {
-      "path": "artifacts/stabilization-20261115/verify-compat.log",
-      "sha256": "f56488c4741578a239e496f82bb33ce647d10f8a8996b833434432cf836917ca"
+      "path": "artifacts/stabilization-20261115/verify-compat-windows-fix.log",
+      "sha256": "96912eaed0e6886bc4525c87cc7e479c382d5d63ed7f466e22eaa846828052b9"
     },
     "ui": [
       {
@@ -41,7 +41,8 @@
           "shared export QC gate produces playable AAC MP4 and full FFmpeg decode",
           "client reload retains approved director document and audio/output project state",
           "compact desktop preserves original layout without document overflow"
-        ]
+        ],
+        "codeCommit": "5ad07632a2fd127f6e9dc093a7f14133e8c52d54"
       },
       {
         "path": "artifacts/stabilization-20261115/ui-restart/verification.json",
@@ -57,22 +58,40 @@
           "shared export QC gate produces playable AAC MP4 and full FFmpeg decode",
           "client reload retains approved director document and audio/output project state",
           "compact desktop preserves original layout without document overflow"
-        ]
+        ],
+        "codeCommit": "5ad07632a2fd127f6e9dc093a7f14133e8c52d54"
+      },
+      {
+        "path": "artifacts/stabilization-20261115/ui-final/verification.json",
+        "sha256": "36652b1ccb39144abf0a2d422e3db71675ffaa951af928dbb0550869ef0a69c4",
+        "checks": 6,
+        "status": "PASS",
+        "browser": "157.0.8103.51",
+        "names": [
+          "edit character, assign shot, save draft, explicitly approve persisted plan",
+          "synthesize local chime through original audio panel and register one playable clip",
+          "local QC captures six actual first/middle/last frames and displays untested scope",
+          "shared export QC gate produces playable AAC MP4 and full FFmpeg decode",
+          "client reload retains approved director document and audio/output project state",
+          "compact desktop preserves original layout without document overflow"
+        ],
+        "codeCommit": "13a356a74f223cf9021de38435f659605a0b2f2f"
       }
     ],
     "visualInspection": [
       "ui/director-plan.png",
       "ui/compact.png",
-      "ui/export-playback.png"
+      "ui/export-playback.png",
+      "ui-final/compact.png"
     ],
     "package": {
       "command": "npm pack --ignore-scripts --json; extract; tsc --noEmit",
       "status": "PASS",
-      "files": 324,
+      "files": 326,
       "requiredDeclarationsIncluded": true,
       "artifactsExcluded": true,
       "dependencyScope": "Extracted package reused installed development/host peers; not a clean network dependency installation",
-      "archiveScope": "Validation snapshot before this acceptance document was added; source/build content is bound below"
+      "archiveScope": "Code verification snapshot at 13a356a; acceptance documentation was updated afterwards. Source/build hashes below bind the verified code."
     }
   },
   "cleanup": {
@@ -241,11 +260,11 @@
     "src/host/file-opener.ts": "506e6ef9ba9e03295549de2ca431fe5e56bb75b73201be2cbcfce92c51984911",
     "src/host/generator.ts": "6a47b3cc9c5a2093ed52147ebb87caba200e319d17a44422549e3a0f5fc84270",
     "src/host/index.ts": "e6b5ebc7416ffd2ed683d6d1bc9cb8775f0b2b69327447ad47a761f7471cb5d9",
-    "src/host/local-import.ts": "0540df6bd4721d0f49fe98a3b2d4b3729c647282e5a72aca308855201265430c",
+    "src/host/local-import.ts": "2b1af0a228b30e2d79344e17b85f9c9b6c066e27608c42764378b1d4759558e7",
     "src/host/platform.ts": "ec575dca05a92408d3e1babbf1fed28bfbf37fd85bd5dd9e408deb622a7576af",
     "src/host/project-hub.ts": "7e7d45f34912e561604d704a0446076106220e6f7aead79d54078a2105ee604c",
     "src/host/renderer.ts": "0461644708017381a4d107efa9c5e4e594c34f74bb2fbb4913698cbee226cb7c",
-    "src/host/service.ts": "5cb5a65c4ea9eda57eb44a77310f8d4602133eda7e55963691a40500545ed8c0",
+    "src/host/service.ts": "e1d528d26100432c770a600cc52d4cb11e30a2395683035961bbeda59cc8debb",
     "src/host/session-tools.ts": "8200aafd82933a0362a564609fb082ef4bb9a54c8032fb6b5b174178a14817e8",
     "src/host/store.ts": "2e2b8382e128db8125df04f4c60896b8de6b5fd9f05e7a4f5c5e39e8656f15f0",
     "src/host/tool-environment.ts": "a9f69e3aed1bd9502fdba208916fa0b3da0770e15063046da74031fd547f3332",
@@ -301,6 +320,7 @@
     "tests/fixtures/symlink.ts": "d77bf0e07157788e994501d4830500c190e93f3f2c4bd207dad1f7005bf716d3",
     "tests/home-controller-v04.test.ts": "1783efcf77a15b5b813ab18a65b0bbf3333f9fbd056d1ac709577ea22ca07fa4",
     "tests/host-contract.test.ts": "4928aff099e0d62a77ae96d1c10d9d8dc2122568ec59c164a2ea5dc79e441762",
+    "tests/import-durability-platform.test.ts": "dac175b5c0c160e5e60edf4142c2df0b59bee681993582266c1930e840ed697d",
     "tests/local-feature-host.test.ts": "21abdf696d54762c103ae9de815509a5b584396edb90b84cc8488258c50b4d68",
     "tests/local-features.test.ts": "6ddd9e5f1caa073ade63fb08e1c298efff248aabfe590541023a24a6b80e1395",
     "tests/local-sfx-native.test.ts": "c8da16590166f42f3b6d3fb09899fafe8a0139e0d1d2ed5d10dfcafc393029c0",
@@ -323,7 +343,7 @@
     "tests/render-performance.test.ts": "ea13c7baa5fe9528a19503b9b3c5627e382d77c1e281d12a20282fc14371f2fd",
     "tests/renderer-resource-lifetime.test.ts": "82718aabe217d27c78f195cf0da659ef7d23a829c7012c639b82ed03eb654a3f",
     "tests/renderer.test.ts": "570119b9e180d96b5a57be3de9c22409899cb172cf3e41058c5e6750878b7272",
-    "tests/runtime-publication.test.ts": "ac409062d6843f69bb5b4265d241810c7cfd3669e7edd96075276a1dbd71181a",
+    "tests/runtime-publication.test.ts": "0cc7498bb26e79b3063bb7cef2768a505a76b39ff88959aa472d77c4c388832a",
     "tests/service-persistence.test.ts": "8d89f23ed0bf64d2a81d0c525b5fde543c74af7a104c1c4e6a5055e02014777f",
     "tests/service.test.ts": "cc694e3138447740402816d3f14d9689d100637ceb25cfdcc126887fbfc11ac1",
     "tests/session-directory-v04.test.ts": "dadb74f992e47112fb7183b3ff87399ef82014d607b3bf48e3f5aee03c85a17a",
@@ -349,7 +369,7 @@
   },
   "buildHashes": {
     "lib/client.js": "0c47687cdc62deb0a8dc2962e1224c2488d4396d3ebff94aa564c2dfc4e5135d",
-    "lib/index.js": "e78bcfb60d113b7b13c6090d4998136c3dddcbf44103b552b5a8fad457256ea3",
+    "lib/index.js": "c93d9c29dd6a228009f54b2e9d60587b4aa9e9cfa964ecbfe287a93fb6feea91",
     "lib/styles.css": "f34e31c8a7871f6176d1c0b4d96e2c9998d11c5859fa7507846a02b0a9f19de5"
   },
   "boundaries": {
@@ -359,5 +379,29 @@
     "mainMerge": false,
     "crossPlatformNativeAcceptance": false,
     "githubCI": "Check the final pushed commit in GitHub Actions; this file records local verification."
+  },
+  "previousValidation": {
+    "codeCommit": "5ad07632a2fd127f6e9dc093a7f14133e8c52d54",
+    "recordAtCommit": "a8fe4a8c843993441f44a02ecfb61a8ffaaa913c",
+    "tests": 486,
+    "pass": 485,
+    "fail": 0,
+    "skip": 1
+  },
+  "windowsCIFollowup": {
+    "failedCommit": "a8fe4a8c843993441f44a02ecfb61a8ffaaa913c",
+    "failedRun": 43684986050,
+    "matrix": {
+      "passed": 6,
+      "failed": 3
+    },
+    "windowsFailuresPerJob": 9,
+    "fixCommit": "13a356a74f223cf9021de38435f659605a0b2f2f",
+    "fixes": [
+      "Open plugin-created files with write access before fsync; preserve errors and read-only inputs",
+      "Use an independently retained real file handle for cross-platform HTTP generation race injection"
+    ],
+    "regressionTestsAdded": 4,
+    "priorEvidence": "artifacts/stabilization-20261115/push-ci-a8fe4a8.json"
   }
 }

@@ -31,7 +31,7 @@
     "documentation": "docs/MIGRATION-20261111.md",
     "stabilization": {
       "date": "2026-11-15",
-      "codeCommit": "5ad07632a2fd127f6e9dc093a7f14133e8c52d54",
+      "codeCommit": "13a356a74f223cf9021de38435f659605a0b2f2f",
       "upstreamMain": "25928711e4109e81fd6d7a84853d7e1f4a372013",
       "documentation": "docs/STABILIZATION-20261115.md",
       "validation": "docs/validation/stabilization-20261115.json"
