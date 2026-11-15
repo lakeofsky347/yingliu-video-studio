@@ -1,10 +1,10 @@
 # DSH 视频工作台：数据与场景接口
 
-本文描述首版插件的稳定业务语义。类型入口为 `src/shared/types.ts`，业务函数入口为 `src/core/index.ts`。第三方图引擎的节点和连线对象不写入项目文件。
+本文描述 0.8.0 的业务语义与兼容接口；按引入版本分节的功能仍适用。类型入口为 `src/shared/types.ts`，业务函数入口为 `src/core/index.ts`。第三方图引擎的节点和连线对象不写入项目文件。
 
 ## 项目文件与编辑真源
 
-`VideoProject.schemaVersion` 为 `1`。项目保存标题、主题、目标时长、输出规格、资产、镜头、镜头顺序、画布布局、输出记录和扩展数据。
+`VideoProject.schemaVersion` 当前为 `3`。读取 v1/v2 工程时，`migrateProject` 在内存中升级到 v3，保留稳定 ID、revision 和历史内容，并将工程制作方式及镜头视觉方式设为待确认；用户须在工作台明确选择制作方式。项目保存标题、主题、目标时长、输出规格、资产、镜头、镜头顺序、画布布局、输出记录和扩展数据。`sessions.json` 的 v2 索引和 `DirectorDocument.schemaVersion=1` 分别属于会话关系与导演文档，不是影片工程格式。
 
 - `shots` 保存镜头内容，镜头 ID 在参数编辑、AI 修改和顺序调整后保持稳定。
 - `shotOrder` 是播放顺序的真源；镜头从其顺序累加整数帧区间。画布横纵坐标不影响时间和播放顺序。
@@ -41,7 +41,7 @@
 
 | 函数 | 输入与结果 |
 |---|---|
-| `createProject(title, topic?)` | 新建默认 `VideoProject` |
+| `createProject(title, topic?, mode?)` | 新建默认 schema v3 `VideoProject`；省略 mode 时为 `unresolved` |
 | `defaultShot(index?, fps?)` | 新建具有独立 ID 的十秒镜头；时长四舍五入为整数帧 |
 | `validateProject(project)` | `{ok, errors, warnings}`；检查项目数据、参数、资产引用和路径；允许图草稿 |
 | `validateGraph(project)` | `{ok, errors, warnings}`；检查完整生产主链 |
@@ -165,20 +165,20 @@ runtime 只解码当前镜头绑定的图片和视频，切镜释放不再使用
 
 # 0.3.0 工程管理与制作记录
 
-既有视频工具保持原有职责，当前 Session 的模型仍直接提交分镜和源码。公开工程写入必须提供 `expectedRevision`；在实际提交前检查，过期请求返回 `REVISION_CONFLICT`。`video_update` 在导入素材后继续使用本次已确认 revision 提交，不会跳过服务侧冲突检查。
+既有视频工具保持原有职责，当前 Session 的模型仍直接提交分镜和源码。修改现有工程内容的公开写入必须提供 `expectedRevision`；在实际提交前检查，过期请求返回 `REVISION_CONFLICT`。`video_update` 在导入素材后继续使用本次已确认 revision 提交，不会跳过服务侧冲突检查。
 
 | RPC | 输入 | 返回 |
 | --- | --- | --- |
 | `list` | `includeArchived?:boolean` | `{projects:[{id,path,title,createdAt?,updatedAt?,archived?,archivedAt?}],sessions,selected?}` |
 | `rename` | `projectId,title,expectedRevision` | 当前工程 `StudioSnapshot` |
-| `duplicate` | `projectId,title?` | 新工程 `StudioSnapshot`；新 ID，不复制 Session、输出及历史 |
+| `duplicate` | `projectId,title?,expectedRevision` | 新工程 `StudioSnapshot`；新 ID，不复制 Session、输出及历史 |
 | `archive` / `restore` | `projectId` | 当前选中工程或空工程的 `StudioSnapshot`；归档不删除文件 |
 | `history` | `projectId` | `{canUndo,canRedo,cursor,entries:[{id,label,createdAt,revision}]}` |
 | `undo` / `redo` | `projectId,expectedRevision` | 内容恢复后的 `StudioSnapshot`；revision 递增 |
 | `tasks` / `jobs` | `projectId` | `{tasks:[TaskState & {retryable,revision?,retryOf?}]}` |
 | `retry` / `job.retry` | `projectId,taskId,expectedRevision` | 新任务的 `StudioSnapshot`，使用当前工程 |
 
-同一工程的写请求和后台提交排队。工程及全部镜头源码以完整版本保存；状态指针切换是提交点，投影中断可在重开时修复。旧工程首次打开迁移到该协议，schemaVersion 仍为 1。导出以指定 revision 读取源码，历史镜头删除或移动源码路径后仍可复核旧输入。
+同一工程的写请求和后台提交排队。工程及全部镜头源码以完整版本保存；状态指针切换是提交点，投影中断可在重开时修复。旧工程首次打开迁移到该协议；当前工程格式为 schema v3，格式迁移规则见本文开头。导出以指定 revision 读取源码，历史镜头删除或移动源码路径后仍可复核旧输入。
 
 任务执行前保存记录，结束保存状态；重启将未完成记录标为 `interrupted`。只允许插件自己记录的预览、导出和生成请求由用户重试，配音不自动重放。没有逐帧断点续渲或跨进程工程锁。
 
@@ -208,11 +208,13 @@ runtime 只解码当前镜头绑定的图片和视频，切镜释放不再使用
 
 ## 2026-11 选择性迁移接口
 
-以下接口以工程当前 `revision` 进行 CAS。`save/apply/saveSource/restoreSource/import/audio/generate/rename/duplicate/undo/redo/retry/job.retry/audio.sfx/director.document.save/director.document.approve` 省略版本返回 `REVISION_REQUIRED`，过期返回 `REVISION_CONFLICT`。先读取工程，再提交需要修改的范围；服务端不会替外部调用者填入最新版本。
+0.8.0 以下接口以工程当前 `revision` 进行 CAS：`save/apply/saveSource/restoreSource/import/audio/generate/rename/duplicate/undo/redo/retry/job.retry/audio.sfx/director.document.save/director.document.approve`、`video.clip.save/remove/extract`，以及可信工作台的 `production.set`。这些入口省略 `expectedRevision` 返回 `REVISION_REQUIRED`，过期返回 `REVISION_CONFLICT`。先读取工程，再提交需要修改的范围；服务端不会替外部调用者填入最新版本。
+
+`export`、`preview`、`quality.check` 的 `expectedRevision` 可选；提供时同样检查是否为当前版本。新建、读取、会话关联与归档等管理入口不应机械套用上述工程写入契约。媒体生成/采用与工作流启动/采用仍按各自工具契约携带工程版本。
 
 | 接口 | 输入 | 返回/边界 |
 | --- | --- | --- |
-| `director.document.get` | `projectId` | `{document?}`；schemaVersion=1，版本、内容 hash、draft/approved、plan |
+| `director.document.get` | `projectId` | `{document?}`；导演文档自身 schemaVersion=1，版本、内容 hash、draft/approved、plan |
 | `director.document.save` | `projectId,expectedRevision,expectedVersion,plan` | `{document}`；每次编辑成为新草稿；图片和镜头引用必须仍存在 |
 | `director.document.approve` | `projectId,expectedRevision,expectedVersion,expectedHash` | 只接受可信工作台；会话工具不能代签，不等同于生成、上传或混合制作授权 |
 | `quality.check` | `projectId,expectedRevision?` | `LocalQualityReport`；固定工程/源码 hash、最多 12 个实际抽样帧、未检查范围 |
@@ -225,6 +227,6 @@ runtime 只解码当前镜头绑定的图片和视频，切镜释放不再使用
 
 会话工具新增 `video_director` 的 document_get/document_save（保存需要 expectedRevision、expectedVersion）、`video_audio local_sfx`，以及只执行本地检查的 `video_quality check/last`。`workflows.run` 未显式传导演计划时，可继承已批准工程计划的固定快照；选镜头运行只取相应镜头，仍校验制作策略及本轮图片上传授权。
 
-所有 MP4 导出都会对冻结的工程版本重新执行本地检查。结构硬失败不能以 `force` 绕过；黑帧/纯色和字幕文字量是启发式提示；没有完整视频听检、动作/口型检查或实际字幕边界检测。候选审看流程和用户确认独立保留。
+所有 MP4 导出都会对冻结的工程版本重新执行本地检查。结构硬失败不能以 `force` 绕过；黑帧/纯色和字幕文字量是启发式提示；没有完整视频听检、动作/口型检查或实际字幕边界检测。候选审看流程和用户确认独立保留。每份成片的 `ExportResult.localQuality` 保留导出时的报告，另存于 `.studio/quality/exports/<outputId>.json`；它绑定成片 revision，编辑后的当前报告应重新查询，不能把历史报告当作当前版本通过。
 
 任务状态可含脱敏 `failure:{category,operation,ioCode?,syscall?}`。字段只接受固定枚举，旧日志无该字段仍可读取。不得把文件路径、URL、请求头或凭据塞入诊断字段。

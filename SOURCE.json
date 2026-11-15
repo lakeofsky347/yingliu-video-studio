@@ -1,18 +1,20 @@
 {
   "repository": "https://github.com/lakeofsky347/yingliu-video-studio",
-  "upstreamMergeCommit": "9d7b2fdd1c06c357b2f5b040f13d7bd81c70e7de",
+  "upstreamMergeCommit": "0aa5e3c2fa633d329d5782b4fd8fa4ae1e565752",
   "package": "yingliu-video-studio",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "releaseChanges": [
-    "Optimize lossless Chromium frame capture and offline scheduling",
-    "Cache static keyframe thumbnails in one short-lived browser",
-    "Load media per shot and release unused video decoders",
-    "Bound FFmpeg threading and optimize immutable snapshot copies",
-    "Include rendering benchmarks and real-browser regression checks"
+    "Separate code animation, model video and explicitly authorized hybrid production",
+    "Add project director plans, character references and approved plan snapshots",
+    "Persist workflow results and uncertain submission receipts without duplicate execution",
+    "Require expectedRevision for public project mutations and preserve concurrent imports",
+    "Publish immutable preview resources and recover first-frame readiness safely",
+    "Add bounded local export quality checks and six deterministic sound effects",
+    "Harden Windows import durability, workbench recovery and failed-export cleanup"
   ],
-  "compatibility": "Keep project directories and existing source-draft storage keys unchanged",
-  "baseReleaseCommit": "28a1953b8c12d922c31fba30b112554e49f6cd34",
-  "previousRelease": "0.6.1",
+  "compatibility": "Project schema v3 reads v1/v2; legacy production mode needs explicit confirmation. Public mutations require expectedRevision. Keep project directories and existing draft storage keys unchanged.",
+  "baseReleaseCommit": "3e639552685afc2aeb04aff64734152ed6f65d93",
+  "previousRelease": "0.7.0",
   "selectiveMigration": {
     "date": "2026-11-11",
     "donorRepository": "https://github.com/lakeofsky347/yingliu-agent",
@@ -27,7 +29,7 @@
       "M06",
       "M07"
     ],
-    "releaseStatus": "unreleased",
+    "releaseStatus": "included-in-0.8.0",
     "documentation": "docs/MIGRATION-20261111.md",
     "stabilization": {
       "date": "2026-11-15",
@@ -35,6 +37,8 @@
       "upstreamMain": "25928711e4109e81fd6d7a84853d7e1f4a372013",
       "documentation": "docs/STABILIZATION-20261115.md",
       "validation": "docs/validation/stabilization-20261115.json"
-    }
-  }
+    },
+    "releaseVersion": "0.8.0"
+  },
+  "releaseDocumentation": "docs/RELEASE-0.8.0.md"
 }

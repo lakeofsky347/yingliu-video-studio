@@ -48,7 +48,7 @@
 
 ## 数据与升级
 
-影片内容保存在可搬运工程目录；会话关系保存在当前宿主工程基目录的 sessions.json。v2 索引记录每个会话的 currentProjectId、relatedProjectIds 与 updatedAt。旧版索引首次启动自动迁移，影片 schemaVersion 仍为 1。
+影片内容保存在可搬运工程目录；会话关系保存在当前宿主工程基目录的 sessions.json。v2 索引记录每个会话的 currentProjectId、relatedProjectIds 与 updatedAt。旧版索引首次启动自动迁移。索引版本与影片格式独立：插件 0.8.0 的影片使用 schema v3，可读取 v1/v2 工程；旧影片的制作方式须在工作台明确确认。
 
 旧工程中的 sessionIds 是兼容数据，不作为重启自动重绑依据。复制影片不继承活动关联，移动或导入工程不会激活来源机器的会话。
 
