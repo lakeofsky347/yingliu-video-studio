@@ -290,7 +290,8 @@ export class StudioService {
       // A missing artifact behind an existing receipt is corruption, not a new request.
       try{await readFile(receiptFile);throw new Error('导入回执引用的素材文件缺失');}catch(check){if((check as NodeJS.ErrnoException).code!=='ENOENT')throw check;}
       const asset=await this.store.importAsset(root,input,this.settings);let fileHash:string|undefined;
-      if(asset.path){const file=await projectPath(root,asset.path),handle=await open(file,'r');try{await handle.sync();fileHash=await hashMediaFile(file);}finally{await handle.close();}}
+      // Imported files are plugin-owned; fsync needs a writable handle on Windows.
+      if(asset.path){const file=await projectPath(root,asset.path),handle=await open(file,'r+');try{await handle.sync();fileHash=await hashMediaFile(file);}finally{await handle.close();}}
       if(asset.path)await syncDirectory(join(root,'assets'));
       receipt={version:1,projectId:this.required().project.id,digest,asset,assetHash:createHash('sha256').update(JSON.stringify(asset)).digest('hex'),fileHash};
       await writeDurableFile(receiptFile,JSON.stringify(receipt)+'\n');

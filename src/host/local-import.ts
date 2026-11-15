@@ -15,7 +15,8 @@ export async function freezeLocalVideo(input:ImportAssetInput,target:string,limi
     await mkdir(dirname(target),{recursive:true});
     await pipeline(source.createReadStream({autoClose:false}),new Transform({transform(chunk,_encoding,callback){bytes+=chunk.length;if(bytes>limit||bytes>info.size){callback(new Error('素材在读取时发生变化'));return;}hash.update(chunk);callback(null,chunk);}}),createWriteStream(target,{flags:'wx'}));
     if(bytes!==info.size)throw new Error('素材在读取时发生变化');
-    const handle=await open(target,'r');try{await handle.sync();}finally{await handle.close();}
+    // Windows FlushFileBuffers requires write access, even after the stream closed.
+    const handle=await open(target,'r+');try{await handle.sync();}finally{await handle.close();}
     return {input:{path:target,mime:input.mime??'video/mp4',name:input.name??basename(input.path),description:input.description},sha256:hash.digest('hex')};
   }catch(error){await rm(target,{force:true});throw error;}finally{await source.close();}
 }

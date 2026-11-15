@@ -60,14 +60,25 @@ test('publication repairs missing or damaged immutable dependencies and leaves t
 test('HTTP headers and body use the same opened inode, including HEAD and empty files',async t=>{
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'runtime-inode-')),renderer=new VideoRenderer();
   try{
-    const destination=path.join(directory,'sample.txt');await fs.writeFile(destination,'old bytes');const base=await renderer.assetBaseUrl(directory),open=fs.open;
+    const destination=path.join(directory,'sample.txt'),retained=path.join(directory,'retained-generation.txt');
+    const previous='old bytes',replacement='a different and longer generation';
+    // Both pathname generations differ from the retained handle, catching path
+    // stat calls made either before or after open returns.
+    await fs.writeFile(destination,'intermediate pathname generation');await fs.writeFile(retained,previous);const base=await renderer.assetBaseUrl(directory),open=fs.open;
     let replaced=false;t.mock.method(fs,'open',async(...args:Parameters<typeof fs.open>)=>{
-      const handle=await open(...args);
-      if(String(args[0])===destination&&!replaced){replaced=true;const temporary=destination+'.replacement';await fs.writeFile(temporary,'a different and longer generation');await fs.rename(temporary,destination);}
-      return handle;
+      if(String(args[0])===destination&&!replaced){
+        replaced=true;
+        // Keep a real old-generation handle while the requested pathname points
+        // to new bytes. The pathname being replaced is not open on Windows.
+        const handle=await open(retained,'r');
+        try{const temporary=destination+'.replacement';await fs.writeFile(temporary,replacement);await fs.rename(temporary,destination);return handle;}
+        catch(error){await handle.close();throw error;}
+      }
+      return open(...args);
     });
-    const response=await fetch(base+'sample.txt');assert.equal(response.headers.get('content-length'),'9');assert.equal(await response.text(),'old bytes');
-    const head=await fetch(base+'sample.txt',{method:'HEAD'});assert.equal(head.status,200);assert.equal(await head.text(),'');
+    const response=await fetch(base+'sample.txt');assert.equal(response.status,200);assert.equal(response.headers.get('content-length'),String(Buffer.byteLength(previous)));assert.equal(await response.text(),previous);
+    assert.equal(await fs.readFile(destination,'utf8'),replacement);assert.ok((await fs.stat(destination)).size>Buffer.byteLength(previous));
+    const head=await fetch(base+'sample.txt',{method:'HEAD'});assert.equal(head.status,200);assert.equal(head.headers.get('content-length'),String(Buffer.byteLength(replacement)));assert.equal(await head.text(),'');
     await fs.writeFile(path.join(directory,'empty.txt'),'');const empty=await fetch(base+'empty.txt');assert.equal(empty.status,200);assert.equal(empty.headers.get('content-length'),'0');assert.equal(await empty.text(),'');
   }finally{await renderer.close();await fs.rm(directory,{recursive:true,force:true});}
 });
