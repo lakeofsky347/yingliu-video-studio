@@ -52,6 +52,32 @@ async function fixture(t:TestContext){
   };
 }
 
+for(const action of ['run','retry','apply'] as const)for(const phase of ['before-write','after-write'] as const){
+  test(`${action} 启动记录 ${phase} 期间暂停阻止新提交，排空后仍可明确继续`,async t=>{
+    const f=await fixture(t),entered=latch(),release=latch();let id='',held=false;
+    if(action==='retry'){f.hooks.textOutput=role=>role==='director'?'{"shots":[]}':undefined;const old=await f.service.run(f.request());id=old.id;assert.equal((await f.settled(id)).status,'failed');f.hooks.textOutput=undefined;}
+    if(action==='apply'){f.hooks.scene=()=>{f.project={...f.project,revision:f.project.revision+1};};const old=await f.service.run(f.request());id=old.id;assert.equal((await f.settled(id)).status,'awaiting-apply');f.hooks.scene=undefined;}
+    f.inject=async event=>{if(!held&&event.record.status==='running'&&event.phase===phase&&(action!=='run'||event.checkpoint==='created')){held=true;id=event.workflowId;entered.resolve();await release.promise;}};
+    const calls=clone(f.calls),pending=action==='run'?f.service.run(f.request()):action==='retry'?f.service.retry(id):f.service.apply(id,f.project.revision);
+    await entered.promise;const pause=f.service.pause(id);await new Promise<void>(resolve=>setImmediate(resolve));release.resolve();
+    assert.equal((await pending).status,'paused');assert.equal((await pause).status,'paused');assert.deepEqual(f.calls,calls,'pause intent must stop the admitted execution before any model call or commit');
+    assert.equal(JSON.parse(await fs.readFile(f.file(id),'utf8')).status,'paused');
+    await f.service.retry(id);const done=await f.settled(id);assert.equal(done.status,'complete',done.error);
+  });
+}
+
+test('关闭排空在启动检查点后排队的暂停，不死锁且不启动模型',async t=>{
+  const f=await fixture(t),entered=latch(),release=latch();let held=false;
+  f.hooks.textOutput=role=>role==='director'?'{"shots":[]}':undefined;
+  const started=await f.service.run(f.request());assert.equal((await f.settled(started.id)).status,'failed');f.hooks.textOutput=undefined;
+  f.inject=async event=>{if(!held&&event.record.status==='running'&&event.phase==='before-write'){held=true;entered.resolve();await release.promise;}};
+  const calls=clone(f.calls),retry=f.service.retry(started.id);void retry.catch(()=>{});await entered.promise;
+  const pause=f.service.pause(started.id);await new Promise<void>(resolve=>setImmediate(resolve));let closed=false;
+  const closing=f.service.dispose().then(()=>{closed=true;});await new Promise<void>(resolve=>setImmediate(resolve));assert.equal(closed,false);release.resolve();
+  await assert.rejects(retry,/正在关闭/);assert.equal((await pause).status,'paused');await closing;
+  assert.deepEqual(f.calls,calls);assert.equal(JSON.parse(await fs.readFile(f.file(started.id),'utf8')).status,'paused');
+});
+
 for(const status of ['complete','failed','paused','awaiting-apply'] as const)for(const phase of ['before-write','after-write'] as const){
   test(`${status} 终态 ${phase} 尚未排空时，新制作等待旧回执后立即启动`,async t=>{
     const f=await fixture(t),entered=latch(),release=latch();let held=false,oldId='',nextState='pending';

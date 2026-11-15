@@ -2,6 +2,8 @@ import test from 'node:test';import assert from 'node:assert/strict';
 import {mkdtemp,rm,readFile,writeFile,readdir} from 'node:fs/promises';import {tmpdir} from 'node:os';import {join} from 'node:path';
 import {StudioService} from '../src/host/service.ts';import {retryLocalAppend,freezeImport,freezeLocalVideo} from '../src/host/local-import.ts';
 import type {HostContext} from '../src/host/platform.ts';import type {StudioSnapshot} from '../src/shared/types.ts';
+import {synthesizeLocalSfx} from '../src/media/local-sfx.ts';
+import type {Asset} from '../src/shared/types.ts';
 const ctx={llm:{listProviders:()=>[],listModels:async()=>[],async *stream(){throw new Error('unexpected model');}}} as unknown as HostContext;
 function serviceAt(base:string){const service=new StudioService(ctx,{baseDirectory:base,restoreRecent:false});service.renderer.assetBaseUrl=async()=> 'http://127.0.0.1:1/';service.renderer.preview=async()=> 'http://127.0.0.1:1/preview';service.renderer.audioPreview=async()=>null;return service;}
 async function ok(service:StudioService,endpoint:string,payload:unknown={}){const result=await service.rpc(endpoint,payload);assert.equal(result.ok,true,result.ok?'':result.error.message);return (result as {ok:true;value:StudioSnapshot}).value;}
@@ -15,3 +17,38 @@ test('freeze local import reads fixed bytes and preserves text file semantics',a
 test('task diagnostics persist fixed labels and discard arbitrary fields from old logs',async()=>{const base=await mkdtemp(join(tmpdir(),'diagnostic-')),service=serviceAt(base);try{service.renderer.preview=async()=>{throw Object.assign(new Error('preview failed'),{code:'EPERM',syscall:'rename'});};const initial=await ok(service,'create',{productionMode:'code_animation'});assert.deepEqual(initial.task?.failure,{category:'IO_ERROR',operation:'preview_refresh',ioCode:'EPERM',syscall:'rename'});const path=initial.task!.logPath!,record=JSON.parse(await readFile(path,'utf8'));record.failure={...record.failure,path:'/private/secret',token:'secret',syscall:'bad arbitrary'};await writeFile(path,JSON.stringify(record));const result=await service.rpc('tasks',{});assert.equal(result.ok,true);if(result.ok){const tasks=(result.value as any).tasks;assert.deepEqual(tasks[0].failure,{category:'IO_ERROR',operation:'preview_refresh',ioCode:'EPERM'});}}finally{await service.dispose();await rm(base,{recursive:true,force:true});}});
 
 test('large local video freezes to a stream-backed file with stable bytes and original classification',async()=>{const base=await mkdtemp(join(tmpdir(),'freeze-video-'));try{const source=join(base,'source.mp4'),target=join(base,'staging/fixed.video');await writeFile(source,Buffer.alloc(33*1024*1024,7));const frozen=await freezeLocalVideo({path:source,name:'friendly title'},target,64*1024*1024);assert.ok(frozen);assert.equal(frozen.input.path,target);assert.equal(frozen.input.dataBase64,undefined);assert.equal(frozen.input.mime,'video/mp4');assert.equal(frozen.input.name,'friendly title');await writeFile(source,'changed');assert.equal((await readFile(target)).length,33*1024*1024);assert.match(frozen.sha256,/^[0-9a-f]{64}$/);await assert.rejects(freezeLocalVideo({path:target,mime:'video/mp4'},join(base,'too-small.video'),1024));}finally{await rm(base,{recursive:true,force:true});}});
+
+for(const mode of ['replace-voice','fit-existing-shot','fit-after-refresh','pure-append'] as const)test(`audio import CAS only retries a pure append: ${mode}`,async()=>{
+  const base=await mkdtemp(join(tmpdir(),'audio-import-boundary-')),service=serviceAt(base);
+  try{
+    let initial=await ok(service,'create',{productionMode:'code_animation'});const next=structuredClone(initial.project!);next.target.audioMode='mixed';
+    if(mode==='fit-existing-shot')next.shots[0]!.durationFrames=1;
+    initial=await ok(service,'save',{project:next,expectedRevision:initial.project!.revision});const shotId=initial.project!.shots[0]!.id;
+    const bytes=synthesizeLocalSfx({kind:'tone',durationSeconds:.25,frequency:440});
+    const asset=(id:string):Asset=>({id,kind:'audio',name:id,description:'isolated fixture',path:'assets/'+id+'.wav',mime:'audio/wav',duration:.25,sampleRate:48000,channels:1});
+    const incoming=asset('incoming'),concurrent=asset('concurrent');
+    await writeFile(join(initial.root!,incoming.path!),bytes);await writeFile(join(initial.root!,concurrent.path!),bytes);
+    let imports=0,writes=0;service.store.importAsset=async()=>{imports++;return incoming;};const commit=service.store.commit.bind(service.store);
+    service.store.commit=async(root,project,sources,options)=>{
+      if(writes++===0){const edited=structuredClone(initial.project!);edited.revision++;edited.title='concurrent edit retained';
+        if(mode==='fit-after-refresh')edited.shots[0]!.durationFrames=1;
+        if(mode==='replace-voice'||mode==='pure-append'){edited.assets.push(concurrent);edited.audioClips=[{id:'concurrent-clip',assetId:concurrent.id,shotId,role:'voice',startSeconds:0,trimStart:0,volume:1,fadeIn:0,fadeOut:0}];}
+        await commit(root,edited,{},options);
+      }
+      return commit(root,project,sources,options);
+    };
+    const input={action:'import',expectedRevision:initial.project!.revision,requestId:'fixed-audio',dataBase64:Buffer.from(bytes).toString('base64'),mime:'audio/wav',shotId,role:'voice',...(mode==='replace-voice'?{replaceVoice:true}:{})};
+    const result=await service.rpc('audio',input),current=(await service.snapshot()).project!;
+    assert.equal(imports,1);assert.equal(current.title,'concurrent edit retained');
+    if(mode==='pure-append'){
+      assert.equal(result.ok,true);assert.equal(writes,2);assert.equal(current.revision,initial.project!.revision+2);assert.deepEqual(current.audioClips?.map(clip=>clip.assetId),['concurrent','incoming']);
+    }else{
+      assert.equal(result.ok,false);if(!result.ok)assert.equal(result.error.code,'REVISION_CONFLICT');assert.equal(writes,1,'unsafe rebase must stop before a second commit');assert.equal(current.revision,initial.project!.revision+1);assert.equal(current.assets.some(item=>item.id===incoming.id),false);
+      if(mode==='replace-voice')assert.deepEqual(current.audioClips?.map(clip=>clip.id),['concurrent-clip']);else assert.equal(current.shots[0]!.durationFrames,1);
+      assert.equal((await service.store.open(initial.root!)).revision,current.revision);
+      // Reading the new revision and explicitly confirming the same operation
+      // may reuse its fixed artifact without importing or probing it again.
+      const confirmed=await ok(service,'audio',{...input,expectedRevision:current.revision});assert.equal(imports,1);assert.equal(confirmed.project!.assets.filter(item=>item.id===incoming.id).length,1);
+    }
+  }finally{await service.dispose();await rm(base,{recursive:true,force:true});}
+});

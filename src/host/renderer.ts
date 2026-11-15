@@ -441,28 +441,31 @@ export class VideoRenderer {
     aborted(signal);assertProductionComposition(project,{forExport:true});const env=detectEnvironment(settings);
     if(!env.browserAvailable||!env.ffmpegAvailable||!env.ffprobeAvailable)throw new Error('Export needs existing Chrome/Chromium, FFmpeg and FFprobe. Configure missing paths.');
     const id=randomUUID(),outputRoot=await projectPath(root,'exports/'+id),snapshotRoot=path.join(outputRoot,'snapshot');
-    await fs.mkdir(snapshotRoot,{recursive:true});
-    const snapshot=structuredClone(project);snapshot.outputs=[];
-    // Rendering consumes the CFR proxy; keep source provenance without duplicating unused originals.
-    for(const asset of snapshot.assets)delete asset.originalPath;
-    await fs.writeFile(path.join(snapshotRoot,'project.json'),json(snapshot));
-    const inputHashes:{path:string;sha256:string}[]=[];
-    for(const asset of snapshot.assets)if(asset.path){
-      const source=await projectPath(root,asset.path),destination=await projectPath(snapshotRoot,asset.path);await fs.mkdir(path.dirname(destination),{recursive:true});
-      await fs.copyFile(source,destination,constants.COPYFILE_FICLONE);inputHashes.push({path:asset.path,sha256:await hashMediaFile(destination,signal)});
-    }
-    for(const shot of snapshot.shots){
-      if(!usesCodeVisual(shot))continue;
-      const source=await this.store.readSource(root,shot,project.revision);await this.store.writeSource(snapshotRoot,shot,source);
-      inputHashes.push({path:shot.sourcePath+'/source.json',sha256:hash(json(source))});
-    }
-    const spec=await this.prepare(snapshotRoot,snapshot),errors:RenderIssue[]=[],frames:FrameCapture[]=[];
-    if(spec.target.width%2||spec.target.height%2)throw new Error('H.264 yuv420p requires even width and height');
-    const snapshotServer=await this.server(snapshotRoot);let connection:Awaited<ReturnType<VideoRenderer['openPage']>>|undefined,encoder:ChildProcess|undefined;
+    const inputHashes:{path:string;sha256:string}[]=[],errors:RenderIssue[]=[],frames:FrameCapture[]=[];
+    let connection:Awaited<ReturnType<VideoRenderer['openPage']>>|undefined,encoder:ChildProcess|undefined;
     const mp4Path=path.join(outputRoot,'video.mp4'),logPath=path.join(outputRoot,'ffmpeg.log');let log='',audioMix:AudioMix|null=null;
     const cancel=()=>{if(encoder)stopChild(encoder);};signal.addEventListener('abort',cancel,{once:true});
     let encoderResult:Promise<void>|undefined;
     try {
+      // Publication starts listeners before it writes the final entry point, so
+      // snapshot construction must share the cleanup boundary with capture.
+      await fs.mkdir(snapshotRoot,{recursive:true});
+      const snapshot=structuredClone(project);snapshot.outputs=[];
+      // Rendering consumes the CFR proxy; keep source provenance without duplicating unused originals.
+      for(const asset of snapshot.assets)delete asset.originalPath;
+      await fs.writeFile(path.join(snapshotRoot,'project.json'),json(snapshot));
+      for(const asset of snapshot.assets)if(asset.path){
+        aborted(signal);const source=await projectPath(root,asset.path),destination=await projectPath(snapshotRoot,asset.path);await fs.mkdir(path.dirname(destination),{recursive:true});
+        await fs.copyFile(source,destination,constants.COPYFILE_FICLONE);inputHashes.push({path:asset.path,sha256:await hashMediaFile(destination,signal)});
+      }
+      for(const shot of snapshot.shots){
+        aborted(signal);if(!usesCodeVisual(shot))continue;
+        const source=await this.store.readSource(root,shot,project.revision);await this.store.writeSource(snapshotRoot,shot,source);
+        inputHashes.push({path:shot.sourcePath+'/source.json',sha256:hash(json(source))});
+      }
+      const spec=await this.prepare(snapshotRoot,snapshot);
+      if(spec.target.width%2||spec.target.height%2)throw new Error('H.264 yuv420p requires even width and height');
+      aborted(signal);
       onProgress(0.03,'制作输入已保存快照');audioMix=await this.audioMixer.mix(snapshotRoot,this.activeMedia(snapshot),env,signal);
       if(audioMix){await fs.writeFile(path.join(outputRoot,'audio-plan.json'),json(audioMix.plan));onProgress(.06,'配音、音乐与音效已完成混音');}
       connection=await this.openPage(this.runtimeUrl(spec),spec,env,errors,signal);
@@ -502,8 +505,12 @@ export class VideoRenderer {
       result.url=(await this.server(root,'assets')).origin+'/exports/'+id+'/video.mp4';onProgress(1,'视频导出完成');return result;
     }catch(error){
       if(encoder)stopChild(encoder);await encoderResult?.catch(()=>{});
-      const failure=taskFailure(error,'render_check');await fs.writeFile(logPath,log);await fs.writeFile(path.join(outputRoot,'failure.json'),json({status:signal.aborted?'cancelled':'failed',message:(error as Error).message,failure,errors:deduplicate(errors),frames,inputHashes,snapshotRoot}));
-      await fs.rm(mp4Path,{force:true});throw signal.aborted?withTaskFailure(new Error('Task cancelled'),'render_check'):withTaskFailure(error,'render_check');
+      // Diagnostic writes can fail for the same disk error as publication. Keep
+      // the original failure observable and still release every snapshot server.
+      const failure=taskFailure(error,'render_check');
+      await fs.writeFile(logPath,log).catch(()=>{});
+      await fs.writeFile(path.join(outputRoot,'failure.json'),json({status:signal.aborted?'cancelled':'failed',message:(error as Error).message,failure,errors:deduplicate(errors),frames,inputHashes,snapshotRoot})).catch(()=>{});
+      await fs.rm(mp4Path,{force:true}).catch(()=>{});throw signal.aborted?withTaskFailure(new Error('Task cancelled'),'render_check'):withTaskFailure(error,'render_check');
     }finally{
       signal.removeEventListener('abort',cancel);if(connection){connection.removeAbort();await connection.browser.close().catch(()=>{});this.browsers.delete(connection.browser);}
       for(const [key,server] of this.servers)if(server.root===path.resolve(snapshotRoot)){await closeServer(server.server);this.servers.delete(key);this.resourcePolicies.delete(key);}

@@ -295,12 +295,19 @@ export class StudioService {
       receipt={version:1,projectId:this.required().project.id,digest,asset,assetHash:createHash('sha256').update(JSON.stringify(asset)).digest('hex'),fileHash};
       await writeDurableFile(receiptFile,JSON.stringify(receipt)+'\n');
     }
+    let attempts=0;
+    const nonAppendConflict=()=>Object.assign(new Error('工程在导入时已变化；替换音轨或调整现有时长不能自动合并。已保留导入素材，请读取最新工程后确认修改并复用原 requestId'),{code:'REVISION_CONFLICT'});
     await retryLocalAppend(async()=>{
       if(prior())return;
-      const next=structuredClone(this.required().project);next.assets.push(structuredClone(receipt.asset));next.graph.positions[receipt.asset.id]=[60,80+(next.assets.length-1)*180];
+      const current=this.required().project,next=structuredClone(current);next.assets.push(structuredClone(receipt.asset));next.graph.positions[receipt.asset.id]=[60,80+(next.assets.length-1)*180];
       if(audio)this.withAudioClip(next,receipt.asset.id,placement);
+      // Replacing a voice or fitting audio can remove/modify existing content.
+      // Only a pure append may be rebased after another writer wins the CAS.
+      const appendOnly=!audio||!placement.replaceVoice&&JSON.stringify(next.shots)===JSON.stringify(current.shots)&&JSON.stringify(next.target)===JSON.stringify(current.target);
+      if(attempts++>0&&!appendOnly)throw nonAppendConflict();
       next.extensions.importApplications={...(next.extensions.importApplications as object??{}),[key]:{digest,assetId:receipt.asset.id}};
-      await this.persist(next,{},audio?'导入本地音频':'导入素材');
+      try{await this.persist(next,{},audio?'导入本地音频':'导入素材');}
+      catch(error){const failure=error as {code?:string;localWriteNotStarted?:boolean};if(!appendOnly&&failure?.code==='REVISION_CONFLICT'&&failure.localWriteNotStarted===true){this.project=await this.store.open(root);throw nonAppendConflict();}throw error;}
     },async()=>{this.project=await this.store.open(root);});
     }finally{if(video)await rm(temporary,{force:true});}
   }

@@ -26,12 +26,16 @@
     "SOURCE.json",
     "scripts/build.mjs",
     "scripts/check-client-bundle.mjs",
+    "scripts/check-client-bundle.d.mts",
     "scripts/check-host-compatibility.mjs",
     "scripts/link-host-dependencies.mjs",
     "scripts/dev-environment.mjs",
+    "scripts/dev-environment.d.mts",
     "scripts/prepare-local.mjs",
     "scripts/preview.mjs",
-    "scripts/benchmark-render.mjs"
+    "scripts/benchmark-render.mjs",
+    "scripts/verify-migration-20261111.mjs",
+    "scripts/verify-migration-20261111.d.mts"
   ],
   "dsh": {
     "bundle": {

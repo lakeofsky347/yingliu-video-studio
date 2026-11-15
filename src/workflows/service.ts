@@ -53,6 +53,7 @@ export class WorkflowService {
   private records=new Map<string,StoredWorkflow>();
   private running=new Map<string,{controller:AbortController;promise:Promise<void>}>();
   private projectQueues=new Map<string,Promise<unknown>>();
+  private pausing=new Map<string,number>();
   private stepStarts=new Map<string,number>();
   private writes=Promise.resolve();private initialized?:Promise<void>;private stopped=false;private disposal?:Promise<void>;
   private readonly directory:string;
@@ -189,13 +190,24 @@ export class WorkflowService {
   private async persistAndStart(record:StoredWorkflow,checkpoint:Checkpoint='record'){
     try{await this.persist(record,checkpoint);}catch(error){record.status='failed';record.error=message(error);record.message='制作记录保存失败，尚未启动本次执行';await this.persist(record).catch(()=>{});throw error;}
     if(this.stopped){record.status='paused';record.message='应用正在关闭，尚未启动本次执行；已完成产物保留';await this.persist(record);throw new Error('协作服务正在关闭');}
+    // Pause may arrive while an admitted run/retry/apply is persisting its start.
+    // Record the intent before queueing pause, so no model starts in that gap.
+    if(this.pausing.has(record.id)){record.status='paused';record.message='制作已暂停，尚未启动本次执行；已完成产物保留';await this.persist(record);return this.public(record);}
     // No await between the final closing check and registering the runner.
     this.start(record);return this.public(record);
   }
   private start(record:StoredWorkflow){this.assertOpen();if(this.running.has(record.id))return;const controller=new AbortController();const promise=this.execute(record,controller.signal).finally(()=>this.running.delete(record.id));this.running.set(record.id,{controller,promise});void promise.catch(()=>{});}
-  async pause(id:string){const record=await this.required(id);const active=this.running.get(id);active?.controller.abort(new Error('已停止等待'));await active?.promise;
-    for(const step of record.steps)if(step.taskId){const task=await this.media.get(step.taskId);if(task.observation==='active'&&!['ready','complete','failed','cancelled'].includes(task.phase))await this.media.pause(step.taskId);}
-    if(record.status!=='complete'&&record.status!=='awaiting-apply'){record.status='paused';record.message='已暂停本地制作；云端生成可能仍在执行';await this.persist(record);}return this.public(record);}
+  async pause(id:string){
+    const record=await this.required(id);this.pausing.set(id,(this.pausing.get(id)??0)+1);
+    // Abort immediately even when the lifecycle queue is busy. Runners never
+    // acquire this queue, so their terminal writes can safely drain inside it.
+    this.running.get(id)?.controller.abort(new Error('已停止等待'));
+    try{return await this.projectLock(record.projectId,async()=>{
+      const active=this.running.get(id);active?.controller.abort(new Error('已停止等待'));await active?.promise;
+      for(const step of record.steps)if(step.taskId){const task=await this.media.get(step.taskId);if(task.observation==='active'&&!['ready','complete','failed','cancelled'].includes(task.phase))await this.media.pause(step.taskId);}
+      if(record.status!=='complete'&&record.status!=='awaiting-apply'){record.status='paused';record.message='已暂停本地制作；云端生成可能仍在执行';await this.persist(record);}return this.public(record);
+    });}finally{const remaining=this.pausing.get(id)!-1;if(remaining)this.pausing.set(id,remaining);else this.pausing.delete(id);}
+  }
   async retry(id:string){const record=await this.required(id);return this.projectLock(record.projectId,async()=>{
     await this.drainProjectTerminals(record.projectId);this.assertOpen();
     if(record.status==='complete'||record.status==='running'&&this.running.has(id))return this.public(record);this.assertProjectIdle(record.projectId,id);

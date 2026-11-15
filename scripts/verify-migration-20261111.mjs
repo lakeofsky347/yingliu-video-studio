@@ -1,18 +1,47 @@
 import {chromium} from 'playwright-core';
 import {mkdir,readFile,writeFile} from 'node:fs/promises';import path from 'node:path';import assert from 'node:assert/strict';import {randomUUID,createHash} from 'node:crypto';import {execFile} from 'node:child_process';import {promisify} from 'node:util';
-const out=path.resolve(process.env.MIGRATION_REPORT_DIR??'artifacts/migration-20261111/ui');await mkdir(out,{recursive:true});
-const hostLog=await readFile('artifacts/migration-20261111/host.log','utf8'),url=hostLog.match(/dsh web: (http[^\s]+)/)?.[1];assert.ok(url,'isolated host URL');
-const browser=await chromium.launch({headless:true,executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'}),context=await browser.newContext({viewport:{width:1600,height:1100}}),page=await context.newPage(),report={surface:'official isolated DSH Web on macOS',realProvider:false,checks:[],errors:[],startedAt:new Date().toISOString()};
-page.on('pageerror',error=>report.errors.push(error.message));
-const base=new URL(url).origin;await context.request.get(url);
+import {pathToFileURL} from 'node:url';
+import {realpathSync} from 'node:fs';
+import {findBrowserExecutable,isExecutableFile} from '../src/host/tool-environment.ts';
+
+/** The caller starts an isolated host with scripts/preview.mjs and names its project directory. */
+export async function migrationVerificationOptions(env=process.env){
+ let url=env.MIGRATION_HOST_URL;
+ if(!url&&env.MIGRATION_HOST_LOG){const log=await readFile(path.resolve(env.MIGRATION_HOST_LOG),'utf8');url=[...log.matchAll(/dsh web: (http[^\s]+)/g)].at(-1)?.[1];}
+ assert.ok(url,'Set MIGRATION_HOST_URL or MIGRATION_HOST_LOG for a running isolated DSH Web host');
+ const parsed=new URL(url);assert.ok(parsed.protocol==='http:'&&['127.0.0.1','localhost','[::1]'].includes(parsed.hostname)&&!parsed.username&&!parsed.password,'Migration verification requires a loopback HTTP host URL');
+ assert.ok(env.MIGRATION_PROJECTS_DIR,'Set MIGRATION_PROJECTS_DIR to the isolated host DSH_PREVIEW_PROJECTS directory');
+ const browserPath=env.MIGRATION_BROWSER_PATH??findBrowserExecutable({env});assert.ok(isExecutableFile(browserPath),'Chrome/Chromium unavailable; set MIGRATION_BROWSER_PATH to an executable');
+ const runId=new Date().toISOString().replace(/[:.]/g,'-')+'-'+randomUUID().slice(0,8);
+ return {url:parsed.href,browserPath,projects:path.resolve(env.MIGRATION_PROJECTS_DIR),out:path.resolve(env.MIGRATION_REPORT_DIR??path.join('artifacts','migration-smoke',runId)),restoreProjectId:env.MIGRATION_RESTORE_PROJECT_ID};
+}
+export function assertMigrationProjectRoot(root,projects){
+ const relative=path.relative(realpathSync(projects),realpathSync(root));assert.ok(relative&&relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative),'Host project is outside MIGRATION_PROJECTS_DIR');
+}
+export function assertRestoredMigrationFixture(snapshot,projectId){
+ if(!projectId)return false;
+ assert.equal(snapshot.project?.id,projectId,'The selected project must match MIGRATION_RESTORE_PROJECT_ID');
+ assert.equal(snapshot.project.extensions.directorDocument?.status,'approved');assert.equal(snapshot.project.audioClips.length,1);assert.ok(snapshot.project.outputs.length>0);return true;
+}
+// Authentication can appear in the host URL's query/fragment or in Playwright call logs.
+export function redactMigrationMessage(message){return String(message).replace(/https?:\/\/[^\s<>"']+/g,value=>{try{const url=new URL(value);url.username='';url.password='';url.search='';url.hash='';return url.href;}catch{return '[redacted URL]';}});}
+
+export async function verifyMigration(options){
+options??=await migrationVerificationOptions();
+const {out,url,browserPath,projects,restoreProjectId}=options;await mkdir(out,{recursive:true});
+const base=new URL(url).origin,report={surface:'official isolated DSH Web',platform:process.platform,hostOrigin:base,realProvider:false,checks:[],errors:[],startedAt:new Date().toISOString()};
+let browser,context,page;
 async function rpc(endpoint,payload={}){const response=await context.request.post(base+'/api/video-studio/'+endpoint,{data:{type:'client-request',rpcId:randomUUID(),method:'video-studio/'+endpoint,payload}});assert.ok(response.ok());const json=await response.json();assert.equal(json.result.ok,true,JSON.stringify(json.result));return json.result.value;}
 const pass=(name,evidence={})=>{report.checks.push({name,evidence});console.log(name);};
 async function poll(check,timeout=90000){const deadline=Date.now()+timeout;while(Date.now()<deadline){const value=await check();if(value)return value;await new Promise(resolve=>setTimeout(resolve,150));}throw new Error('postcondition timeout');}
 async function tab(name){await page.getByRole('tab',{name,exact:true}).click();}
 let projectId;
 try{
- const restored=await rpc('current');if(restored.project?.outputs.length){assert.equal(restored.project.extensions.directorDocument?.status,'approved');assert.equal(restored.project.audioClips.length,1);pass('actual isolated host restart retains approved plan, audio and historical MP4',{projectId:restored.project.id,revision:restored.project.revision,outputs:restored.project.outputs.length});}
- let snapshot=await rpc('create',{title:'选择性迁移 · 本地验收',topic:'工程计划、声音和导出检查',productionMode:'code_animation',target:{width:320,height:180,fps:{num:12,den:1},audioMode:'none'}});projectId=snapshot.project.id;
+ browser=await chromium.launch({headless:true,executablePath:browserPath});context=await browser.newContext({viewport:{width:1600,height:1100}});page=await context.newPage();report.browser=browser.version();
+ page.on('pageerror',error=>report.errors.push(redactMigrationMessage(error.message)));assert.ok((await context.request.get(url)).ok(),'isolated host is reachable');
+ const restored=await rpc('current');if(restored.root)assertMigrationProjectRoot(restored.root,projects);
+ if(assertRestoredMigrationFixture(restored,restoreProjectId))pass('previous fixture retains approved plan, audio and historical MP4',{projectId:restored.project.id,revision:restored.project.revision,outputs:restored.project.outputs.length});
+ let snapshot=await rpc('create',{title:'选择性迁移 · 本地验收',topic:'工程计划、声音和导出检查',productionMode:'code_animation',target:{width:320,height:180,fps:{num:12,den:1},audioMode:'none'}});projectId=snapshot.project.id;assertMigrationProjectRoot(snapshot.root,projects);
  const shots=snapshot.project.shots.slice(0,2).map((shot,index)=>({...shot,durationFrames:12,params:{...shot.params,text:index?'本地音效与导出检查':'角色与工程计划',subtitle:'实际 DSH 宿主 · 无外部模型调用'}}));
  snapshot=await rpc('apply',{projectId,expectedRevision:snapshot.project.revision,shots,shotOrder:shots.map(shot=>shot.id),targetDuration:2});
  await page.goto(url);const welcome=page.getByRole('button',{name:'继续',exact:true});if(await welcome.waitFor({state:'visible',timeout:2500}).then(()=>true).catch(()=>false))await welcome.click();await page.getByText('映流 · 视频工作台',{exact:true}).click();await page.locator(`[data-project-id="${projectId}"]`).getByRole('button',{name:'打开工作台',exact:true}).first().click();await page.getByRole('heading',{name:'选择性迁移 · 本地验收',exact:true}).waitFor();
@@ -24,5 +53,8 @@ try{
  await page.reload();await page.getByText('映流 · 视频工作台',{exact:true}).click();await page.locator(`[data-project-id="${projectId}"]`).getByRole('button',{name:'打开工作台',exact:true}).first().click();await tab('协作制作');await page.locator('[data-director-document] > summary').click();await page.getByLabel('角色名字 1',{exact:true}).waitFor();assert.equal(await page.getByLabel('角色名字 1',{exact:true}).inputValue(),'导览员');pass('client reload retains approved director document and audio/output project state');
  await page.setViewportSize({width:1100,height:900});await page.screenshot({path:out+'/compact.png'});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);pass('compact desktop preserves original layout without document overflow');
  assert.deepEqual(report.errors,[]);report.status='PASS';report.projectId=projectId;
-}catch(error){report.status='FAIL';report.failure=error.stack;await page.screenshot({path:out+'/failure.png'}).catch(()=>{});throw error;}
-finally{report.completedAt=new Date().toISOString();await writeFile(out+'/verification.json',JSON.stringify(report,null,2)+'\n');await browser.close();}
+}catch(error){report.status='FAIL';report.failure=redactMigrationMessage(error.stack??error);await page?.screenshot({path:out+'/failure.png'}).catch(()=>{});throw new Error(report.failure);}
+finally{report.completedAt=new Date().toISOString();try{await writeFile(out+'/verification.json',JSON.stringify(report,null,2)+'\n');}finally{await browser?.close();}}
+return report;
+}
+if(process.argv[1]&&pathToFileURL(path.resolve(process.argv[1])).href===import.meta.url)await verifyMigration();
