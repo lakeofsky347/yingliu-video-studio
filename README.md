@@ -6,7 +6,7 @@
 
 映流（`yingliu-video-studio`）是 DSH Desktop 的视频制作插件。提供主题和素材，就能让模型编排分镜、制作动画，也可以接入生图、生视频和配音服务。你可以随时修改画面、安排声音、预览和导出，工程保存在本地，方便继续编辑。
 
-当前版本：**0.8.2**。[更新说明](docs/RELEASE-0.8.2.md)
+当前版本：**0.8.3**。[更新说明](docs/RELEASE-0.8.3.md)
 
 [![映流工作台：左侧素材、中间分镜画布、右侧镜头属性，下方为镜头顺序和影片预览](docs/images/readme/workbench.png)](docs/images/readme/workbench.png)
 
@@ -181,6 +181,6 @@
 <a id="development"></a>
 ## 更多说明
 
-[语言与文案](docs/LOCALIZATION.md) · [版本更新](docs/RELEASE-0.8.2.md) · [模型与素材生成](docs/MULTIMODAL.md) · [模型能力](docs/MODEL-CAPABILITIES.md) · [开发接口](docs/API.md) · [宿主兼容](docs/COMPATIBILITY.md) · [平台支持](docs/PLATFORM-SUPPORT.md) · [项目来源](docs/ORIGIN.md)
+[语言与文案](docs/LOCALIZATION.md) · [版本更新](docs/RELEASE-0.8.3.md) · [模型与素材生成](docs/MULTIMODAL.md) · [模型能力](docs/MODEL-CAPABILITIES.md) · [开发接口](docs/API.md) · [宿主兼容](docs/COMPATIBILITY.md) · [平台支持](docs/PLATFORM-SUPPORT.md) · [项目来源](docs/ORIGIN.md)
 
 本项目采用 **GPL-3.0-only**。详见 [许可证](LICENSE)、[版权与来源说明](NOTICE)和[第三方声明](THIRD_PARTY_NOTICES.md)。

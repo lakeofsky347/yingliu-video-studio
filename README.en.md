@@ -6,7 +6,7 @@
 
 Yingliu (`yingliu-video-studio`) is a video creation plugin for DSH Desktop. Give it a topic and some assets, then let a model plan the storyboard and create animations. You can also connect image, video, and speech services. Edit the visuals, arrange sound, preview, and export whenever you are ready. Projects stay on your computer so you can return to them later.
 
-Current version: **0.8.2**. [Release notes](docs/RELEASE-0.8.2.md)
+Current version: **0.8.3**. [Release notes](docs/RELEASE-0.8.3.md)
 
 [![Yingliu studio: assets on the left, storyboard canvas in the center, shot properties on the right, and shot order and preview below](docs/images/readme/workbench-en.png)](docs/images/readme/workbench-en.png)
 
@@ -181,8 +181,8 @@ On a different computer, configure models, keys, and conversation links again. T
 <a id="development"></a>
 ## More information
 
-Release notes and topic-specific documents are currently in Chinese.
+Earlier release notes and topic-specific documents are primarily in Chinese.
 
-[Language and localization](docs/LOCALIZATION.md) · [Release notes](docs/RELEASE-0.8.2.md) · [Models and media](docs/MULTIMODAL.md) · [Model capabilities](docs/MODEL-CAPABILITIES.md) · [Developer API](docs/API.md) · [Host compatibility](docs/COMPATIBILITY.md) · [Platform support](docs/PLATFORM-SUPPORT.md) · [Project origins](docs/ORIGIN.md)
+[Language and localization](docs/LOCALIZATION.md) · [Release notes](docs/RELEASE-0.8.3.md) · [Models and media](docs/MULTIMODAL.md) · [Model capabilities](docs/MODEL-CAPABILITIES.md) · [Developer API](docs/API.md) · [Host compatibility](docs/COMPATIBILITY.md) · [Platform support](docs/PLATFORM-SUPPORT.md) · [Project origins](docs/ORIGIN.md)
 
 This project is licensed under **GPL-3.0-only**. See the [license](LICENSE), [copyright and source notice](NOTICE), and [third-party notices](THIRD_PARTY_NOTICES.md).

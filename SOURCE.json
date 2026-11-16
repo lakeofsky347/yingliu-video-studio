@@ -1,15 +1,16 @@
 {
   "repository": "https://github.com/lakeofsky347/yingliu-video-studio",
   "package": "yingliu-video-studio",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "releaseChanges": [
-    "Add a Video Studio entry to the DSH session header",
-    "Show Video Studio in the right dock alongside the active DSH conversation",
-    "Discover models from a supported media provider when its connection and API key are saved"
+    "Follow the DSH language setting for Chinese and English studio controls, messages and dates",
+    "Localize production requirements in the studio, clipboard and Markdown exports",
+    "Preserve film content, source drafts, canvas state and unknown provider messages when switching languages",
+    "Provide bilingual README guides and an actual English studio screenshot"
   ],
-  "compatibility": "The new entry points depend on the corresponding DSH session and right sidebar APIs. The left navigation entry remains available on older hosts. Project schema v3 reads v1/v2; legacy production mode needs explicit confirmation. Public mutations require expectedRevision.",
-  "baseReleaseCommit": "c39ead740fe7557a5171bc9022df1b53c3cdd291",
-  "previousRelease": "0.8.0",
+  "compatibility": "Uses the DSH locale service for Chinese and English UI. Project schema remains v3 and reads v1/v2; existing film content is preserved. Legacy production mode needs explicit confirmation. Public mutations require expectedRevision. The left navigation entry remains available when optional conversation or right-sidebar APIs are absent.",
+  "baseReleaseCommit": "58cc198df2d54a019027794385e83b440c118acb",
+  "previousRelease": "0.8.2",
   "selectiveMigration": {
     "date": "2026-11-11",
     "donorRepository": "https://github.com/lakeofsky347/yingliu-agent",
@@ -35,5 +36,13 @@
     },
     "releaseVersion": "0.8.0"
   },
-  "releaseDocumentation": "docs/RELEASE-0.8.2.md"
+  "releaseDocumentation": "docs/RELEASE-0.8.3.md",
+  "internationalization": {
+    "codeCommit": "3886393974d176c4a5d24690bc4211611e6faee7",
+    "locales": [
+      "zh",
+      "en"
+    ],
+    "documentation": "docs/LOCALIZATION.md"
+  }
 }
