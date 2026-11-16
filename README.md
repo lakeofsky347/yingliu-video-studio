@@ -8,7 +8,7 @@
 
 [![映流工作台：左侧素材、中间分镜画布、右侧镜头属性，下方为镜头顺序和影片预览](docs/images/readme/workbench.png)](docs/images/readme/workbench.png)
 
-*工作台示意，截图来自 0.4.0；当前入口与操作以下文为准。*
+*映流 0.8.2 的实际工作台，使用本地演示工程。点击查看大图。[配图来源](docs/images/readme/SOURCES.md)*
 
 <a id="setup"></a>
 ## 安装与首次配置
