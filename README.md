@@ -1,5 +1,7 @@
 # 映流 · DSH 视频工作台
 
+**中文** | [English](README.en.md)
+
 **在对话中构思影片，在工作台里调整镜头，最后导出本地 MP4。**
 
 映流（`yingliu-video-studio`）是 DSH Desktop 的视频制作插件。提供主题和素材，就能让模型编排分镜、制作动画，也可以接入生图、生视频和配音服务。你可以随时修改画面、安排声音、预览和导出，工程保存在本地，方便继续编辑。
@@ -19,6 +21,8 @@
 4. 在 DSH 中配置创作模型，进入影片后从顶部 **创作模型** 选择。生图、生视频和配音服务按需另外配置，已有素材也可以直接使用。
 
 本机工具需自行安装，插件会尝试自动查找。不需要安装 ComfyUI 或独立版映流。
+
+工作台支持中文和英文。到 **DSH 设置 → 通用 → 语言** 切换，界面、提示和日期显示会随之更新；影片文字、素材名称和未保存的编辑内容保持原样。
 
 <a id="first-film"></a>
 ## 制作第一部影片
@@ -177,6 +181,6 @@
 <a id="development"></a>
 ## 更多说明
 
-[版本更新](docs/RELEASE-0.8.2.md) · [模型与素材生成](docs/MULTIMODAL.md) · [模型能力](docs/MODEL-CAPABILITIES.md) · [开发接口](docs/API.md) · [宿主兼容](docs/COMPATIBILITY.md) · [平台支持](docs/PLATFORM-SUPPORT.md) · [项目来源](docs/ORIGIN.md)
+[语言与文案](docs/LOCALIZATION.md) · [版本更新](docs/RELEASE-0.8.2.md) · [模型与素材生成](docs/MULTIMODAL.md) · [模型能力](docs/MODEL-CAPABILITIES.md) · [开发接口](docs/API.md) · [宿主兼容](docs/COMPATIBILITY.md) · [平台支持](docs/PLATFORM-SUPPORT.md) · [项目来源](docs/ORIGIN.md)
 
 本项目采用 **GPL-3.0-only**。详见 [许可证](LICENSE)、[版权与来源说明](NOTICE)和[第三方声明](THIRD_PARTY_NOTICES.md)。

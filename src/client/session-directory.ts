@@ -1,4 +1,5 @@
 import type { SessionBinding } from '../shared/types.ts';
+import {t,formatDate} from './i18n.ts';
 
 /** A view of the host directory; the plugin does not maintain a second Session catalog. */
 export interface SessionDirectoryEntry {
@@ -27,8 +28,8 @@ export function projectSessions(projectId:string,sessions:SessionDirectoryEntry[
   return sessions.filter(session=>resolveSessionBinding(session.id,sessions,bindings).binding?.relatedProjectIds.includes(projectId));
 }
 export function sessionName(sessionId:string,sessions:SessionDirectoryEntry[]):string {
-  return sessions.find(session=>session.id===sessionId)?.displayTitle||`不可用会话 · ${sessionId.slice(0,8)}`;
+  return sessions.find(session=>session.id===sessionId)?.displayTitle||t('不可用会话 · {0}',{0:sessionId.slice(0,8)});
 }
 export function sessionUpdatedAt(value:string|number|undefined):string {
-  if(value===undefined)return '';const date=new Date(value);return Number.isNaN(date.valueOf())?'':date.toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
+  if(value===undefined)return '';const date=new Date(value);return Number.isNaN(date.valueOf())?'':formatDate(date.toISOString(),{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
 }

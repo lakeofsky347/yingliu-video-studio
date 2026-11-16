@@ -6,6 +6,7 @@ import css from './styles.css?inline';
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { sessionDirectory, sessionTarget, type HostSessionList, type HostWorkspaceList, type Observable, type SessionTarget } from './session-host-adapter.ts';
 import {assertClientContract} from '../shared/host-contract.ts';
+import {setLocale,useLocale,systemMessage,t as uiText} from './i18n.ts';
 
 type RecordValue=Record<string,unknown>;
 function object(value:unknown):RecordValue{return value!==null&&typeof value==='object'&&!Array.isArray(value)?value as RecordValue:{};}
@@ -18,7 +19,7 @@ interface DockContext extends ClientContext {
 interface ClientContext {
   connection:{rpc:ClientRpc};
   slots:{inject(name:string,setup:()=>unknown):unknown;register(options:object,component:unknown):unknown};
-  locale:{register(namespace:string,dictionaries:object):()=>void;bind(namespace:string):(key:string)=>string};
+  locale:{register(namespace:string,dictionaries:object):()=>void;bind(namespace:string):(key:string)=>string;getSnapshot?():{active:string};subscribe?(listener:()=>void):()=>void};
   theme?:{getTheme():{active:{colorScheme:'light'|'dark'}}};
   layout:{selectPanel(id:string|null):void;panelInfo:Observable<{activePanelId:string|null}>};
   uiWorkspace:{openSession(target:SessionTarget):void};
@@ -31,8 +32,8 @@ interface ClientContext {
 const panelId='video-studio';
 const dockId='yingliu-video-studio';
 const entryCopy={
-  zh:{view:'映流',dockOpen:'在右侧打开映流',dockError:'无法打开右侧工作台'},
-  en:{view:'Video Studio',dockOpen:'Open Video Studio in the right sidebar',dockError:'Unable to open Video Studio in the right sidebar'},
+  zh:{language:'zh',view:'映流',dockOpen:'在右侧打开映流',dockError:'无法打开右侧工作台'},
+  en:{language:'en',view:'Video Studio',dockOpen:'Open Video Studio in the right sidebar',dockError:'Unable to open Video Studio in the right sidebar'},
 };
 export const inject=['slots','locale','connection','theme','layout','uiWorkspace','sessions','workspaces'];
 export function apply(ctx:ClientContext):void {
@@ -55,15 +56,19 @@ export function apply(ctx:ClientContext):void {
   ctx.effect(()=>{const flush=()=>{controller.persistDrafts();void controller.flush();};window.addEventListener('pagehide',flush);window.addEventListener('blur',flush);return()=>{window.removeEventListener('pagehide',flush);window.removeEventListener('blur',flush);};},'video-studio: save on leaving');
   ctx.effect(()=>ctx.locale.register('video-studio',{zh:{...entryCopy.zh,panel:'映流 · 视频工作台',project:'视频工程',update:'更新视频',inspect:'检查镜头与帧',render:'渲染视频',audio:'制作音频',preparing:'准备调用',running:'正在执行',submitted:'已提交后台任务',complete:'已完成',failed:'执行失败',open:'打开工作台',frame:'查看指定帧',return:'返回会话',details:'查看调用记录'},en:{...entryCopy.en,panel:'Video Studio',project:'Video project',update:'Update video',inspect:'Inspect shots and frames',render:'Render video',audio:'Produce audio',preparing:'Preparing',running:'Running',submitted:'Submitted to background job',complete:'Completed',failed:'Failed',open:'Open studio',frame:'View frame',return:'Return to session',details:'Call details'}}),'video-studio: copy');
   const t=ctx.locale.bind('video-studio');
+  const syncLocale=()=>setLocale(ctx.locale.getSnapshot?.().active??t('language'));
+  syncLocale();
+  ctx.effect(()=>ctx.locale.subscribe?.(syncLocale)??ctx.on('locale/change',syncLocale),'video-studio: language');
   const syncTheme=()=>controller.setScheme(ctx.theme?.getTheme().active.colorScheme||(document.body.hasAttribute('data-ds-dark-theme')?'dark':'light'));
   syncTheme();ctx.effect(()=>ctx.on('theme/change',syncTheme),'video-studio: theme');
   ctx.effect(()=>{const style=document.createElement('style');style.dataset.plugin='dsh-video-studio';style.textContent=css;document.head.append(style);return()=>style.remove();},'video-studio: styles');
   function SessionStudio({sessionId}:{sessionId?:string}){
+    const locale=useLocale();
     const list=useSyncExternalStore(listener=>ctx.sessions.list.subscribe(listener),()=>ctx.sessions.list.getSnapshot(),()=>ctx.sessions.list.getSnapshot());
     const workspaces=useSyncExternalStore(listener=>ctx.workspaces.list.subscribe(listener),()=>ctx.workspaces.list.getSnapshot(),()=>ctx.workspaces.list.getSnapshot());
     const [sessionsLoading,setSessionsLoading]=useState(false),[sessionsError,setSessionsError]=useState('');
     const current=sessionId??Object.values(list.byId).find(row=>(row.retainedBy?.mainView??0)>0)?.id;
-    const sessions=useMemo(()=>sessionDirectory(list,workspaces),[list,workspaces]);
+    const sessions=useMemo(()=>sessionDirectory(list,workspaces),[list,workspaces,locale]);
     const refresh=async(requestedId?:string)=>{
       setSessionsLoading(true);setSessionsError('');
       try{
@@ -86,6 +91,7 @@ export function apply(ctx:ClientContext):void {
     return <div className="vs-embedded-surface" data-video-studio-surface="right"><SessionStudio sessionId={sessionId}/></div>;
   }
   function VideoCard({toolName,phase,sessionId,block}:VideoCardProps){
+    useLocale();
     const [error,setError]=useState('');let args:RecordValue={};
     try{args=object(JSON.parse(block.argsRaw??block.call?.argsRaw??'{}'));}catch{/* A preparing stream may not contain complete JSON yet. */}
     let meta=object(block.meta);
@@ -103,9 +109,9 @@ export function apply(ctx:ClientContext):void {
       <div className="vs-toolcard-title"><strong>{title}</strong><small>{state}</small></div>
       {typeof meta.title==='string'&&<p>{meta.title} · v{String(meta.revision??'')}</p>}
       {typeof meta.jobId==='string'&&<p>Job · {meta.jobId}</p>}
-      {meta.routingSource==='subagent-ancestor'&&<p>子代理 / 团队调用 · 使用上级会话影片</p>}
+      {meta.routingSource==='subagent-ancestor'&&<p>{uiText('子代理 / 团队调用 · 使用上级会话影片')}</p>}
       {projectId&&<div className="vs-toolcard-actions"><button type="button" onClick={()=>void open()}>{frame===undefined?t('open'):t('frame')+(frame===undefined?'':` · ${frame}`)}</button><button type="button" onClick={returnToSession}>{t('return')}</button></div>}
-      {error&&<p role="alert">{error}</p>}
+      {error&&<p role="alert">{systemMessage(error)}</p>}
       <details className="vs-toolcard-details"><summary>{t('details')}</summary><pre>{(block.content??[]).map(content=>content.text??'').join('\n')||JSON.stringify(args,null,2)}</pre></details>
     </section>;
   }
@@ -115,14 +121,15 @@ export function apply(ctx:ClientContext):void {
   // Keep the global panel available when the optional DSH right-sidebar plugin is absent.
   ctx.inject?.(['sidebarRight','sidebarRightTabs'],scope=>{
     function OpenDock(){
+      useLocale();
       const [error,setError]=useState('');
       const open=()=>{
         try{scope.sidebarRight.openTab(panelId);setError('');}
-        catch(cause){setError(cause instanceof Error?cause.message:t('dockError'));}
+        catch(cause){setError(cause instanceof Error?cause.message:entryCopy.zh.dockError);}
       };
       return <span className="vs-dock-entry">
         <button type="button" className="vs-dock-entry-button" aria-label={t('dockOpen')} title={t('dockOpen')} onClick={open}><VideoStudioIcon size={16}/></button>
-        {error&&<span role="alert" className="vs-dock-entry-error">{t('dockError')} · {error}</span>}
+        {error&&<span role="alert" className="vs-dock-entry-error">{t('dockError')} · {systemMessage(error)}</span>}
       </span>;
     }
     scope.effect(()=>scope.sidebarRightTabs.register({

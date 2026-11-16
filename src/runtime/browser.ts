@@ -218,7 +218,7 @@ ready().then(async metadata=>{if(new URL(location.href).searchParams.get('render
 
 export function runtimeHtml(width:number,height:number,options:{runtimeUrl?:string;specUrl?:string;role?:'code'}={}):string {
   const attribute=(value:string)=>value.replaceAll('&','&amp;').replaceAll('"','&quot;').replaceAll('<','&lt;');
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${options.specUrl?`<meta name="video-studio-spec" content="${attribute(options.specUrl)}">`:''}${options.role?'<meta name="video-studio-role" content="code">':''}<link rel="icon" href="data:,"><title>DSH 视频预览</title><style>
+  return `<!doctype html><html lang=""><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${options.specUrl?`<meta name="video-studio-spec" content="${attribute(options.specUrl)}">`:''}${options.role?'<meta name="video-studio-role" content="code">':''}<link rel="icon" href="data:,"><title>Yingliu Video Studio</title><style>
   :root{color-scheme:dark}*{box-sizing:border-box;caret-color:transparent!important}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000}
   body{position:relative}#stage{position:absolute;top:50%;left:50%;width:${width}px;height:${height}px;overflow:hidden;background:#101016;isolation:isolate;transform:translate(-50%,-50%)}
   .video-background,.video-canvas,.scene-root{position:absolute;inset:0;width:100%;height:100%}.scene-root{overflow:hidden}canvas{display:block}

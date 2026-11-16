@@ -3,7 +3,7 @@
   "version": "0.8.2",
   "type": "module",
   "license": "GPL-3.0-only",
-  "description": "DSH 视频工作台：图文分镜、前端代码生成与编辑、本地 MP4 导出",
+  "description": "Video creation studio for DSH: storyboards, editable animation and local MP4 export / 映流视频工作台",
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
@@ -15,6 +15,7 @@
     "docs",
     "cordis.patch.yml",
     "README.md",
+    "README.en.md",
     "LICENSE",
     "NOTICE",
     "THIRD_PARTY_NOTICES.md",

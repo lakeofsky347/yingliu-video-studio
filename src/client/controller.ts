@@ -1,5 +1,6 @@
 import type { ClientRpc, ModelRoute, ProjectHistory, ProjectLocation, SceneSource, SessionBindings, StudioApi, StudioSnapshot, VideoProject, VideoStyle } from '../shared/types.ts';
 import { SourceDraftStore, type SourceDraft } from './source-drafts.ts';
+import {getLocale} from './i18n.ts';
 
 export interface StudioState {
   snapshot:StudioSnapshot|null; loading:boolean; pending:boolean; saving:boolean; dirty:boolean; conflict:boolean;
@@ -15,6 +16,7 @@ export class StudioRequestError extends Error {constructor(message:string,readon
 export class RpcStudioApi implements StudioApi {
   constructor(private rpc:ClientRpc,private signal?:AbortSignal) {}
   async call<T>(endpoint:string,payload:unknown={}):Promise<T> {
+    if(endpoint==='create'&&payload&&typeof payload==='object'&&!Array.isArray(payload))payload={...payload,uiLocale:getLocale()};
     const response=await this.rpc.call('/api',`video-studio/${endpoint}`,payload,this.signal);
     if(!response.ok)throw new StudioRequestError(response.error.message,response.error.code);
     return response.value as T;
