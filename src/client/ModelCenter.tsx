@@ -1,12 +1,19 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { StudioApi } from '../shared/types.ts';
-import type { ConnectionInput, ModelDefinition, ModelProtocol, ModelRole, RegistrySnapshot } from '../models/contracts.ts';
+import type { ConnectionInput, ModelDefinition, ModelDiscoveryResult, ModelProtocol, ModelRole, ProviderConnection, RegistrySnapshot } from '../models/contracts.ts';
 import { protocolInfo, protocolKind, protocolOutput, protocolsOf, roleKind, type MediaKind } from '../models/protocols.ts';
+import { StudioRequestError } from './controller.ts';
 
 const roleNames:Record<ModelRole,string>={director:'导演与讨论',scene:'场景代码',vision:'关键帧视觉检查',image:'图片生成',video:'视频生成',speech:'配音'};
 const kindNames:Record<MediaKind,string>={image:'图片',video:'视频',speech:'配音',text:'文本与视觉'};
 const emptyCatalog:RegistrySnapshot={version:1,connections:[],models:[],roles:[]};
 const freshConnection=(kind:MediaKind):ConnectionInput=>{const protocol=protocolsOf(kind)[0]?.id??'images';return {name:'',protocol,baseUrl:protocolInfo(protocol).baseUrl,auth:'bearer',enabled:true,requestTimeoutMs:90000,concurrency:2};};
+const connectionForm=({id,name,protocol,baseUrl,auth,enabled,requestTimeoutMs,concurrency}:ProviderConnection):ConnectionInput=>({id,name,protocol,baseUrl,auth,enabled,requestTimeoutMs,concurrency});
+const modelsChanged='yingliu-models-changed';
+const discoveryErrorCodes=new Set(['MODEL_DISCOVERY_UNSUPPORTED','MODEL_CONNECTION_CHANGED','MODEL_DISCOVERY_AUTH','MODEL_DISCOVERY_FAILED','MODEL_DISCOVERY_TIMEOUT']);
+type DiscoveryState={connectionId:string;revision:number}&(
+  {status:'loading'}|{status:'ready';result:ModelDiscoveryResult}|{status:'error';message:string}
+);
 
 export interface ModelCenterProps {api:StudioApi;blocked?:boolean;onChanged?:()=>Promise<void>;mediaOnly?:boolean}
 /** Only non-secret configuration is read back. A key is an explicit one-way form field. */
@@ -16,42 +23,135 @@ export function ModelCenter({api,blocked=false,onChanged,mediaOnly=false}:ModelC
   const [apiKey,setApiKey]=useState(''),[modelId,setModelId]=useState(''),[modelName,setModelName]=useState(''),[displayName,setDisplayName]=useState('');
   const [vision,setVision]=useState(false),[imageSending,setImageSending]=useState(false),[modelEnabled,setModelEnabled]=useState(true),[parameters,setParameters]=useState('{}');
   const [busy,setBusy]=useState(false),[loading,setLoading]=useState(true),[error,setError]=useState(''),[notice,setNotice]=useState('');
+  const [discovery,setDiscovery]=useState<DiscoveryState|null>(null);
+  const lifecycle=useRef(0),listRequest=useRef(0),discoveryRequest=useRef(0),source=useRef(Symbol());
   const selected=catalog.connections.find(value=>value.id===connection.id),disabled=blocked||busy;
+  const supportsDiscovery=!!protocolInfo(connection.protocol??'images').modelDiscovery;
+  const changedEndpoint=!!selected&&(selected.baseUrl!==connection.baseUrl||selected.auth!==connection.auth||!!apiKey.trim());
+  const canDiscover=!!selected&&supportsDiscovery&&!changedEndpoint&&(selected.auth==='none'||selected.hasKey);
+  const directory=discovery&&discovery.connectionId===selected?.id&&discovery.revision===selected.revision&&!changedEndpoint?discovery:null;
   const kinds=(Object.keys(kindNames) as MediaKind[]).filter(item=>!mediaOnly||item!=='text');
   const connections=catalog.connections.filter(value=>protocolKind(value.protocol)===kind);
   const models=catalog.models.filter(value=>value.connectionId===connection.id);
   const pool=catalog.models.filter(model=>catalog.connections.some(item=>item.id===model.connectionId&&protocolKind(item.protocol)===kind));
   const roles=(Object.keys(roleNames) as ModelRole[]).filter(role=>roleKind(role)===kind);
-  async function refresh(){const next=await api.call<RegistrySnapshot>('models.list');setCatalog(next);return next;}
-  useEffect(()=>{let active=true;api.call<RegistrySnapshot>('models.list').then(next=>{if(active)setCatalog(next);}).catch(cause=>{if(active)setError(cause instanceof Error?cause.message:'读取模型配置失败');}).finally(()=>{if(active)setLoading(false);});return()=>{active=false;};},[api]);
+  async function refresh(){
+    const request=++listRequest.current;
+    const next=await api.call<RegistrySnapshot>('models.list');
+    if(request===listRequest.current)setCatalog(next);
+  }
+  useEffect(()=>{
+    const current=lifecycle.current;
+    void refresh().catch(cause=>{if(current===lifecycle.current)setError(cause instanceof Error?cause.message:'读取模型配置失败');})
+      .finally(()=>{if(current===lifecycle.current)setLoading(false);});
+    const changed=(event:Event)=>{
+      if((event as CustomEvent).detail!==source.current)void refresh().catch(()=>{});
+    };
+    window.addEventListener(modelsChanged,changed);
+    return()=>{
+      window.removeEventListener(modelsChanged,changed);
+      lifecycle.current++;
+      listRequest.current++;
+      discoveryRequest.current++;
+    };
+  },[api]);
+  function resetDiscovery(){discoveryRequest.current++;setDiscovery(null);}
+  async function discover(saved:ProviderConnection){
+    const request=++discoveryRequest.current;
+    const entry={connectionId:saved.id,revision:saved.revision};
+    setDiscovery({...entry,status:'loading'});
+    try{
+      const result=await api.call<ModelDiscoveryResult>('models.discover',{connectionId:saved.id,expectedRevision:saved.revision});
+      if(request===discoveryRequest.current)setDiscovery({...entry,status:'ready',result});
+    }catch(cause){
+      if(request!==discoveryRequest.current)return;
+      const detail=cause instanceof StudioRequestError&&discoveryErrorCodes.has(cause.code)?cause.message:'请检查地址、API Key 和目录权限，或手动填写模型 ID。';
+      setDiscovery({...entry,status:'error',message:`拉取模型列表失败。${detail}`});
+    }
+  }
   function resetModel(){setModelId('');setModelName('');setDisplayName('');setVision(false);setImageSending(false);setModelEnabled(true);setParameters('{}');}
-  function chooseConnection(id:string){const current=catalog.connections.find(value=>value.id===id);setConnection(current?{id:current.id,name:current.name,protocol:current.protocol,baseUrl:current.baseUrl,auth:current.auth,enabled:current.enabled,requestTimeoutMs:current.requestTimeoutMs,concurrency:current.concurrency}:freshConnection(kind));setApiKey('');setError('');setNotice('');resetModel();}
-  function chooseKind(next:MediaKind){setKind(next);if(!connection.id||protocolKind(connection.protocol??'images')!==next){setConnection(freshConnection(next));setApiKey('');resetModel();}}
-  async function perform(work:()=>Promise<void>,message:string){setBusy(true);setError('');setNotice('');try{await work();await refresh();if(typeof window!=='undefined')window.dispatchEvent(new CustomEvent('yingliu-models-changed'));await onChanged?.();setNotice(message);}catch(cause){let text=cause instanceof Error?cause.message:'配置操作失败';if(apiKey)text=text.split(apiKey).join('[redacted]');setError(text);}finally{setBusy(false);}}
-  async function saveConnection(){await perform(async()=>{const saved=await api.call<{id:string}>('models.connection.save',{...connection,...(apiKey.trim()?{apiKey:apiKey.trim()}:{})});setConnection(value=>({...value,id:saved.id}));setApiKey('');},'连接已保存。可继续添加模型，再为创作角色分配模型。');}
+  function chooseConnection(id:string){const current=catalog.connections.find(value=>value.id===id);resetDiscovery();setConnection(current?connectionForm(current):freshConnection(kind));setApiKey('');setError('');setNotice('');resetModel();}
+  function chooseKind(next:MediaKind){setKind(next);if(!connection.id||protocolKind(connection.protocol??'images')!==next){resetDiscovery();setConnection(freshConnection(next));setApiKey('');resetModel();}}
+  async function perform(work:()=>Promise<void>,message:string){
+    const current=lifecycle.current;
+    setBusy(true);setError('');setNotice('');
+    try{
+      await work();
+      window.dispatchEvent(new CustomEvent(modelsChanged,{detail:source.current}));
+      if(current!==lifecycle.current)return;
+      await refresh();
+      if(current!==lifecycle.current)return;
+      await onChanged?.();
+      if(current===lifecycle.current)setNotice(message);
+    }catch(cause){
+      if(current!==lifecycle.current)return;
+      let text=cause instanceof Error?cause.message:'配置操作失败';
+      const key=apiKey.trim();
+      if(key)text=text.split(key).join('[redacted]');
+      setError(text);
+    }finally{if(current===lifecycle.current)setBusy(false);}
+  }
+  async function saveConnection(){
+    const current=lifecycle.current;
+    await perform(async()=>{
+      const key=connection.auth==='bearer'?apiKey.trim():'';
+      const saved=await api.call<ProviderConnection>('models.connection.save',{...connection,...(key?{apiKey:key}:{})});
+      if(current!==lifecycle.current)return;
+      const keylessChanged=saved.auth==='none'&&(!selected||selected.auth!==saved.auth||selected.baseUrl!==saved.baseUrl);
+      setConnection(connectionForm(saved));setApiKey('');
+      if(protocolInfo(saved.protocol).modelDiscovery&&(key||keylessChanged))void discover(saved);
+      else if(selected?.id===saved.id&&selected.baseUrl===saved.baseUrl&&selected.auth===saved.auth&&directory?.status==='ready')setDiscovery({...directory,revision:saved.revision});
+      else resetDiscovery();
+    },'连接已保存。');
+  }
   function editModel(model:ModelDefinition){setModelId(model.id);setModelName(model.model);setDisplayName(model.name);setVision(model.inputModalities.includes('image'));setImageSending(model.parameters.enableVision===true);setModelEnabled(model.enabled);setParameters(JSON.stringify(model.parameters,null,2));}
+  function chooseDiscovered(id:string){
+    if(directory?.status!=='ready')return;
+    const candidate=directory.result.models.find(model=>model.id===id);
+    if(!candidate)return;
+    const registered=models.find(model=>model.model===id);
+    if(registered){editModel(registered);return;}
+    resetModel();setModelName(candidate.id);setDisplayName(candidate.name);
+  }
   async function saveModel(){await perform(async()=>{if(!connection.id)throw new Error('请先保存连接');const config=JSON.parse(parameters||'{}');if(!config||typeof config!=='object'||Array.isArray(config))throw new Error('模型参数须为 JSON 对象');const output=protocolOutput(connection.protocol??'images');const saved=await api.call<ModelDefinition>('models.model.save',{...(modelId?{id:modelId}:{}),connectionId:connection.id,model:modelName.trim(),name:displayName.trim()||modelName.trim(),enabled:modelEnabled,inputModalities:vision?['text','image']:['text'],outputModalities:[output],parameters:{...config,...(connection.protocol==='chat-completions'?{enableVision:vision&&imageSending}:{})}});editModel(saved);},'模型已保存。');}
   async function checkConnection(){if(!connection.id)return;setBusy(true);setError('');setNotice('');try{const result=await api.call<{ok:boolean;message:string}>('models.check',{connectionId:connection.id});if(result.ok)setNotice(result.message);else setError(result.message);}catch(cause){setError(cause instanceof Error?cause.message:'连接检查失败');}finally{setBusy(false);}}
   return <section className="vs-model-center" aria-label="模型中心">
     <div className="vs-media-heading"><div><h3>{mediaOnly?'媒体模型池':'模型中心'}</h3><p>{mediaOnly?'按图片、视频、配音分类接入多个服务商。文本创作仍使用 DSH 模型。':'按类型管理多个服务商和模型，再为每个角色指定默认模型。'}</p></div><button disabled={disabled} onClick={()=>chooseConnection('')}>新增连接</button></div>
     {loading&&<p role="status">正在读取模型连接…</p>}
     {error&&<p className="vs-inline-error" role="alert">{error}</p>}{notice&&<p className="vs-media-success" role="status">{notice}</p>}
-    <div className="vs-model-kinds" role="tablist" aria-label="模型类型">{kinds.map(item=><button key={item} type="button" role="tab" aria-selected={kind===item} className={kind===item?'is-active':''} onClick={()=>chooseKind(item)}>{kindNames[item]}</button>)}</div>
-    <div className="vs-provider-list" aria-label="服务商列表">{connections.map(item=><button key={item.id} type="button" className={connection.id===item.id?'is-active':''} onClick={()=>chooseConnection(item.id)}><span>{item.name}{item.enabled?'':'（已停用）'}</span><small>{protocolInfo(item.protocol).label}</small></button>)}{!connections.length&&<p className="vs-model-pool-note">这个类型还没有服务商。可以新增多个连接，模型会进入同一类型的池。</p>}</div>
+    <div className="vs-model-kinds" role="tablist" aria-label="模型类型">{kinds.map(item=><button key={item} type="button" role="tab" aria-selected={kind===item} className={kind===item?'is-active':''} disabled={disabled} onClick={()=>chooseKind(item)}>{kindNames[item]}</button>)}</div>
+    <div className="vs-provider-list" aria-label="服务商列表">{connections.map(item=><button key={item.id} type="button" className={connection.id===item.id?'is-active':''} disabled={disabled} onClick={()=>chooseConnection(item.id)}><span>{item.name}{item.enabled?'':'（已停用）'}</span><small>{protocolInfo(item.protocol).label}</small></button>)}{!connections.length&&<p className="vs-model-pool-note">这个类型还没有服务商。可以新增多个连接，模型会进入同一类型的池。</p>}</div>
     <section className="vs-model-pool" aria-label="模型池"><div className="vs-media-heading"><div><h4>{kindNames[kind]}模型池 · {pool.length}</h4><p className="vs-model-pool-note">生成时可以改选池中的其他模型。默认模型只在没有指定时使用。</p></div></div>{pool.map(model=>{const provider=catalog.connections.find(item=>item.id===model.connectionId);return <div className="vs-pool-row" key={model.id}><span><strong>{model.name}</strong><small>{provider?.name} · {model.model}{model.enabled?'':' · 已停用'}</small></span><button type="button" disabled={disabled} onClick={()=>{if(!provider)return;chooseConnection(provider.id);editModel(model);}}>编辑</button></div>;})}{!pool.length&&<p className="vs-model-pool-note">池里还没有{kindNames[kind]}模型。先保存服务商，再添加模型 ID。</p>}</section>
     <div className="vs-model-center-grid"><div>
       <label className="vs-field"><span>已保存的连接</span><select aria-label="已保存的模型连接" value={connection.id||''} disabled={disabled} onChange={event=>chooseConnection(event.target.value)}><option value="">新连接</option>{connections.map(value=><option key={value.id} value={value.id}>{value.name}{value.enabled?'':'（已停用）'}</option>)}</select></label>
-      <div className="vs-field-pair"><label className="vs-field"><span>连接名称</span><input aria-label="连接名称" value={connection.name||''} disabled={disabled} onChange={event=>setConnection({...connection,name:event.target.value})}/></label><label className="vs-field"><span>接口协议</span><select aria-label="接口协议" value={connection.protocol} disabled={disabled||!!connection.id} onChange={event=>{const protocol=event.target.value as ModelProtocol;const previous=connection.protocol?protocolInfo(connection.protocol).baseUrl:'';setConnection({...connection,protocol,baseUrl:!connection.baseUrl||connection.baseUrl===previous?protocolInfo(protocol).baseUrl:connection.baseUrl});resetModel();}}>{protocolsOf(kind).map(protocol=><option key={protocol.id} value={protocol.id}>{protocol.vendor} · {protocol.label}</option>)}</select></label></div>
-      <label className="vs-field"><span>API Base URL</span><input aria-label="模型连接地址" type="url" placeholder="https://your-service.example/v1" value={connection.baseUrl||''} disabled={disabled} onChange={event=>setConnection({...connection,baseUrl:event.target.value})}/><small>{connection.protocol?protocolInfo(connection.protocol).summary:'选择协议后会填入该服务的官方根地址，区域域名可以改。'}</small></label>
-      <div className="vs-field-pair"><label className="vs-field"><span>认证方式</span><select aria-label="模型认证方式" value={connection.auth} disabled={disabled} onChange={event=>setConnection({...connection,auth:event.target.value as 'bearer'|'none'})}><option value="bearer">API Key</option><option value="none">无需密钥</option></select></label><label className="vs-field"><span>API Key{selected?.hasKey?'（已保存）':''}</span><input aria-label="模型连接 API Key" type="password" autoComplete="new-password" value={apiKey} disabled={disabled||connection.auth==='none'||selected?.credentialStatus?.available===false} placeholder={selected?.hasKey?'留空保留原密钥':'仅在保存时提交，不回显'} onChange={event=>setApiKey(event.target.value)}/></label></div>
+      <div className="vs-field-pair"><label className="vs-field"><span>连接名称</span><input aria-label="连接名称" value={connection.name||''} disabled={disabled} onChange={event=>setConnection({...connection,name:event.target.value})}/></label><label className="vs-field"><span>接口协议</span><select aria-label="接口协议" value={connection.protocol} disabled={disabled||!!connection.id} onChange={event=>{const protocol=event.target.value as ModelProtocol;const previous=connection.protocol?protocolInfo(connection.protocol).baseUrl:'';setConnection({...connection,protocol,baseUrl:!connection.baseUrl||connection.baseUrl===previous?protocolInfo(protocol).baseUrl:connection.baseUrl});setApiKey('');resetDiscovery();resetModel();}}>{protocolsOf(kind).map(protocol=><option key={protocol.id} value={protocol.id}>{protocol.vendor} · {protocol.label}</option>)}</select></label></div>
+      <label className="vs-field"><span>API Base URL</span><input aria-label="模型连接地址" type="url" placeholder="https://your-service.example/v1" value={connection.baseUrl||''} disabled={disabled} onChange={event=>{setConnection({...connection,baseUrl:event.target.value});resetDiscovery();}}/><small>{connection.protocol?protocolInfo(connection.protocol).summary:'选择协议后会填入该服务的官方根地址，区域域名可以改。'}</small></label>
+      <div className="vs-field-pair"><label className="vs-field"><span>认证方式</span><select aria-label="模型认证方式" value={connection.auth} disabled={disabled} onChange={event=>{setConnection({...connection,auth:event.target.value as 'bearer'|'none'});setApiKey('');resetDiscovery();}}><option value="bearer">API Key</option><option value="none">无需密钥</option></select></label><label className="vs-field"><span>API Key{selected?.hasKey?'（已保存）':''}</span><input aria-label="模型连接 API Key" type="password" autoComplete="new-password" value={apiKey} disabled={disabled||connection.auth==='none'||selected?.credentialStatus?.available===false} placeholder={selected?.hasKey?'留空保留原密钥':'仅在保存时提交，不回显'} onChange={event=>{setApiKey(event.target.value);resetDiscovery();}}/></label></div>
       {selected?.credentialStatus?.error&&<p className="vs-inline-error">{selected.credentialStatus.error}</p>}
       <div className="vs-field-pair"><label className="vs-field"><span>请求超时（秒）</span><input aria-label="连接请求超时" type="number" min="5" max="900" value={(connection.requestTimeoutMs??90000)/1000} disabled={disabled} onChange={event=>setConnection({...connection,requestTimeoutMs:Number(event.target.value)*1000})}/></label><label className="vs-field"><span>最大并发任务</span><input aria-label="连接最大并发" type="number" min="1" max="16" value={connection.concurrency??2} disabled={disabled} onChange={event=>setConnection({...connection,concurrency:Number(event.target.value)})}/></label></div>
       <label className="vs-media-check"><input type="checkbox" checked={connection.enabled!==false} disabled={disabled} onChange={event=>setConnection({...connection,enabled:event.target.checked})}/>启用此连接</label>
-      <div className="vs-media-actions"><button disabled={disabled||!connection.name?.trim()||!connection.baseUrl?.trim()} onClick={()=>void saveConnection()}>保存连接</button><button disabled={disabled||!connection.id} onClick={()=>void checkConnection()}>检查已保存连接</button>{connection.id&&<><button disabled={disabled||!(selected?.hasKey||selected?.credentialStatus?.hasStoredKey)} onClick={()=>void perform(async()=>{await api.call('models.connection.save',{id:connection.id,apiKey:''});setApiKey('');},'密钥已清除。')}>清除密钥</button><button className="vs-danger" disabled={disabled} onClick={()=>void perform(async()=>{await api.call('models.connection.remove',{id:connection.id});chooseConnection('');},'连接及其模型配置已删除。')}>删除连接</button></>}</div>
+      <div className="vs-media-actions"><button disabled={disabled||!connection.name?.trim()||!connection.baseUrl?.trim()} onClick={()=>void saveConnection()}>保存连接</button><button disabled={disabled||!connection.id} onClick={()=>void checkConnection()}>检查已保存连接</button>{connection.id&&<><button disabled={disabled||!(selected?.hasKey||selected?.credentialStatus?.hasStoredKey)} onClick={()=>{resetDiscovery();void perform(async()=>{await api.call('models.connection.save',{id:connection.id,apiKey:''});setApiKey('');},'密钥已清除。');}}>清除密钥</button><button className="vs-danger" disabled={disabled} onClick={()=>{resetDiscovery();void perform(async()=>{await api.call('models.connection.remove',{id:connection.id});chooseConnection('');},'连接及其模型配置已删除。');}}>删除连接</button></>}</div>
       <p className="vs-media-help">连接检查不会执行模型生成。正在使用的连接由任务服务保护。</p>
     </div><div>
       <div className="vs-media-heading"><h4>连接中的模型</h4><button disabled={disabled||!connection.id} onClick={resetModel}>新增模型</button></div>
-      {!connection.id?<p className="vs-media-help">先保存连接，再添加模型 ID。</p>:<>
+      {!connection.id?<p className="vs-media-help">{supportsDiscovery?'填入 API Key 并保存连接后，会自动拉取模型列表。':'先保存连接，再手动填写模型 ID。'}</p>:<>
+        <section className="vs-model-discovery" aria-label="服务商模型目录">
+          {supportsDiscovery?<>
+            <div className="vs-media-actions"><button type="button" disabled={disabled||!canDiscover||directory?.status==='loading'} onClick={()=>{if(canDiscover)void discover(selected);}}>拉取模型列表</button></div>
+            {changedEndpoint&&<p className="vs-media-help">请先保存地址或凭据的更改。</p>}
+            {!changedEndpoint&&selected?.auth==='bearer'&&!selected.hasKey&&<p className="vs-media-help">填入 API Key 并保存连接后即可拉取。</p>}
+            {directory?.status==='loading'&&<p role="status">正在拉取模型列表…</p>}
+            {directory?.status==='error'&&<p className="vs-inline-error" role="alert">{directory.message}</p>}
+            {directory?.status==='ready'&&(directory.result.models.length?<label className="vs-field">
+              <span>从服务商列表选择模型</span>
+              <select aria-label="从服务商列表选择模型" value={directory.result.models.some(model=>model.id===modelName)?modelName:''} disabled={disabled} onChange={event=>chooseDiscovered(event.target.value)}>
+                <option value="">选择模型…</option>
+                {directory.result.models.map(model=><option key={model.id} value={model.id}>{model.name===model.id?model.id:`${model.name} · ${model.id}`}</option>)}
+              </select>
+              <small>{directory.result.truncated?'当前显示目录的部分结果。':''}请选择适用于当前协议的模型，然后保存。</small>
+            </label>:<p role="status" className="vs-media-help">服务商未返回可选模型，可手动填写模型 ID。</p>)}
+          </>:<p className="vs-media-help">此接口协议需手动填写模型 ID。</p>}
+        </section>
         <label className="vs-field"><span>选择要编辑的模型</span><select aria-label="编辑已保存模型" value={modelId} disabled={disabled} onChange={event=>{const model=models.find(value=>value.id===event.target.value);model?editModel(model):resetModel();}}><option value="">新模型</option>{models.map(model=><option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
         <div className="vs-field-pair"><label className="vs-field"><span>服务端模型 ID</span><input aria-label="服务端模型 ID" value={modelName} disabled={disabled} onChange={event=>setModelName(event.target.value)}/></label><label className="vs-field"><span>显示名称</span><input aria-label="模型显示名称" value={displayName} disabled={disabled} onChange={event=>setDisplayName(event.target.value)}/></label></div>
         {(connection.protocol==='chat-completions'||protocolKind(connection.protocol??'images')==='video')&&<label className="vs-media-check"><input type="checkbox" checked={vision} disabled={disabled} onChange={event=>setVision(event.target.checked)}/>{protocolKind(connection.protocol??'images')==='video'?'支持参考图片输入（图生视频）':'支持图片理解'}</label>}

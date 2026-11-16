@@ -2,8 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { MODEL_PROTOCOLS, MODEL_ROLES } from './contracts.ts';
-import type { ConnectionInput, ModelDefinition, ModelInput, ModelProtocol, ModelRole, ModelSecrets, ModelSelection, Modality, ProviderConnection, RegistrySeed, RegistrySnapshot, RegistryState, ResolvedModel, RoleBinding } from './contracts.ts';
-import { protocolMatchesRole, protocolOutput } from './protocols.ts';
+import type { ConnectionInput, ModelDefinition, ModelDiscoveryResult, ModelInput, ModelProtocol, ModelRole, ModelSecrets, ModelSelection, Modality, ProviderConnection, RegistrySeed, RegistrySnapshot, RegistryState, ResolvedModel, RoleBinding } from './contracts.ts';
+import { protocolInfo, protocolMatchesRole, protocolOutput } from './protocols.ts';
+import { discoverProviderModels, ModelDiscoveryError } from './adapters/official.ts';
 
 const modalities:readonly Modality[]=['text','image','video','audio'];
 const empty=():RegistryState=>({version:1,connections:[],models:[],roles:[]});
@@ -66,5 +67,21 @@ export class ModelRegistry {
   async bindRole(role:ModelRole,modelId:string|null):Promise<void>{return this.mutate(async()=>{if(!MODEL_ROLES.includes(role))throw new Error('模型角色无效');const state=this.snapshot();if(modelId!==null)this.validateBinding(state,role,modelId);state.roles=state.roles.filter(r=>r.role!==role);if(modelId!==null)state.roles.push({role,modelId});await this.persist(state);});}
   async resolve(selection:ModelSelection):Promise<ResolvedModel>{await this.initialize();await this.writes;const input=typeof selection==='string'?{role:selection}:selection;const role=input.role;const id=input.modelId??(role?this.state.roles.find(r=>r.role===role)?.modelId:undefined);const provider=input.connectionId??input.provider;const model=id?this.state.models.find(m=>m.id===id):this.state.models.find(m=>m.connectionId===provider&&(m.id===input.model||m.model===input.model));if(!model)throw new Error(role?'请先配置 '+role+' 角色的模型':'所选模型不存在或已变更');const connection=this.state.connections.find(c=>c.id===model.connectionId);if(!connection||!connection.enabled||!model.enabled)throw new Error('所选模型连接已停用');if(provider&&provider!==connection.id)throw new Error('模型与连接不匹配');if(input.protocol&&input.protocol!==connection.protocol)throw new Error('模型协议不匹配');if(role)this.validateBinding(this.state,role,model.id);return structuredClone({connection,model});}
   async credential(connection:ProviderConnection|string):Promise<string|undefined>{await this.initialize();const value=typeof connection==='string'?this.state.connections.find(c=>c.id===connection):connection;if(!value)throw new Error('模型连接不存在');if(value.auth==='none')return undefined;const key=await this.secrets.get(value.credentialRef);if(!key)throw new Error('此模型连接未配置 API Key');return key;}
+  async discoverModels(id:string,expectedRevision:unknown,signal=new AbortController().signal):Promise<ModelDiscoveryResult>{
+    const current=()=>{
+      const connection=this.state.connections.find(value=>value.id===id);
+      if(!connection||connection.revision!==expectedRevision)throw new ModelDiscoveryError('MODEL_CONNECTION_CHANGED','已保存的连接有变更，请重新选择连接后再拉取模型。');
+      return connection;
+    };
+    // Capture the address and credential in the same registry turn as configuration writes.
+    const discovered=await this.mutate(async()=>{
+      const connection=structuredClone(current());
+      if(!protocolInfo(connection.protocol).modelDiscovery)throw new ModelDiscoveryError('MODEL_DISCOVERY_UNSUPPORTED','此协议暂不支持查询模型目录，可手动填写模型 ID。');
+      try{return {connection,key:await this.credential(connection)};}
+      catch{throw new ModelDiscoveryError('MODEL_DISCOVERY_AUTH','此连接的 API Key 不可用，请保存或解锁凭据后重试。');}
+    });
+    try{return await discoverProviderModels({...discovered,signal});}
+    finally{await this.writes;current();}
+  }
   private async updateCredential(ref:string,value:string|undefined,commit:()=>Promise<void>){if(this.secrets.withUpdate)return this.secrets.withUpdate(ref,value,commit);const previous=await this.secrets.get(ref);if(value===undefined)await this.secrets.delete(ref);else await this.secrets.set(ref,value);try{await commit();}catch(error){if(previous===undefined)await this.secrets.delete(ref);else await this.secrets.set(ref,previous);throw error;}}
 }

@@ -1,20 +1,15 @@
 {
   "repository": "https://github.com/lakeofsky347/yingliu-video-studio",
-  "upstreamMergeCommit": "0aa5e3c2fa633d329d5782b4fd8fa4ae1e565752",
   "package": "yingliu-video-studio",
-  "version": "0.8.0",
+  "version": "0.8.2",
   "releaseChanges": [
-    "Separate code animation, model video and explicitly authorized hybrid production",
-    "Add project director plans, character references and approved plan snapshots",
-    "Persist workflow results and uncertain submission receipts without duplicate execution",
-    "Require expectedRevision for public project mutations and preserve concurrent imports",
-    "Publish immutable preview resources and recover first-frame readiness safely",
-    "Add bounded local export quality checks and six deterministic sound effects",
-    "Harden Windows import durability, workbench recovery and failed-export cleanup"
+    "Add a Video Studio entry to the DSH session header",
+    "Show Video Studio in the right dock alongside the active DSH conversation",
+    "Discover models from a supported media provider when its connection and API key are saved"
   ],
-  "compatibility": "Project schema v3 reads v1/v2; legacy production mode needs explicit confirmation. Public mutations require expectedRevision. Keep project directories and existing draft storage keys unchanged.",
-  "baseReleaseCommit": "3e639552685afc2aeb04aff64734152ed6f65d93",
-  "previousRelease": "0.7.0",
+  "compatibility": "The new entry points depend on the corresponding DSH session and right sidebar APIs. The left navigation entry remains available on older hosts. Project schema v3 reads v1/v2; legacy production mode needs explicit confirmation. Public mutations require expectedRevision.",
+  "baseReleaseCommit": "c39ead740fe7557a5171bc9022df1b53c3cdd291",
+  "previousRelease": "0.8.0",
   "selectiveMigration": {
     "date": "2026-11-11",
     "donorRepository": "https://github.com/lakeofsky347/yingliu-agent",
@@ -40,5 +35,5 @@
     },
     "releaseVersion": "0.8.0"
   },
-  "releaseDocumentation": "docs/RELEASE-0.8.0.md"
+  "releaseDocumentation": "docs/RELEASE-0.8.2.md"
 }

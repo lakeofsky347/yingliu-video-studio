@@ -24,7 +24,7 @@ function FrameThumb({url,frame,onSelect,label,failed}:{url?:string;frame:number;
 }
 
 export function Preview({snapshot,project,selectedShot,controller,focusFrame,focusSerial,busy=false}:{snapshot:StudioSnapshot;project:VideoProject;selectedShot?:Shot;controller:StudioController;focusFrame?:number|null;focusSerial?:number;busy?:boolean}){
-  const iframe=useRef<HTMLIFrameElement>(null),audio=useRef<HTMLAudioElement>(null),currentFrame=useRef(0);
+  const preview=useRef<HTMLDivElement>(null),iframe=useRef<HTMLIFrameElement>(null),audio=useRef<HTMLAudioElement>(null),currentFrame=useRef(0);
   const [readyKey,setReadyKey]=useState(''),[frame,setFrame]=useState(0),[playing,setPlaying]=useState(false),[sceneId,setSceneId]=useState(''),[showOutput,setShowOutput]=useState(false),[expanded,setExpanded]=useState(false),[jump,setJump]=useState('0'),[audioError,setAudioError]=useState(''),[capturing,setCapturing]=useState(false),[capture,setCapture]=useState<{path:string;url:string}|null>(null),[previewError,setPreviewError]=useState(''),[reload,setReload]=useState(0);
   const duration=project.shots.reduce((n,s)=>n+s.durationFrames,0),fps=project.target.fps.num/project.target.fps.den;
   currentFrame.current=frame;
@@ -70,13 +70,30 @@ export function Preview({snapshot,project,selectedShot,controller,focusFrame,foc
   useEffect(()=>{if(frame>maxFrame)seek(maxFrame);},[maxFrame]);
   useEffect(()=>{const element=audio.current;if(!element)return;if(playing&&ready&&!showOutput){element.currentTime=Math.min(element.duration||Infinity,frame/fps);void element.play().catch(()=>{setAudioError('声音尚未播放，点击播放后重试。');setPlaying(false);});}else element.pause();return()=>element.pause();},[playing,ready,showOutput,snapshot.audioUrl]);
   useEffect(()=>{const element=audio.current;if(!element)return;const seconds=frame/fps;if(!playing){try{element.currentTime=seconds;}catch{}}},[frame,fps,playing]);
-  useEffect(()=>{if(!expanded)return;const key=(event:KeyboardEvent)=>{if(event.key==='Escape')setExpanded(false);};window.addEventListener('keydown',key);return()=>window.removeEventListener('keydown',key);},[expanded]);
-  useEffect(()=>{const onKey=(event:KeyboardEvent)=>{const target=event.target as HTMLElement|null;if(!target||target.closest('input, textarea, select, button, a, summary, [role=tab], [contenteditable=true], canvas')||!target.closest('.vs-studio'))return;if(event.key===' '||event.code==='Space'){event.preventDefault();if(!ready||showOutput)return;setAudioError('');if(currentFrame.current>=maxFrame)setFrame(0);setPlaying(value=>!value);}if(event.altKey&&event.key==='ArrowLeft'){event.preventDefault();seek(currentFrame.current-1);}if(event.altKey&&event.key==='ArrowRight'){event.preventDefault();seek(currentFrame.current+1);}};window.addEventListener('keydown',onKey);return()=>window.removeEventListener('keydown',onKey);},[ready,showOutput,maxFrame]);
+  useEffect(()=>{
+    const studio=preview.current?.closest<HTMLElement>('.vs-studio');
+    if(!studio)return;
+    const onKey=(event:KeyboardEvent)=>{
+      const target=event.target instanceof Element?event.target:null;
+      if(event.defaultPrevented||!target||target.closest('[role=dialog]'))return;
+      if(expanded&&event.key==='Escape'&&preview.current?.contains(target)){
+        event.preventDefault();setExpanded(false);return;
+      }
+      if(target.closest('input, textarea, select, button, a, summary, [role=tab], [contenteditable=true], canvas'))return;
+      if(event.key===' '||event.code==='Space'){
+        event.preventDefault();if(!ready||showOutput)return;
+        setAudioError('');if(currentFrame.current>=maxFrame)setFrame(0);setPlaying(value=>!value);
+      }
+      if(event.altKey&&event.key==='ArrowLeft'){event.preventDefault();seek(currentFrame.current-1);}
+      if(event.altKey&&event.key==='ArrowRight'){event.preventDefault();seek(currentFrame.current+1);}
+    };
+    studio.addEventListener('keydown',onKey);return()=>studio.removeEventListener('keydown',onKey);
+  },[ready,showOutput,maxFrame,expanded]);
   async function capturePng(){const capturedFrame=currentFrame.current;setPlaying(false);setCapturing(true);try{await controller.flush();if(controller.getSnapshot().error)throw new Error(controller.getSnapshot().error);const result=await controller.api.call<{frame?:{path:string;url:string}}>('inspect',{projectId:project.id,shotId:frameShotRange(project,capturedFrame).shot?.id,frame:capturedFrame});if(!result.frame)throw new Error('未获得 PNG 帧');setCapture(result.frame);controller.notify(`第 ${capturedFrame} 帧 PNG 已保存到项目中。`);}catch(error){controller.notify(error instanceof Error?error.message:'导出 PNG 失败');}finally{setCapturing(false);}}
   const localFrame=currentRange.localFrame;
   const output=project.outputs.at(-1),outdated=snapshot.previewRevision!==null&&snapshot.previewRevision!==project.revision;
   const disabled=!ready||showOutput;
-  return <div className={`vs-preview ${expanded?'is-expanded':''}`}>
+  return <div ref={preview} className={`vs-preview ${expanded?'is-expanded':''}`}>
     <div className="vs-preview-heading"><span data-testid="current-shot-heading" data-shot-id={currentRange.shot?.id}>{currentRange.shot?`「${currentRange.shot.title}」· 帧 [${currentRange.start}, ${currentRange.end})`:'整片逐帧查看'}</span><button aria-label={expanded?'关闭大预览':'打开大预览'} onClick={()=>setExpanded(!expanded)}>{expanded?'收起 ✕':'大预览 ↗'}</button></div>
     <div className="vs-preview-screen" style={{'--vs-preview-ratio':`${project.target.width}/${project.target.height}`} as CSSProperties}>
       {showOutput&&output?.url?<video src={output.url} controls className="vs-output-video"/>:snapshot.previewUrl?<iframe key={previewKey} ref={iframe} src={previewUrl} title="影片画面预览" sandbox="allow-scripts allow-same-origin"/>:<div className="vs-preview-empty"><strong>画面从这里开始</strong><p>生成画面后，点击「预览」。<br/>手动编辑的镜头也可以直接预览。</p></div>}

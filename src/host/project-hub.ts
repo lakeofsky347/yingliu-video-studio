@@ -21,7 +21,7 @@ export interface StudioFocus { shotId?:string; frame?:number }
 export type ProjectLocation = import('../shared/types.ts').ProjectLocation;
 interface HubIndex { version:2; selected?:string; projects:ProjectLocation[]; bindings:Record<string,SessionBinding> }
 export interface ProjectRouting {callerSessionId?:string;ownerSessionId?:string;routingSource:'explicit-project'|'session-binding'|'subagent-ancestor'|'selected-project'}
-interface CallContext {callerSessionId?:string}
+interface CallContext {callerSessionId?:string;signal?:AbortSignal}
 type Input=Record<string,unknown>;
 type HubSnapshot=StudioSnapshot & {sessionId?:string;focus?:StudioFocus;projects:ProjectLocation[]};
 
@@ -316,6 +316,7 @@ export class ProjectHub {
     if(context.callerSessionId)throw Object.assign(new Error('模型连接只能在工作台设置中修改或检查'),{code:'MODEL_SETTINGS_DENIED'});
     switch(endpoint){
       case 'models.list':return this.models.list();
+      case 'models.discover':return this.models.discoverModels(String(data.connectionId??''),data.expectedRevision,context.signal);
       case 'models.connection.save':return this.models.saveConnection(record(data.connection??data) as ConnectionInput);
       case 'models.connection.remove':await this.models.removeConnection(String(data.id??''));return this.models.list();
       case 'models.model.save':return this.models.saveModel(record(typeof data.model==='object'?data.model:data) as ModelInput);

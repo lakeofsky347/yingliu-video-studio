@@ -10,6 +10,10 @@ import {assertClientContract} from '../shared/host-contract.ts';
 type RecordValue=Record<string,unknown>;
 function object(value:unknown):RecordValue{return value!==null&&typeof value==='object'&&!Array.isArray(value)?value as RecordValue:{};}
 interface VideoCardProps {toolName:string;phase:'preparing'|'start'|'result';sessionId:string;block:{meta?:unknown;argsRaw?:string;call?:{argsRaw:string}|null;content?:readonly {type:string;text?:string}[];isError?:boolean};}
+interface DockContext extends ClientContext {
+  sidebarRight:{openTab(kind:string):void};
+  sidebarRightTabs:{register(definition:{id:string;kind:string;title:()=>string;guide:readonly {id:string;order:number;title:()=>string;icon:typeof VideoStudioIcon}[]}):()=>void};
+}
 
 interface ClientContext {
   connection:{rpc:ClientRpc};
@@ -21,8 +25,15 @@ interface ClientContext {
   sessions:{list:Observable<HostSessionList>;refresh():Promise<void>;refreshProjections(id:string):Promise<void>;subagentAddress(id:string):SessionTarget|undefined};
   workspaces:{list:Observable<HostWorkspaceList>};
   effect(setup:()=>void|(()=>void),label?:string):unknown;
+  inject?(services:readonly string[],setup:(scope:DockContext)=>void):unknown;
   on(event:string,listener:()=>void):()=>void;
 }
+const panelId='video-studio';
+const dockId='yingliu-video-studio';
+const entryCopy={
+  zh:{view:'映流',dockOpen:'在右侧打开映流',dockError:'无法打开右侧工作台'},
+  en:{view:'Video Studio',dockOpen:'Open Video Studio in the right sidebar',dockError:'Unable to open Video Studio in the right sidebar'},
+};
 export const inject=['slots','locale','connection','theme','layout','uiWorkspace','sessions','workspaces'];
 export function apply(ctx:ClientContext):void {
   assertClientContract(ctx);
@@ -33,7 +44,7 @@ export function apply(ctx:ClientContext):void {
     let previous=ctx.layout.panelInfo.getSnapshot().activePanelId;
     return ctx.layout.panelInfo.subscribe(()=>{
       const panel=ctx.layout.panelInfo.getSnapshot().activePanelId;
-      if(panel==='video-studio'&&previous!=='video-studio'){
+      if(panel===panelId&&previous!==panelId){
         if(directEntry)directEntry=false;
         else void controller.showProjects();
       }
@@ -42,16 +53,16 @@ export function apply(ctx:ClientContext):void {
   },'video-studio: explicit navigation entry');
   ctx.effect(()=>()=>{void controller.dispose().finally(()=>abort.abort());},'video-studio: plugin lifetime');
   ctx.effect(()=>{const flush=()=>{controller.persistDrafts();void controller.flush();};window.addEventListener('pagehide',flush);window.addEventListener('blur',flush);return()=>{window.removeEventListener('pagehide',flush);window.removeEventListener('blur',flush);};},'video-studio: save on leaving');
-  ctx.effect(()=>ctx.locale.register('video-studio',{zh:{panel:'映流 · 视频工作台',project:'视频工程',update:'更新视频',inspect:'检查镜头与帧',render:'渲染视频',audio:'制作音频',preparing:'准备调用',running:'正在执行',submitted:'已提交后台任务',complete:'已完成',failed:'执行失败',open:'打开工作台',frame:'查看指定帧',return:'返回会话',details:'查看调用记录'},en:{panel:'Video Studio',project:'Video project',update:'Update video',inspect:'Inspect shots and frames',render:'Render video',audio:'Produce audio',preparing:'Preparing',running:'Running',submitted:'Submitted to background job',complete:'Completed',failed:'Failed',open:'Open studio',frame:'View frame',return:'Return to session',details:'Call details'}}),'video-studio: copy');
+  ctx.effect(()=>ctx.locale.register('video-studio',{zh:{...entryCopy.zh,panel:'映流 · 视频工作台',project:'视频工程',update:'更新视频',inspect:'检查镜头与帧',render:'渲染视频',audio:'制作音频',preparing:'准备调用',running:'正在执行',submitted:'已提交后台任务',complete:'已完成',failed:'执行失败',open:'打开工作台',frame:'查看指定帧',return:'返回会话',details:'查看调用记录'},en:{...entryCopy.en,panel:'Video Studio',project:'Video project',update:'Update video',inspect:'Inspect shots and frames',render:'Render video',audio:'Produce audio',preparing:'Preparing',running:'Running',submitted:'Submitted to background job',complete:'Completed',failed:'Failed',open:'Open studio',frame:'View frame',return:'Return to session',details:'Call details'}}),'video-studio: copy');
   const t=ctx.locale.bind('video-studio');
   const syncTheme=()=>controller.setScheme(ctx.theme?.getTheme().active.colorScheme||(document.body.hasAttribute('data-ds-dark-theme')?'dark':'light'));
   syncTheme();ctx.effect(()=>ctx.on('theme/change',syncTheme),'video-studio: theme');
   ctx.effect(()=>{const style=document.createElement('style');style.dataset.plugin='dsh-video-studio';style.textContent=css;document.head.append(style);return()=>style.remove();},'video-studio: styles');
-  function SessionStudio(){
+  function SessionStudio({sessionId}:{sessionId?:string}){
     const list=useSyncExternalStore(listener=>ctx.sessions.list.subscribe(listener),()=>ctx.sessions.list.getSnapshot(),()=>ctx.sessions.list.getSnapshot());
     const workspaces=useSyncExternalStore(listener=>ctx.workspaces.list.subscribe(listener),()=>ctx.workspaces.list.getSnapshot(),()=>ctx.workspaces.list.getSnapshot());
     const [sessionsLoading,setSessionsLoading]=useState(false),[sessionsError,setSessionsError]=useState('');
-    const current=Object.values(list.byId).find(row=>(row.retainedBy?.mainView??0)>0)?.id;
+    const current=sessionId??Object.values(list.byId).find(row=>(row.retainedBy?.mainView??0)>0)?.id;
     const sessions=useMemo(()=>sessionDirectory(list,workspaces),[list,workspaces]);
     const refresh=async(requestedId?:string)=>{
       setSessionsLoading(true);setSessionsError('');
@@ -65,7 +76,14 @@ export function apply(ctx:ClientContext):void {
       finally{setSessionsLoading(false);}
     };
     useEffect(()=>{void refresh();},[]);
+    useEffect(()=>{if(sessionId)void controller.refreshProjects();},[sessionId]);
     return <Studio controller={controller} currentSessionId={current} sessions={sessions} sessionsLoading={sessionsLoading} sessionsError={sessionsError} onRefreshSessions={refresh} onOpenSession={id=>ctx.uiWorkspace.openSession(sessionTarget(id,ctx.sessions.list.getSnapshot(),value=>ctx.sessions.subagentAddress(value)))}/>;
+  }
+  function ConversationStudio({sessionId}:{sessionId:string}){
+    return <div className="vs-embedded-surface" data-video-studio-surface="conversation"><SessionStudio sessionId={sessionId}/></div>;
+  }
+  function DockStudio({sessionId}:{sessionId:string}){
+    return <div className="vs-embedded-surface" data-video-studio-surface="right"><SessionStudio sessionId={sessionId}/></div>;
   }
   function VideoCard({toolName,phase,sessionId,block}:VideoCardProps){
     const [error,setError]=useState('');let args:RecordValue={};
@@ -91,8 +109,29 @@ export function apply(ctx:ClientContext):void {
       <details className="vs-toolcard-details"><summary>{t('details')}</summary><pre>{(block.content??[]).map(content=>content.text??'').join('\n')||JSON.stringify(args,null,2)}</pre></details>
     </section>;
   }
-  ctx.slots.inject('main',()=>ctx.slots.register({name:'main',key:'video-studio',locale:'video-studio'},SessionStudio));
-  ctx.slots.inject('sidebar.panellist',()=>ctx.slots.register({name:'sidebar.panellist',id:'video-studio',order:35,label:()=>t('panel'),locale:'video-studio'},VideoStudioIcon));
+  ctx.slots.inject('main',()=>ctx.slots.register({name:'main',key:panelId,locale:'video-studio'},()=> <SessionStudio/>));
+  ctx.slots.inject('sidebar.panellist',()=>ctx.slots.register({name:'sidebar.panellist',id:panelId,order:35,label:()=>t('panel'),locale:'video-studio'},VideoStudioIcon));
+  ctx.slots.inject('conversation.view',()=>ctx.slots.register({name:'conversation.view',id:panelId,order:35,label:()=>t('view'),locale:'video-studio'},ConversationStudio));
+  // Keep the global panel available when the optional DSH right-sidebar plugin is absent.
+  ctx.inject?.(['sidebarRight','sidebarRightTabs'],scope=>{
+    function OpenDock(){
+      const [error,setError]=useState('');
+      const open=()=>{
+        try{scope.sidebarRight.openTab(panelId);setError('');}
+        catch(cause){setError(cause instanceof Error?cause.message:t('dockError'));}
+      };
+      return <span className="vs-dock-entry">
+        <button type="button" className="vs-dock-entry-button" aria-label={t('dockOpen')} title={t('dockOpen')} onClick={open}><VideoStudioIcon size={16}/></button>
+        {error&&<span role="alert" className="vs-dock-entry-error">{t('dockError')} · {error}</span>}
+      </span>;
+    }
+    scope.effect(()=>scope.sidebarRightTabs.register({
+      id:dockId,kind:panelId,title:()=>t('panel'),
+      guide:[{id:panelId,order:45,title:()=>t('panel'),icon:VideoStudioIcon}],
+    }),'video-studio: right sidebar tab');
+    scope.slots.inject('sidebar.right.pane.tab',()=>scope.slots.register({name:'sidebar.right.pane.tab',key:dockId,locale:'video-studio'},DockStudio));
+    scope.slots.inject('conversation.session.header.utilities',()=>scope.slots.register({name:'conversation.session.header.utilities',id:dockId,order:35,locale:'video-studio'},OpenDock));
+  });
   ctx.slots.inject('tool.call.toolview',function*(){for(const key of ['video_project','video_update','video_inspect','video_render','video_audio'])yield ctx.slots.register({name:'tool.call.toolview',key,locale:'video-studio'},VideoCard);});
   ctx.effect(()=>ctx.on('connection/reset',()=>{void controller.load();}),'video-studio: reconnect');
   void controller.load();
