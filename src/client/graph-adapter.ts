@@ -1,15 +1,35 @@
 import { LiteGraph, LGraph, LGraphNode, LGraphCanvas, LGraphGroup } from '@comfyorg/litegraph';
-import { deleteAsset, deleteShot, duplicateShot } from '../core/index.ts';
+import { deleteShot, duplicateShot, unbindAsset } from '../core/index.ts';
 import type { Asset, GraphEditorAdapter, Shot, VideoProject } from '../shared/types.ts';
 import {t,subscribeLocale,getLocale} from './i18n.ts';
+import {playhead} from './playhead-store.ts';
 
-const GRAPH_INK = {well:'#192a37',placeholder:'#8397a7',caption:'#a8b7c4',body:'#d2dce4',strong:'#e0e8ed',meta:'#99a7ba',meta2:'#93a5b4',meta3:'#7892a3',accent:'#79d8c0',media:'#bcbbeb',rule:'#36504f',film:'#e2cf8e',filmBody:'#aab7c2'};
-function graphInk(){return GRAPH_INK;}
-function nodeChrome(kind: NodeKind, assetKind?: Asset['kind']): {color:string;bgcolor:string} {
-  if(kind==='shot')return {color:'#2c7168',bgcolor:'#1a3033'};
-  if(kind==='film')return {color:'#897138',bgcolor:'#332e21'};
-  return {color:assetKind==='image'?'#315474':'#5f4e77',bgcolor:'#1d2b3a'};
+/** Canvas colours come from the studio's CSS custom properties so the graph follows light and dark schemes. */
+interface GraphTheme {
+  bg:string;dot:string;well:string;placeholder:string;caption:string;body:string;strong:string;meta:string;meta2:string;meta3:string;
+  accent:string;media:string;rule:string;film:string;filmBody:string;titleText:string;port:string;selected:string;shadow:string;
+  chrome:Record<'shot'|'film'|'image'|'asset',[string,string]>;links:{asset:string;reference:string;shot:string};
 }
+const DARK_THEME:GraphTheme={bg:'#111316',dot:'#ffffff14',well:'#23272d',placeholder:'#7d858f',caption:'#a7aeb7',body:'#d5d9de',strong:'#eceef1',meta:'#9aa2ac',meta2:'#8c949e',meta3:'#77808a',
+  accent:'#4fd1ae',media:'#b8b4f0',rule:'#2c3238',film:'#e8c872',filmBody:'#a7aeb7',titleText:'#f2f4f6',port:'#a7aeb7',selected:'#4fd1ae',shadow:'',
+  chrome:{shot:['#1f5b4e','#191d22'],film:['#6b5626','#1d1b16'],image:['#2f4f6e','#191d22'],asset:['#4f3f6e','#191d22']},links:{asset:'#6ea8e8',reference:'#a993d8',shot:'#4fd1ae'}};
+let theme:GraphTheme=DARK_THEME;
+function graphInk():GraphTheme{return theme;}
+function readTheme(element:Element):GraphTheme{
+  const style=getComputedStyle(element),v=(name:string,fallback:string)=>style.getPropertyValue(name).trim()||fallback,d=DARK_THEME;
+  return {bg:v('--vs-g-bg',d.bg),dot:v('--vs-g-dot',d.dot),well:v('--vs-g-well',d.well),placeholder:v('--vs-g-text-3',d.placeholder),caption:v('--vs-g-text-2',d.caption),body:v('--vs-g-text',d.body),strong:v('--vs-g-strong',d.strong),
+    meta:v('--vs-g-text-2',d.meta),meta2:v('--vs-g-text-2',d.meta2),meta3:v('--vs-g-text-3',d.meta3),accent:v('--vs-g-accent',d.accent),media:v('--vs-g-media',d.media),rule:v('--vs-g-rule',d.rule),
+    film:v('--vs-g-film',d.film),filmBody:v('--vs-g-text-2',d.filmBody),titleText:v('--vs-g-title-text',d.titleText),port:v('--vs-g-port',d.port),selected:v('--vs-g-selected',d.selected),shadow:v('--vs-g-shadow',''),
+    chrome:{shot:[v('--vs-g-title-shot',d.chrome.shot[0]),v('--vs-g-node',d.chrome.shot[1])],film:[v('--vs-g-title-film',d.chrome.film[0]),v('--vs-g-node-film',d.chrome.film[1])],
+      image:[v('--vs-g-title-image',d.chrome.image[0]),v('--vs-g-node',d.chrome.image[1])],asset:[v('--vs-g-title-asset',d.chrome.asset[0]),v('--vs-g-node',d.chrome.asset[1])]},
+    links:{asset:v('--vs-g-link-asset',d.links.asset),reference:v('--vs-g-link-reference',d.links.reference),shot:v('--vs-g-link-shot',d.links.shot)}};
+}
+function nodeChrome(kind: NodeKind, assetKind?: Asset['kind']): {color:string;bgcolor:string} {
+  const [color,bgcolor]=kind==='shot'?theme.chrome.shot:kind==='film'?theme.chrome.film:assetKind==='image'?theme.chrome.image:theme.chrome.asset;
+  return {color,bgcolor};
+}
+const reducedMotion=()=>typeof matchMedia==='function'&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+export interface GraphRemoval { shots:string[]; assets:{name:string;links:number}[] }
 
 export interface GraphEdge { from:string; to:string }
 type NodeKind='image'|'text'|'audio'|'video'|'shot'|'film';
@@ -46,6 +66,7 @@ class StudioNode extends LGraphNode {
     ctx.restore();
   }
 }
+const SHOT_X=380,SHOT_Y=120,SHOT_STEP=330,ASSET_GAP=340,ASSET_Y=60,ASSET_STEP=242;
 let registered=false;
 function register():void{if(registered)return;for(const kind of ['image','text','audio','video','shot','film'] as NodeKind[])LiteGraph.registerNodeType(`video-studio/${kind}`,StudioNode);registered=true;}
 
@@ -58,9 +79,12 @@ export class LiteGraphEditor implements GraphEditorAdapter {
   private observer:ResizeObserver; private timer:ReturnType<typeof setTimeout>|undefined;
   private clipboardIds:string[]=[];
   private disposed=false; private cleanup:(()=>void)[]=[];
-  constructor(private canvas:HTMLCanvasElement,private onChange:(project:VideoProject)=>void,private onSelect:(id:string|null)=>void,private onViewport:(scale:number)=>void=()=>{}){
+  private animation=0;
+  /** The first view was computed while the canvas was hidden; fit it once the canvas has real size. */
+  private pendingInitialView=false;
+  constructor(private canvas:HTMLCanvasElement,private onChange:(project:VideoProject)=>void,private onSelect:(id:string|null)=>void,private onViewport:(scale:number)=>void=()=>{},private onRemoved:(removal:GraphRemoval)=>void=()=>{}){
     register();this.graph=new LGraph();this.view=new LGraphCanvas(canvas,this.graph);
-    this.view.show_info=false;this.view.background_image='';this.view.clear_background_color='#111c27';this.view.render_canvas_border=false;
+    this.view.show_info=false;this.view.background_image='';this.view.clear_background_color=theme.bg;this.view.render_canvas_border=false;
     this.view.render_shadows=false;this.view.allow_searchbox=false;this.view.allow_dragcanvas=true;
     this.view.low_quality_zoom_threshold=.2;
     this.view.ds.min_scale=.08;this.view.ds.max_scale=3;
@@ -76,7 +100,15 @@ export class LiteGraphEditor implements GraphEditorAdapter {
     let resolution:MediaQueryList;
     const watchDpr=()=>{resolution?.removeEventListener('change',changedDpr);resolution=window.matchMedia(`(resolution: ${window.devicePixelRatio||1}dppx)`);resolution.addEventListener('change',changedDpr);};
     const changedDpr=()=>{this.resize();watchDpr();};watchDpr();this.cleanup.push(()=>resolution.removeEventListener('change',changedDpr));
-    this.view.default_connection_color_byType={...this.view.default_connection_color_byType,asset:'#74a4d8',reference:'#ac94cc',shot:'#7bd6bd'};
+    // Dot grid in graph space so it pans and zooms with the nodes.
+    this.view.onDrawBackground=(ctx:CanvasRenderingContext2D,area:number[])=>{
+      const scale=this.view.ds.scale;if(scale<.35)return;const gap=24,size=Math.max(1,1.3/scale);
+      ctx.save();ctx.fillStyle=theme.dot;const x0=Math.floor(area[0]!/gap)*gap,y0=Math.floor(area[1]!/gap)*gap,x1=area[0]!+area[2]!,y1=area[1]!+area[3]!;
+      for(let x=x0;x<x1;x+=gap)for(let y=y0;y<y1;y+=gap)ctx.fillRect(x-size/2,y-size/2,size,size);ctx.restore();
+    };
+    this.applyTheme();
+    const studio=canvas.closest('.vs-studio');
+    if(studio&&typeof MutationObserver!=='undefined'){const themeObserver=new MutationObserver(()=>this.applyTheme());themeObserver.observe(studio,{attributes:true,attributeFilter:['data-scheme']});this.cleanup.push(()=>themeObserver.disconnect());}
     // Never expose LiteGraph's generic HTML property dialogs; React owns all text inputs.
     this.view.showEditPropertyValue=()=>undefined;
     this.view.showShowNodePanel=(node:LGraphNode)=>this.onSelect((node as StudioNode).data.id);
@@ -85,7 +117,8 @@ export class LiteGraphEditor implements GraphEditorAdapter {
     this.view.getNodeMenuOptions=(node:LGraphNode)=>[
       {content:t('编辑属性'),callback:()=>this.onSelect((node as StudioNode).data.id)},
       ...((node as StudioNode).data.kind==='shot'?[{content:t('复制镜头'),callback:()=>this.duplicate((node as StudioNode).data.id)}]:[]),
-      ...((node as StudioNode).data.kind!=='film'?[{content:t('删除节点'),callback:()=>this.remove([(node as StudioNode).data.id])}]:[])
+      ...((node as StudioNode).data.kind==='shot'?[{content:t('删除节点'),callback:()=>this.remove([(node as StudioNode).data.id])}]:[]),
+      ...(['image','text','audio','video'].includes((node as StudioNode).data.kind)?[{content:t('解除全部关联'),callback:()=>this.remove([(node as StudioNode).data.id])}]:[])
     ];
     this.view.getCanvasMenuOptions=()=>[{content:t('整理画布'),callback:()=>this.arrange()},{content:t('选中节点分组'),callback:()=>this.groupSelection()}];
     this.view.getGroupMenuOptions=()=>[];
@@ -96,6 +129,8 @@ export class LiteGraphEditor implements GraphEditorAdapter {
     this.cleanup.push(subscribeLocale(()=>this.refreshLocale()));
     const key=(event:KeyboardEvent)=>{
       if(event.target!==canvas)return;
+      // Space plays the film like every other studio surface; dragging empty canvas already pans.
+      if(event.key===' '&&!event.repeat&&!(this.view as unknown as {pointer?:{isDown?:boolean}}).pointer?.isDown){event.preventDefault();event.stopPropagation();playhead.toggle();return;}
       if(event.key==='Delete'||event.key==='Backspace'){event.preventDefault();event.stopImmediatePropagation();this.remove(this.selectedIds());}
       if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='d'){event.preventDefault();event.stopImmediatePropagation();this.duplicateSelection();}
       if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='c'){event.preventDefault();event.stopImmediatePropagation();this.clipboardIds=this.selectedIds();}
@@ -110,6 +145,19 @@ export class LiteGraphEditor implements GraphEditorAdapter {
     this.resize();
   }
   private paint(node:StudioNode):void {const chrome=nodeChrome(node.data.kind,node.data.asset?.kind);node.color=chrome.color;node.bgcolor=chrome.bgcolor;}
+  /** Re-read colours from CSS after a scheme change and repaint every node. */
+  applyTheme():void{
+    if(this.disposed||typeof getComputedStyle!=='function')return;
+    theme=readTheme(this.canvas);
+    this.view.clear_background_color=theme.bg;
+    this.view.default_connection_color_byType={...this.view.default_connection_color_byType,...theme.links};
+    const lite=LiteGraph as unknown as Record<string,unknown>;
+    lite.NODE_TEXT_COLOR=theme.port;lite.NODE_SELECTED_TITLE_COLOR=theme.titleText;lite.NODE_BOX_OUTLINE_COLOR=theme.selected;
+    if(theme.shadow){this.view.render_shadows=true;lite.DEFAULT_SHADOW_COLOR=theme.shadow;}else this.view.render_shadows=false;
+    StudioNode.title_text_color=theme.titleText;
+    for(const node of this.nodes.values())this.paint(node);
+    this.view.setDirty(true,true);
+  }
   private refreshLocale():void{
     if(this.disposed)return;
     this.canvas.setAttribute('aria-label',t('资产与镜头连线画布'));
@@ -137,27 +185,27 @@ export class LiteGraphEditor implements GraphEditorAdapter {
       const initial=this.nodes.size===0;
       const scale=this.view.ds.scale,offset=[...this.view.ds.offset] as [number,number];
       this.graph.clear();this.nodes.clear();
-      const assetX=Math.min(375,...project.shots.map(s=>project.graph.positions[s.id]?.[0]??375))-335;
+      const assetX=Math.min(SHOT_X,...project.shots.map(s=>project.graph.positions[s.id]?.[0]??SHOT_X))-ASSET_GAP;
       project.assets.forEach((asset,index)=>{
-        const node=this.add(asset.id,asset.kind,asset.name,project.graph.positions[asset.id]||[assetX,55+index*235]);node.data.asset=asset;this.paint(node);
+        const node=this.add(asset.id,asset.kind,asset.name,project.graph.positions[asset.id]||[assetX,ASSET_Y+index*ASSET_STEP]);node.data.asset=asset;this.paint(node);
         if(asset.kind!=='audio'&&asset.kind!=='video'){node.addOutput(t('使用素材'),'asset');node.addOutput(t('仅供参考'),'reference');}
         if(asset.kind==='image'){const url=assetUrl(asset);if(url){const image=new Image();image.onload=()=>node.setDirtyCanvas(true,true);image.src=url;node.data.image=image;}}
       });
       project.shots.forEach((shot,index)=>{
-        const order=project.shotOrder.indexOf(shot.id);
-        const node=this.add(shot.id,'shot',shot.title,project.graph.positions[shot.id]||[375+(index%3)*330,100+Math.floor(index/3)*300]);node.data.shot=shot;node.data.order=order<0?index:order;node.data.fps=project.target.fps.num/project.target.fps.den;this.paint(node);
+        const order=project.shotOrder.indexOf(shot.id),slot=order<0?index:order;
+        const node=this.add(shot.id,'shot',shot.title,project.graph.positions[shot.id]||[SHOT_X+slot*SHOT_STEP,SHOT_Y]);node.data.shot=shot;node.data.order=order<0?index:order;node.data.fps=project.target.fps.num/project.target.fps.den;this.paint(node);
         node.addInput(t('上一镜头'),'shot');node.addOutput(t('下一镜头'),'shot');
         for(let i=0;i<Math.max(1,shot.assetIds.length+1);i++)node.addInput(t('使用 {number}',{number:i+1}),'asset');
         for(let i=0;i<Math.max(1,shot.referenceIds.length+1);i++)node.addInput(t('参考 {number}',{number:i+1}),'reference');
         node.resizeForPorts();
         node.onConnectionsChange=()=>{if(this.setting)return;for(const type of ['asset','reference'])if(!node.inputs.some(input=>input.type===type&&input.link==null))node.addInput(t(type==='asset'?'使用 +':'参考 +'),type);node.resizeForPorts();this.queueChange();};
       });
-      const film=this.add('film-output','film',t('影片输出'),project.graph.positions['film-output']||[375+Math.min(project.shots.length,3)*330,100]);this.paint(film);film.addInput(t('最后镜头'),'shot');
+      const film=this.add('film-output','film',t('影片输出'),project.graph.positions['film-output']||[SHOT_X+project.shots.length*SHOT_STEP,SHOT_Y]);this.paint(film);film.addInput(t('最后镜头'),'shot');
       for(const shot of project.shots){const target=this.nodes.get(shot.id)!;shot.assetIds.forEach((id,i)=>this.nodes.get(id)?.connect(0,target,1+i));const offset=1+Math.max(1,shot.assetIds.length+1);shot.referenceIds.forEach((id,i)=>this.nodes.get(id)?.connect(1,target,offset+i));}
       for(const edge of graphEdges(project)){const from=this.nodes.get(edge.from),to=this.nodes.get(edge.to);if(from&&to)from.connect(0,to,0);}
       for(const saved of project.graph.groups){const group=new LGraphGroup(saved.title);group.pos=[saved.bounds[0],saved.bounds[1]];group.size=[saved.bounds[2],saved.bounds[3]];this.graph.add(group);}
       this.view.ds.scale=scale;this.view.ds.offset=offset;this.view.setDirty(true,true);this.serialized=signature;
-      if(initial){const saved=LiteGraphEditor.viewports.get(project.id);if(saved){this.view.ds.scale=saved.scale;this.view.ds.offset=[...saved.offset];}else this.focus(project.shotOrder[0]||project.assets[0]?.id, .9);}
+      if(initial){const saved=LiteGraphEditor.viewports.get(project.id);if(saved){this.view.ds.scale=saved.scale;this.view.ds.offset=[...saved.offset];}else{this.focus(project.shotOrder[0]||project.assets[0]?.id, .9, false);this.pendingInitialView=this.logicalWidth<=100||this.logicalHeight<=100;}}
       this.onViewport(this.view.ds.scale);
     }finally{this.setting=false;}
   }
@@ -184,22 +232,64 @@ export class LiteGraphEditor implements GraphEditorAdapter {
     const next=projection(project);if(next===this.serialized)return;this.serialized=next;this.project=project;this.onChange(project);
   }
   selectedIds():string[]{return Object.values(this.view.selected_nodes||{}).map(node=>(node as StudioNode).data.id);}
-  remove(ids=this.selectedIds()):void{if(!this.project)return;let next=this.project;for(const id of ids){if(next.shots.some(s=>s.id===id))next=deleteShot(next,id);else if(next.assets.some(a=>a.id===id))next=deleteAsset(next,id);}if(next!==this.project)this.onChange(next);}
+  /**
+   * Shots are deleted (undoable through history). Asset nodes are only detached from every shot:
+   * deleting the asset itself is an explicit library action with confirmation.
+   */
+  remove(ids=this.selectedIds()):void{
+    if(!this.project)return;let next=this.project;const removal:GraphRemoval={shots:[],assets:[]};
+    for(const id of ids){
+      const shot=next.shots.find(s=>s.id===id);if(shot){next=deleteShot(next,id);removal.shots.push(shot.title);continue;}
+      const asset=next.assets.find(a=>a.id===id);if(!asset)continue;let links=0;
+      for(const target of next.shots){
+        if(target.assetIds.includes(id)){next=unbindAsset(next,target.id,id,'asset');links++;}
+        if(target.referenceIds.includes(id)){next=unbindAsset(next,target.id,id,'reference');links++;}
+      }
+      removal.assets.push({name:asset.name,links});
+    }
+    if(next!==this.project)this.onChange(next);
+    if(removal.shots.length||removal.assets.length)this.onRemoved(removal);
+  }
   duplicate(id:string):void{if(this.project)this.onChange(duplicateShot(this.project,id,getLocale()));}
   private duplicateSelection():void{if(!this.project)return;let next=this.project;for(const id of this.selectedIds())if(next.shots.some(shot=>shot.id===id))next=duplicateShot(next,id,getLocale());if(next!==this.project)this.onChange(next);}
   private paste():void{if(!this.project||!this.clipboardIds.length)return;let next=this.project;for(const id of this.clipboardIds){if(next.shots.some(s=>s.id===id))next=duplicateShot(next,id,getLocale());else{const source=next.assets.find(a=>a.id===id);if(!source)continue;const asset={...source,id:`asset-${crypto.randomUUID()}`,name:t('{name} 副本',{name:source.name})};const position=next.graph.positions[id]||this.nodes.get(id)?.pos||[35,55];next={...next,assets:[...next.assets,asset],graph:{...next.graph,positions:{...next.graph.positions,[asset.id]:[position[0]+35,position[1]+35]}},revision:next.revision+1};}}if(next!==this.project)this.onChange(next);}
   groupSelection():void{const nodes=this.selectedIds().map(id=>this.nodes.get(id)).filter((n):n is StudioNode=>Boolean(n));if(!nodes.length)return;const x=Math.min(...nodes.map(n=>n.pos[0]))-25,y=Math.min(...nodes.map(n=>n.pos[1]))-60;const right=Math.max(...nodes.map(n=>n.pos[0]+n.size[0]))+25,bottom=Math.max(...nodes.map(n=>n.pos[1]+n.size[1]))+25;const group=new LGraphGroup(t('镜头分组'));group.pos=[x,y];group.size=[right-x,bottom-y];this.graph.add(group);this.queueChange();}
-  arrange():void{if(!this.project)return;const positions:Record<string,[number,number]>={};this.project.assets.forEach((a,i)=>positions[a.id]=[35,80+i*235]);const order=[...this.project.shotOrder,...this.project.shots.map(s=>s.id).filter(id=>!this.project!.shotOrder.includes(id))];order.forEach((id,i)=>positions[id]=[375+(i%3)*320,140+Math.floor(i/3)*340]);positions['film-output']=[375+(order.length%3)*320,140+Math.floor(order.length/3)*340];this.onChange({...this.project,graph:{positions,groups:[]},revision:this.project.revision+1});}
-  fit():void{const nodes=[...this.nodes.values()];if(!nodes.length)return;const minX=Math.min(...nodes.map(n=>n.pos[0]))-30,minY=Math.min(...nodes.map(n=>n.pos[1]))-70,maxX=Math.max(...nodes.map(n=>n.pos[0]+n.size[0]))+30,maxY=Math.max(...nodes.map(n=>n.pos[1]+n.size[1]))+30;const scale=Math.max(.08,Math.min(1,this.logicalWidth/(maxX-minX),this.logicalHeight/(maxY-minY)));this.view.ds.scale=scale;this.view.ds.offset=[-minX+(this.logicalWidth/scale-(maxX-minX))/2,-minY+(this.logicalHeight/scale-(maxY-minY))/2];this.viewportChanged();}
-  focus(id?:string,scale?:number):void{const node=this.nodes.get(id||this.selectedIds()[0]||this.project?.shotOrder[0]||'');if(!node)return;if(scale!==undefined)this.view.ds.scale=scale;else if(this.view.ds.scale<.75)this.view.ds.scale=1;this.view.ds.offset=[-node.pos[0]-node.size[0]/2+this.logicalWidth/(2*this.view.ds.scale),-node.pos[1]-node.size[1]/2+this.logicalHeight/(2*this.view.ds.scale)];this.viewportChanged();}
-  zoom(scale:number):void{const rect=this.canvas.getBoundingClientRect();this.view.ds.changeScale(Math.max(.08,Math.min(3,scale)),[rect.left+rect.width/2,rect.top+rect.height/2]);this.viewportChanged();}
+  /** One readable row: assets stacked by their real height on the left, the shot chain left-to-right, output last. */
+  arrange():void{
+    if(!this.project)return;const positions:Record<string,[number,number]>={};let y=ASSET_Y;
+    for(const asset of this.project.assets){positions[asset.id]=[SHOT_X-ASSET_GAP,y];const height=this.nodes.get(asset.id)?.size[1]??184;y+=height+LiteGraph.NODE_TITLE_HEIGHT+28;}
+    const order=[...this.project.shotOrder,...this.project.shots.map(s=>s.id).filter(id=>!this.project!.shotOrder.includes(id))];
+    order.forEach((id,i)=>positions[id]=[SHOT_X+i*SHOT_STEP,SHOT_Y]);positions['film-output']=[SHOT_X+order.length*SHOT_STEP,SHOT_Y];
+    this.onChange({...this.project,graph:{positions,groups:[]},revision:this.project.revision+1});
+    requestAnimationFrame(()=>{if(!this.disposed)this.fit();});
+  }
+  fit(animate=true):void{const nodes=[...this.nodes.values()];if(!nodes.length)return;const minX=Math.min(...nodes.map(n=>n.pos[0]))-40,minY=Math.min(...nodes.map(n=>n.pos[1]))-70,maxX=Math.max(...nodes.map(n=>n.pos[0]+n.size[0]))+40,maxY=Math.max(...nodes.map(n=>n.pos[1]+n.size[1]))+40;const scale=Math.max(.08,Math.min(1,this.logicalWidth/(maxX-minX),this.logicalHeight/(maxY-minY)));this.moveTo(scale,[-minX+(this.logicalWidth/scale-(maxX-minX))/2,-minY+(this.logicalHeight/scale-(maxY-minY))/2],animate);}
+  focus(id?:string,scale?:number,animate=true):void{const node=this.nodes.get(id||this.selectedIds()[0]||this.project?.shotOrder[0]||'');if(!node)return;const next=scale!==undefined?scale:this.view.ds.scale<.75?1:this.view.ds.scale;this.moveTo(next,[-node.pos[0]-node.size[0]/2+this.logicalWidth/(2*next),-node.pos[1]-node.size[1]/2+this.logicalHeight/(2*next)],animate);}
+  zoom(scale:number):void{this.stopAnimation();const rect=this.canvas.getBoundingClientRect();this.view.ds.changeScale(Math.max(.08,Math.min(3,scale)),[rect.left+rect.width/2,rect.top+rect.height/2]);this.viewportChanged();}
+  private stopAnimation():void{if(this.animation)cancelAnimationFrame(this.animation);this.animation=0;}
+  /** Ease the viewport to a target so focus/fit never teleports the user's spatial context. */
+  private moveTo(scale:number,offset:[number,number],animate:boolean):void{
+    this.stopAnimation();
+    if(!animate||reducedMotion()||typeof requestAnimationFrame!=='function'){this.view.ds.scale=scale;this.view.ds.offset=offset;this.viewportChanged();return;}
+    const from={scale:this.view.ds.scale,offset:[...this.view.ds.offset] as [number,number]},start=performance.now(),duration=260;
+    // Interpolate the screen-space centre so the motion reads as a straight pan with zoom.
+    const centre=(s:number,o:[number,number])=>[this.logicalWidth/(2*s)-o[0],this.logicalHeight/(2*s)-o[1]];
+    const [ax,ay]=centre(from.scale,from.offset),[bx,by]=centre(scale,offset);
+    const step=(now:number)=>{
+      if(this.disposed)return;const k=Math.min(1,(now-start)/duration),e=1-Math.pow(1-k,3);
+      const s=from.scale+(scale-from.scale)*e,cx=ax!+(bx!-ax!)*e,cy=ay!+(by!-ay!)*e;
+      this.view.ds.scale=s;this.view.ds.offset=[this.logicalWidth/(2*s)-cx,this.logicalHeight/(2*s)-cy];this.viewportChanged();
+      this.animation=k<1?requestAnimationFrame(step):0;
+    };
+    this.animation=requestAnimationFrame(step);
+  }
   get scale():number{return this.view.ds.scale;}
   private viewportChanged():void{this.view.setDirty(true,true);this.rememberViewport();}
   private rememberViewport():void{this.onViewport(this.view.ds.scale);if(this.project&&!this.setting&&!this.disposed)LiteGraphEditor.viewports.set(this.project.id,{scale:this.view.ds.scale,offset:[...this.view.ds.offset] as [number,number]});}
-  resize():void{if(this.disposed)return;const parent=this.canvas.parentElement;if(!parent)return;const metrics=canvasMetrics(parent.clientWidth,parent.clientHeight,window.devicePixelRatio||1);this.logicalWidth=metrics.width;this.logicalHeight=metrics.height;this.pixelRatio=metrics.dpr;this.view.resize(metrics.backingWidth,metrics.backingHeight);this.canvas.dataset.pixelRatio=String(metrics.dpr);this.view.ctx?.setTransform(metrics.dpr,0,0,metrics.dpr,0,0);this.view.setDirty(true,true);}
+  resize():void{if(this.disposed)return;const parent=this.canvas.parentElement;if(!parent)return;const metrics=canvasMetrics(parent.clientWidth,parent.clientHeight,window.devicePixelRatio||1);this.logicalWidth=metrics.width;this.logicalHeight=metrics.height;this.pixelRatio=metrics.dpr;this.view.resize(metrics.backingWidth,metrics.backingHeight);this.canvas.dataset.pixelRatio=String(metrics.dpr);this.view.ctx?.setTransform(metrics.dpr,0,0,metrics.dpr,0,0);this.view.setDirty(true,true);if(this.pendingInitialView&&metrics.width>100&&metrics.height>100){this.pendingInitialView=false;this.fit(false);}}
   setInteractive(value:boolean):void{this.view.allow_interaction=value;}
   dispose():void{
-    this.disposed=true;clearTimeout(this.timer);this.observer.disconnect();for(const stop of this.cleanup)stop();this.view.stopRendering();
+    this.disposed=true;this.stopAnimation();clearTimeout(this.timer);this.observer.disconnect();for(const stop of this.cleanup)stop();this.view.stopRendering();
     // LiteGraph 0.17.2 unbindEvents omits capture=true and two drag listeners. Remove only this view's callbacks.
     const view=this.view,canvas=this.canvas;
     if(view._mousedown_callback)canvas.removeEventListener('pointerdown',view._mousedown_callback,true);
