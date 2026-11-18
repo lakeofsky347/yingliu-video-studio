@@ -1,4 +1,5 @@
 import type { SessionDirectoryEntry } from './session-directory.ts';
+import {t} from './i18n.ts';
 
 export interface Observable<T>{getSnapshot():T;subscribe(listener:()=>void):()=>void}
 export interface HostSessionRow {
@@ -30,13 +31,13 @@ export function sessionDirectory(list:HostSessionList,workspaces:HostWorkspaceLi
     if(Array.isArray(values.subagentCatalog))for(const child of values.subagentCatalog){
       const item=object(child);if(typeof item.id!=='string')continue;
       put(item.id,{origin:'subagent',parentId,kind:'subagent',displayTitle:list.byId[item.id]?.title??list.byId[item.id]?.displayTitle??(typeof item.label==='string'?item.label:item.id),cwd:list.byId[item.id]?.cwd??parent?.cwd,
-        originLabel:item.mode==='continuable'?'可继续子代理':'子代理',navigable:item.mode==='one-shot'||item.mode==='continuable',archived:!!parent?.archived||archived.has(item.id)});
+        originLabel:t(item.mode==='continuable'?'可继续子代理':'子代理'),navigable:item.mode==='one-shot'||item.mode==='continuable',archived:!!parent?.archived||archived.has(item.id)});
       if(!queued.has(item.id)){queued.add(item.id);parents.push(item.id);}
     }
     const team=object(values.agentTeam);
     if(Array.isArray(team.members))for(const member of team.members){
       const item=object(member);if(typeof item.id!=='string'||item.role==='lead'||item.phase!=='active')continue;
-      put(item.id,{origin:'subagent',parentId,kind:'team',teamId:parentId,originLabel:'团队成员',navigable:true,
+      put(item.id,{origin:'subagent',parentId,kind:'team',teamId:parentId,originLabel:t('团队成员'),navigable:true,
         displayTitle:list.byId[item.id]?.title??list.byId[item.id]?.displayTitle??(typeof item.name==='string'?item.name:item.id),cwd:list.byId[item.id]?.cwd??parent?.cwd,archived:!!parent?.archived||archived.has(item.id)});
       if(!queued.has(item.id)){queued.add(item.id);parents.push(item.id);}
     }

@@ -11,7 +11,7 @@ export function apply(ctx:HostContext,config:{baseDirectory?:string}={}):void{
   ctx.effect(()=>()=>service.dispose(),'video-studio lifetime');
   registerSessionTools(ctx,service);
   for(const endpoint of ['catalog','current','create','open','save','import','source','saveSource','restoreSource','preview','generate','export','cancel','environment','reveal','apply','inspect','list','bind','bindSession','unbindSession','focus','audio','tts','rename','duplicate','archive','restore','history','undo','redo','tasks','jobs','retry','job.retry','styles.list','styles.save','styles.delete',
-    'models.list','models.connection.save','models.connection.remove','models.model.save','models.model.remove','models.role.bind','models.check',
+    'models.list','models.discover','models.connection.save','models.connection.remove','models.model.save','models.model.remove','models.role.bind','models.check',
     'director.document.get','director.document.save','director.document.approve','quality.check','quality.last','audio.sfx',
     'production.set','director.rules','director.validate','director.compile','director.patch',
     'media.capabilities','media.generate','media.list','media.get','media.cancel','media.pause','media.retry','media.apply','video.clip.save','video.clip.remove','video.clip.extract',
@@ -21,7 +21,7 @@ export function apply(ctx:HostContext,config:{baseDirectory?:string}={}):void{
       let raw:unknown;try{raw=await request.json();}catch{return new Response('Invalid JSON',{status:400});}
       const parsed=clientRequestSchema.safeParse(raw);
       if(!parsed.success||parsed.data.method!==method)return new Response('Invalid RPC envelope',{status:400});
-      return Response.json({type:'server-response',rpcId:parsed.data.rpcId,result:await service.route(endpoint,parsed.data.payload)});
+      return Response.json({type:'server-response',rpcId:parsed.data.rpcId,result:await service.route(endpoint,parsed.data.payload,{signal:request.signal})});
     }}),`video-studio ${endpoint}`);
   }
 }

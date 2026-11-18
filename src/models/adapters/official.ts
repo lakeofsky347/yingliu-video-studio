@@ -1,8 +1,9 @@
 import { createHmac } from 'node:crypto';
-import type { ProviderConnection } from '../contracts.ts';
+import type { ModelDiscoveryResult, ProviderConnection, ProviderModelOption } from '../contracts.ts';
 import type { MediaArtifact, MediaOperation, RemoteJob, RemoteStatus } from '../../jobs/contracts.ts';
 import { cancelVideo, generateImage, getVideo, lookupVideo, submitVideo, type AdapterContext, type AdapterInput } from './media.ts';
 import { validateMediaRequest } from '../capabilities.ts';
+import { protocolInfo } from '../protocols.ts';
 
 type Json = Record<string, unknown>;
 const record = (value: unknown, label: string): Json => {
@@ -35,8 +36,11 @@ function headers(connection: ProviderConnection, key: string | undefined, extra:
   if (connection.auth === 'bearer' && token) result[connection.protocol.startsWith('gemini-') ? 'x-goog-api-key' : 'Authorization'] = connection.protocol.startsWith('gemini-') ? token : 'Bearer ' + token;
   return result;
 }
-async function readJson(response: Response, label: string): Promise<unknown> {
-  if (!response.ok) throw Object.assign(new Error(label + '失败（HTTP ' + response.status + '）'), { httpStatus: response.status });
+async function readJson(response: Response, label: string, maxMiB = 48): Promise<unknown> {
+  if (!response.ok) {
+    void response.body?.cancel().catch(() => {});
+    throw Object.assign(new Error(label + '失败（HTTP ' + response.status + '）'), { httpStatus: response.status });
+  }
   if (!response.body) throw new Error(label + '响应为空');
   const reader = response.body.getReader();
   let size = 0;
@@ -46,21 +50,103 @@ async function readJson(response: Response, label: string): Promise<unknown> {
       const next = await reader.read();
       if (next.done) break;
       size += next.value.length;
-      if (size > 48 * 1024 * 1024) throw new Error(label + ' JSON 超过 48 MiB');
+      if (size > maxMiB * 1024 * 1024) throw new Error(`${label} JSON 超过 ${maxMiB} MiB`);
       parts.push(next.value);
     }
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
   try { return JSON.parse(Buffer.concat(parts).toString('utf8')); } catch { throw new Error(label + '返回无效 JSON'); }
 }
-async function call(context: AdapterContext, path: string, body?: unknown, extra: Record<string, string> = {}): Promise<unknown> {
+async function call(context: AdapterContext, path: string, body?: unknown, options: {extraHeaders?:Record<string,string>;label?:string;maxMiB?:number} = {}): Promise<unknown> {
   const response = await (context.fetch ?? fetch)(endpoint(context.connection, path), {
     method: body === undefined ? 'GET' : 'POST',
     redirect: 'error',
-    headers: headers(context.connection, context.key, body === undefined ? extra : { 'Content-Type': 'application/json', ...extra }),
+    headers: headers(context.connection, context.key, body === undefined ? options.extraHeaders : { 'Content-Type': 'application/json', ...options.extraHeaders }),
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     signal: AbortSignal.any([context.signal, AbortSignal.timeout(context.connection.requestTimeoutMs)]),
   });
-  return readJson(response, '媒体接口');
+  return readJson(response, options.label ?? '媒体接口', options.maxMiB);
+}
+
+export class ModelDiscoveryError extends Error {
+  constructor(readonly code: string, message: string) { super(message); }
+}
+
+const maxCatalogPages = 10;
+const maxCatalogModels = 1000;
+const dashscopePageSize = 50;
+
+/** The untrusted directory supplies suggestions only; never copy capabilities or parameters into the registry. */
+function catalogOption(value: unknown, connection: ProviderConnection, key: string | undefined): ProviderModelOption | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const row = value as Json;
+  const source = protocolInfo(connection.protocol).modelDiscovery;
+  if (source === 'volc' && row.domain && row.domain !== 'VideoGeneration') return;
+  if (source === 'gemini' && Array.isArray(row.supportedGenerationMethods)) {
+    const method = connection.protocol === 'gemini-video' ? 'predictLongRunning' : 'generateContent';
+    if (!row.supportedGenerationMethods.includes(method)) return;
+  }
+  if (source === 'dashscope' && Array.isArray(row.capabilities) && !row.capabilities.includes('VG')) return;
+  const rawId = source === 'gemini' ? text(row.name).replace(/^models\//, '') : text(source === 'dashscope' ? row.model : row.id);
+  const id = rawId.trim();
+  const safe = (value: string) => value.length > 0 && value.length <= 200 && !/[\u0000-\u001f\u007f]/.test(value) && (!key || !value.includes(key));
+  if (!safe(id)) return;
+  const name = text(source === 'gemini' ? row.displayName : row.name).trim();
+  return { id, name: safe(name) ? name : id };
+}
+
+export async function discoverProviderModels(context: AdapterContext): Promise<ModelDiscoveryResult> {
+  const source = protocolInfo(context.connection.protocol).modelDiscovery;
+  if (!source) throw new ModelDiscoveryError('MODEL_DISCOVERY_UNSUPPORTED', '此协议暂不支持查询模型目录，可手动填写模型 ID。');
+  const timeout = AbortSignal.timeout(Math.min(context.connection.requestTimeoutMs, 15_000));
+  const signal = AbortSignal.any([context.signal, timeout]);
+  const models = new Map<string, ProviderModelOption>();
+  const seenTokens = new Set<string>();
+  let token = '';
+  let truncated = false;
+  try {
+    for (let page = 1; page <= maxCatalogPages; page++) {
+      const query = new URLSearchParams();
+      if (source === 'gemini') {
+        query.set('pageSize', '100');
+        if (token) query.set('pageToken', token);
+      } else if (source === 'dashscope') {
+        query.set('capabilities', 'VG');
+        query.set('page_no', String(page));
+        query.set('page_size', String(dashscopePageSize));
+      }
+      const payload = record(await call({ ...context, signal }, `/models${query.size ? '?' + query : ''}`, undefined, { label: '模型目录', maxMiB: 4 }), '模型目录返回无效对象');
+      const output = source === 'dashscope' ? record(payload.output, '模型目录缺少分页数据') : payload;
+      const entries = source === 'gemini' || source === 'dashscope' ? output.models : output.data;
+      if (payload.success === false || !Array.isArray(entries)) throw new Error('模型目录响应无效');
+      for (const entry of entries) {
+        const model = catalogOption(entry, context.connection, context.key);
+        if (!model || models.has(model.id)) continue;
+        if (models.size >= maxCatalogModels) { truncated = true; break; }
+        models.set(model.id, model);
+      }
+      const nextToken = text(output.nextPageToken);
+      const pageSize = typeof output.page_size === 'number' && output.page_size > 0 ? output.page_size : dashscopePageSize;
+      const hasNext = source === 'gemini' ? Boolean(nextToken) : source === 'dashscope' && typeof output.total === 'number' && page * pageSize < output.total;
+      if (truncated || !hasNext) {
+        truncated ||= output.has_more === true;
+        break;
+      }
+      const unsafeToken = source === 'gemini' && (nextToken.length > 2048 || seenTokens.has(nextToken) || Boolean(context.key && nextToken.includes(context.key)));
+      if (page === maxCatalogPages || models.size >= maxCatalogModels || unsafeToken) {
+        truncated = true;
+        break;
+      }
+      if (source === 'gemini') { seenTokens.add(nextToken); token = nextToken; }
+    }
+  } catch (error) {
+    if (timeout.aborted) throw new ModelDiscoveryError('MODEL_DISCOVERY_TIMEOUT', '模型目录请求超时，请重试。');
+    const status = error && typeof error === 'object' && 'httpStatus' in error ? error.httpStatus : undefined;
+    if (status === 401 || status === 403) throw new ModelDiscoveryError('MODEL_DISCOVERY_AUTH', `模型目录鉴权失败（HTTP ${status}），请检查 API Key 和权限。`);
+    if (status === 404 || status === 405 || status === 501) throw new ModelDiscoveryError('MODEL_DISCOVERY_UNSUPPORTED', `此服务地址未提供可用的模型目录（HTTP ${status}），可手动填写模型 ID。`);
+    const detail = typeof status === 'number' ? `（HTTP ${status}）` : '';
+    throw new ModelDiscoveryError('MODEL_DISCOVERY_FAILED', `无法读取模型目录${detail}，请检查服务地址后重试，或手动填写模型 ID。`);
+  }
+  return { models: [...models.values()].sort((a,b) => a.id.localeCompare(b.id)), truncated };
 }
 function dataImage(dataUrl: string): { mime: string; base64: string } {
   const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(dataUrl);
@@ -239,7 +325,7 @@ async function dashscopeSubmit(context: AdapterContext, input: AdapterInput): Pr
     model: input.model.model,
     input: { prompt: input.prompt, ...(image ? { img_url: image.dataUrl } : {}),...(stringParam(input,'negativePrompt')?{negative_prompt:stringParam(input,'negativePrompt')}:{}) },
     parameters: { ...(duration!==undefined ? { duration } : {}), ...(numberParam(input,'width')!==undefined?{size:numberParam(input,'width')+'*'+numberParam(input,'height')} : {}),...(numberParam(input,'seed')!==undefined?{seed:numberParam(input,'seed')}:{}) },
-  }, { 'X-DashScope-Async': 'enable' }), '百炼接口返回无效对象');
+  }, { extraHeaders: { 'X-DashScope-Async': 'enable' } }), '百炼接口返回无效对象');
   const output = record(body.output, '百炼接口没有返回任务');
   return job(text(output.task_id), videoStatus(text(output.task_status) || 'pending'));
 }

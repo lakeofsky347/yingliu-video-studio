@@ -26,6 +26,8 @@ export interface RoleBinding { role:ModelRole; modelId:string }
 export interface RegistryState { version:1; connections:ProviderConnection[]; models:ModelDefinition[]; roles:RoleBinding[] }
 export interface ConnectionSummary extends ProviderConnection { hasKey:boolean; credentialStatus?:CredentialStatus }
 export interface RegistrySnapshot extends Omit<RegistryState,'connections'> { connections:ConnectionSummary[] }
+export interface ProviderModelOption { id:string; name:string }
+export interface ModelDiscoveryResult { models:ProviderModelOption[]; truncated:boolean }
 export interface ResolvedModel { connection:ProviderConnection; model:ModelDefinition }
 export type ModelSelection = ModelRole | { role?:ModelRole; modelId?:string; connectionId?:string; provider?:string; model?:string; protocol?:ModelProtocol };
 export type ConnectionInput = Partial<Omit<ProviderConnection,'revision'|'credentialRef'>> & { id?:string; apiKey?:string };

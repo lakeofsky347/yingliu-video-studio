@@ -1,6 +1,7 @@
 import type { Asset, ProductionMode, Shot, VideoProject, VideoSpec, VideoTarget } from '../shared/types.js';
 import {inspectProjectPaths,safeRelativeProjectPath as safeRelativePath} from './project-paths.js';
 import {defaultProductionPolicy, productionMode, usesVideoVisual, validateProductionPolicy} from './production-policy.js';
+import {formatMessage,type StudioLocale} from '../shared/localization.ts';
 export { defaultSceneSource } from './default-source.js';
 export * from './production-policy.js';
 
@@ -41,11 +42,11 @@ export function migrateProject(project:VideoProject):VideoProject {
 }
 
 /** New projects have three editable ten-second scenes; media is never invented. */
-export function createProject(title:string,topic='',mode:ProductionMode='unresolved'):VideoProject {
+export function createProject(title:string,topic='',mode:ProductionMode='unresolved',locale:StudioLocale='zh'):VideoProject {
   const now=new Date().toISOString();
-  const shots=Array.from({length:3},(_,i)=>defaultShot(i));
+  const shots=Array.from({length:3},(_,i)=>defaultShot(i,undefined,locale));
   for(const shot of shots)shot.visual={kind:mode==='code_animation'?'code':mode==='model_video'?'model_video':'unresolved'};
-  return {schemaVersion:3,productionPolicy:defaultProductionPolicy(mode),id:id('film'),title:title.trim()||'未命名视频',topic,
+  return {schemaVersion:3,productionPolicy:defaultProductionPolicy(mode),id:id('film'),title:title.trim()||formatMessage(locale,'未命名视频'),topic,
     targetDuration:30,createdAt:now,updatedAt:now,revision:0,
     target:{width:1920,height:1080,fps:{num:30,den:1},audioMode:'none'},
     assets:[],shots,shotOrder:shots.map(s=>s.id),
@@ -53,14 +54,14 @@ export function createProject(title:string,topic='',mode:ProductionMode='unresol
     outputs:[],audioClips:[],videoClips:[],sessionIds:[],extensions:{}};
 }
 
-export function defaultShot(index=0,fps={num:30,den:1}):Shot {
+export function defaultShot(index=0,fps={num:30,den:1},locale:StudioLocale='zh'):Shot {
   if(!Number.isFinite(index)||!Number.isInteger(fps.num)||!Number.isInteger(fps.den)||fps.num<=0||fps.den<=0)
     throw new Error('镜头序号或 FPS 无效');
   const shotId=id('shot');
-  return {id:shotId,title:`镜头 ${index+1}`,intent:'说明本镜头要传达的一件事',
-    composition:'明确标题与主体层次，图片与文字各有阅读空间',action:'平缓进入并保留阅读停留',
+  return {id:shotId,title:formatMessage(locale,'镜头 {0}',{0:index+1}),intent:formatMessage(locale,'说明本镜头要传达的一件事'),
+    composition:formatMessage(locale,'明确标题与主体层次，图片与文字各有阅读空间'),action:formatMessage(locale,'平缓进入并保留阅读停留'),
     durationFrames:Math.max(1,Math.round(10*fps.num/fps.den)),assetIds:[],referenceIds:[],transition:'cut',
-    params:{text:`镜头 ${index+1}`,subtitle:'编辑文字、绑定图片，或让 AI 设计这个镜头',
+    params:{text:formatMessage(locale,'镜头 {0}',{0:index+1}),subtitle:formatMessage(locale,'编辑文字、绑定图片，或让 AI 设计这个镜头'),
       background:'#111827',foreground:'#f9fafb',accent:'#a3e635',imageX:74,imageY:50,imageScale:1,
       imageFit:'contain',fontSize:72,motion:'fade'},sourcePath:`shots/${shotId}`,visual:{kind:'code'}};
 }
@@ -235,28 +236,32 @@ export function normalizeSceneDurations(shots:Shot[],targetFrames:number):Shot[]
   return shots.map((shot,index)=>({...copy(shot),durationFrames:1+quotas[index].base}));
 }
 
-export function specMarkdown(spec:VideoSpec):string {
+export function specMarkdown(spec:VideoSpec,locale:StudioLocale='zh'):string {
   const {target}=spec,fps=target.fps.num/target.fps.den;
-  const lines=[`# ${spec.title}：视频制作要求`,'',`主题：${spec.topic||'尚未填写'}`,
-    `画面：${target.width} × ${target.height}；FPS：${target.fps.num}/${target.fps.den}；${target.audioMode==='mixed'?'含音频':'无声'} MP4；质量：${target.quality??'high'}。`,
-    `总时长：${formatSeconds(spec.durationSeconds)} 秒（${spec.durationFrames} 帧）；共 ${spec.shots.length} 个镜头。`,
-    '', '顺序以镜头主链为准；画布位置仅用于组织节点。每个镜头的源码须读取共享参数、由帧号独立求值。',''];
+  const t=(message:string,values:Record<string,string|number>={})=>formatMessage(locale,message,values);
+  const comma=locale==='en'?', ':'，',separator=locale==='en'?'; ':'；',listSeparator=locale==='en'?', ':'、';
+  const lines=[t('# {0}：视频制作要求',{0:spec.title}),'',t('主题：{0}',{0:spec.topic||t('尚未填写')}),
+    t('画面：{0} × {1}；FPS：{2}/{3}；{4} MP4；质量：{5}。',{0:target.width,1:target.height,2:target.fps.num,3:target.fps.den,4:t(target.audioMode==='mixed'?'含音频':'无声'),5:target.quality??'high'}),
+    t('总时长：{0} 秒（{1} 帧）；共 {2} 个镜头。',{0:formatSeconds(spec.durationSeconds),1:spec.durationFrames,2:spec.shots.length}),
+    '',t('顺序以镜头主链为准；画布位置仅用于组织节点。每个镜头的源码须读取共享参数、由帧号独立求值。'),''];
   spec.shots.forEach((shot,index)=>{
+    const videoClip=shot.videoClip?t('{0}；源区间 {1}–{2} 秒；{3} 倍速；{4}；原声 {5}',{0:shot.videoClip.assetId,1:shot.videoClip.trimStart,2:shot.videoClip.trimEnd??t('结尾'),3:shot.videoClip.speed,4:shot.videoClip.fit,5:shot.videoClip.audio}):t('无');
+    const assets=shot.assets.length?shot.assets.map(a=>`${a.name} (${a.id}${comma}${a.kind}${a.description?comma+a.description:''})`).join(separator):t('尚未绑定');
     lines.push(`## ${index+1}. ${shot.title}`, '',
-      `镜头 ID：${shot.id}；帧区间：[${shot.startFrame}, ${shot.endFrame})；时长：${formatSeconds(shot.durationFrames/fps)} 秒。`,
-      `观众应理解：${shot.intent||'待细化'}`,`构图：${shot.composition||'待细化'}`,`动作：${shot.action||'待细化'}`,
-      `进入转场：${shot.transition==='fade'?'淡入':'直接切入'}`,`画面文字：${shot.params.text||'无'}`,
-      `字幕／补充文字：${shot.params.subtitle||'无'}`,
-      `旁白：${shot.narration||'无'}`,
-      `画面来源：${shot.visual?.kind??'unresolved'}；视频片段：${shot.videoClip?shot.videoClip.assetId+'；源区间 '+shot.videoClip.trimStart+'–'+(shot.videoClip.trimEnd??'结尾')+' 秒；'+shot.videoClip.speed+' 倍速；'+shot.videoClip.fit+'；原声 '+shot.videoClip.audio:'无'}。只有明确许可的混合镜头才能执行代码叠加。`,
-      `生产资产：${shot.assets.length?shot.assets.map(a=>`${a.name} (${a.id}，${a.kind}${a.description?`，${a.description}`:''})`).join('；'):'尚未绑定'}`,
-      `参考资产 ID：${shot.referenceIds.join('、')||'无'}`,`源码目录：${shot.sourcePath}`,
-      '', '画面参数：', '', '```json',JSON.stringify(shot.params,null,2),'```','');
+      t('镜头 ID：{0}；帧区间：[{1}, {2})；时长：{3} 秒。',{0:shot.id,1:shot.startFrame,2:shot.endFrame,3:formatSeconds(shot.durationFrames/fps)}),
+      t('观众应理解：{0}',{0:shot.intent||t('待细化')}),t('构图：{0}',{0:shot.composition||t('待细化')}),t('动作：{0}',{0:shot.action||t('待细化')}),
+      t('进入转场：{0}',{0:t(shot.transition==='fade'?'淡入':'直接切入')}),t('画面文字：{0}',{0:shot.params.text||t('无')}),
+      t('字幕／补充文字：{0}',{0:shot.params.subtitle||t('无')}),
+      t('旁白：{0}',{0:shot.narration||t('无')}),
+      t('画面来源：{0}；视频片段：{1}。只有明确许可的混合镜头才能执行代码叠加。',{0:shot.visual?.kind??'unresolved',1:videoClip}),
+      t('生产资产：{0}',{0:assets}),
+      t('参考资产 ID：{0}',{0:shot.referenceIds.join(listSeparator)||t('无')}),t('源码目录：{0}',{0:shot.sourcePath}),
+      '',t('画面参数：'), '', '```json',JSON.stringify(shot.params,null,2),'```','');
   });
-  lines.push('## 实现与验收','',
-    '- 图片在 ready 阶段完成 decode，字体等待就绪。render(ctx) 每帧可重复、可逆序调用，不使用真实时钟驱动画面。',
-    '- 预览与导出读取同一项目版本、镜头源码、共享参数和本地资产；输出所有整数帧，不跳帧。',
-    '- 中文文字可见、无截断，图片符合构图，切镜和淡入符合说明；自动媒体检查与人工观看分别记录。','');
+  lines.push(t('## 实现与验收'),'',
+    t('- 图片在 ready 阶段完成 decode，字体等待就绪。render(ctx) 每帧可重复、可逆序调用，不使用真实时钟驱动画面。'),
+    t('- 预览与导出读取同一项目版本、镜头源码、共享参数和本地资产；输出所有整数帧，不跳帧。'),
+    t('- 画面文字可见、无截断，图片符合构图，切镜和淡入符合说明；自动媒体检查与人工观看分别记录。'),'');
   return lines.join('\n');
 }
 function formatSeconds(seconds:number):string{return Number(seconds.toFixed(3)).toString();}
@@ -296,8 +301,8 @@ export function reorderShots(project:VideoProject,shotOrder:string[]):VideoProje
   if(shotOrder.length!==ids.length||new Set(shotOrder).size!==ids.length||shotOrder.some(s=>!ids.includes(s)))throw new Error('重排必须包含每个镜头且只包含一次');
   const next=changed(project);next.shotOrder=[...shotOrder];syncEdges(next);return next;
 }
-export function addShot(project:VideoProject,shot?:Shot,afterId?:string):VideoProject {
-  if(!shot){shot=defaultShot(project.shots.length,project.target.fps);shot.visual={kind:productionMode(project)==='code_animation'?'code':productionMode(project)==='model_video'?'model_video':'unresolved'};}
+export function addShot(project:VideoProject,shot?:Shot,afterId?:string,locale:StudioLocale='zh'):VideoProject {
+  if(!shot){shot=defaultShot(project.shots.length,project.target.fps,locale);shot.visual={kind:productionMode(project)==='code_animation'?'code':productionMode(project)==='model_video'?'model_video':'unresolved'};}
   if(project.shots.some(s=>s.id===shot.id))throw new Error(`镜头 ID 已存在：${shot.id}`);
   if(afterId!==undefined&&!project.shotOrder.includes(afterId))throw new Error('插入位置不存在');
   const next=changed(project);next.shots.push(copy(shot));
@@ -308,8 +313,8 @@ export function deleteShot(project:VideoProject,shotId:string):VideoProject {
   shotOf(project,shotId);const next=changed(project);next.shots=next.shots.filter(s=>s.id!==shotId);next.shotOrder=next.shotOrder.filter(s=>s!==shotId);
   delete next.graph.positions[shotId];next.audioClips=next.audioClips?.filter(c=>c.shotId!==shotId);next.videoClips=next.videoClips?.filter(c=>c.shotId!==shotId);syncEdges(next);return next;
 }
-export function duplicateShot(project:VideoProject,shotId:string):VideoProject {
-  const original=shotOf(project,shotId),shot=copy(original);shot.id=id('shot');shot.title+= '（副本）';shot.sourcePath=`shots/${shot.id}`;
+export function duplicateShot(project:VideoProject,shotId:string,locale:StudioLocale='zh'):VideoProject {
+  const original=shotOf(project,shotId),shot=copy(original);shot.id=id('shot');shot.title+=formatMessage(locale,'（副本）');shot.sourcePath=`shots/${shot.id}`;
   const next=addShot(project,shot,shotId),position=project.graph.positions[shotId];
   const copies=plainObject(next.extensions.sourceCopies)?next.extensions.sourceCopies:{};
   next.extensions.sourceCopies={...copies,[shot.id]:original.sourcePath};
