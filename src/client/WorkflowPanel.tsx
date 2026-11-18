@@ -6,6 +6,7 @@ import { StudioController } from './controller.ts';
 import {assertProductionOperation} from '../core/production-policy.ts';
 import type {DirectorDocument} from '../director/contracts.ts';
 import {DirectorDocumentPanel} from './DirectorDocumentPanel.tsx';
+import {confirmAction} from './Feedback.tsx';
 
 interface CandidatePreview {candidateHash:string;playback:{candidateHash:string;url:string;mime:'video/mp4';duration:number;frameCount:number;shotIds:string[]}}
 
@@ -38,7 +39,7 @@ export function WorkflowPanel({controller,project,selectedShot,plugin=false}:{co
   async function start(){await execute(async()=>{if(planDirty)throw new Error("请先保存或丢弃导演计划的本地编辑草稿");if(review&&!allowImages)throw new Error("视觉检查需要允许本次发送检查帧");await controller.mediaCommand('workflows.run',{prompt:prompt.trim(),visual,narration,review,audioStrategy:narration?'external':visual==='video'?'native':'silent',allowImageUpload:allowImages,imageAssetIds:allowImages?imageIds:[],...(shotIds.length?{shotIds}:{}),maxTasks,...(directorDocument?.status==='approved'?{directorPlan:directorDocument.plan}:{}),...(maxCost!==''?{maxCost:Number(maxCost)}:{}),...(plugin?{textRoute:state.route}:{})});},"协作流程已开始。可查看各步骤的进度与结果。");}
   async function adopt(record:WorkflowRecord){
     const report=record.qualityReport,checks=report?.checks.filter(check=>check.status==='unchecked'||check.status==='needs-review')??[];
-    if(checks.length){if(previews[record.id]?.candidateHash!==report!.candidateHash)throw new Error("请先打开当前候选，审看画面与声音");if(!previews[record.id]?.playback.url||previews[record.id]?.playback.candidateHash!==report!.candidateHash)throw new Error("当前候选还没有完成实际画面和混音预览，不能确认时序检查");if(!window.confirm(t("请确认你已审看当前候选，并接受以下待人工判断项目：\n")+checks.map(check=>systemMessage(check.message)).join('\n')))return false;}
+    if(checks.length){if(previews[record.id]?.candidateHash!==report!.candidateHash)throw new Error("请先打开当前候选，审看画面与声音");if(!previews[record.id]?.playback.url||previews[record.id]?.playback.candidateHash!==report!.candidateHash)throw new Error("当前候选还没有完成实际画面和混音预览，不能确认时序检查");if(!await confirmAction({title:t("确认采用当前候选？"),body:t("请确认你已审看当前候选，并接受以下待人工判断项目：\n")+checks.map(check=>systemMessage(check.message)).join('\n'),confirmLabel:t("采用候选结果")}))return false;}
     await controller.mediaCommand('workflows.apply',{workflowId:record.id,...(checks.length?{reviewApproval:{candidateHash:report!.candidateHash,checkIds:checks.map(check=>check.id)}}:{})},true);
   }
   return <section className="vs-media-panel" aria-label={t("多模态协作制作")}><div className="vs-media-heading"><div><h3>{t("协作制作")}</h3><p>{t("导演规划镜头，调用画面与配音模型，再检查并合并结果。")}</p></div></div>

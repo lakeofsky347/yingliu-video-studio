@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import type { ProjectLocation, SessionBinding } from '../shared/types.ts';
 import type { StudioController } from './controller.ts';
 import { Dialog } from './Dialog.tsx';
+import { IconButton } from './icons.tsx';
 import { isDelegatedSession, resolveSessionBinding, sessionName, sessionUpdatedAt, type SessionDirectoryProps } from './session-directory.ts';
 
 interface SessionPickerProps extends SessionDirectoryProps {
@@ -26,7 +27,7 @@ export function SessionPicker({project,projects,bindings,controller,sessions=[],
   async function remove(sessionId:string){setBusy(true);setError('');try{await controller.unbindSession(sessionId,project.id);setSelected('');}catch(cause){setError(cause instanceof Error?cause.message:'解除关联未完成');}finally{setBusy(false);}}
   const unavailable=Object.keys(bindings).filter(id=>bindings[id]?.relatedProjectIds.includes(project.id)&&!sessions.some(session=>session.id===id));
   return <Dialog label={mode==='continue'?t("选择继续创作的会话"):t("关联会话")} onClose={onClose} busy={busy} className="vs-session-modal">
-    <div className="vs-section-header"><div><span className="vs-eyebrow">SESSION & FILM</span><h2>{mode==='continue'?t("继续会话创作"):t("关联已有会话")}</h2></div><button aria-label={t("关闭会话选择")} onClick={onClose} disabled={busy}>✕</button></div>
+    <div className="vs-section-header"><div><h2>{mode==='continue'?t("继续会话创作"):t("关联已有会话")}</h2></div><IconButton icon="close" label={t("关闭会话选择")} onClick={onClose} disabled={busy}/></div>
     <p>{t("影片：")}<strong>{project.title}</strong>{t("。{value0}", {value0: mode==='continue'?t("选择要继续的会话。切换当前工程会明确写入关联。"):t("每个会话有一个当前影片，并保留其他关联工程。")})}</p>
     <div className="vs-session-search"><input autoFocus data-dialog-autofocus type="search" aria-label={t("搜索会话")} placeholder={t("搜索会话名称或工作区…")} value={query} onChange={event=>setQuery(event.target.value)}/><button onClick={()=>void onRefreshSessions?.()} disabled={sessionsLoading}>{t("刷新")}</button></div>
     <div className="vs-session-options"><label><input type="checkbox" checked={delegated} onChange={event=>{setDelegated(event.target.checked);if(event.target.checked)void onRefreshSessions?.(selected||currentSessionId);}}/>{t("显示子代理／团队任务")}</label><label><input type="checkbox" checked={archived} onChange={event=>setArchived(event.target.checked)}/>{t("包含归档会话")}</label></div>
