@@ -3,7 +3,7 @@ import { SourceDraftStore, type SourceDraft } from './source-drafts.ts';
 import {getLocale} from './i18n.ts';
 
 export interface StudioState {
-  snapshot:StudioSnapshot|null; loading:boolean; pending:boolean; saving:boolean; dirty:boolean; conflict:boolean;
+  snapshot:StudioSnapshot|null; loading:boolean; pending:boolean; previewing?:boolean; saving:boolean; dirty:boolean; conflict:boolean;
   error:string; notice:string; scheme:'light'|'dark'; selected:string|null;
   route:ModelRoute; canUndo:boolean; canRedo:boolean; history:ProjectHistory|null;
   localImages:Record<string,string>; focusFrame:number|null; focusSerial:number;
@@ -25,7 +25,7 @@ export class RpcStudioApi implements StudioApi {
 
 /** The plugin owns drafts and polling across DSH page navigation. */
 export class StudioController {
-  private state:StudioState={snapshot:null,loading:true,pending:false,saving:false,dirty:false,conflict:false,error:'',notice:'',scheme:'dark',selected:null,route:{provider:'',model:''},canUndo:false,canRedo:false,history:null,localImages:{},focusFrame:null,focusSerial:0,sourceDraft:false,sourceDraftCount:0,draftSerial:0,workspaceView:'projects',projects:[],libraryLoading:false,sessionBindings:{},relationPending:false,styles:[]};
+  private state:StudioState={snapshot:null,loading:true,pending:false,previewing:false,saving:false,dirty:false,conflict:false,error:'',notice:'',scheme:'dark',selected:null,route:{provider:'',model:''},canUndo:false,canRedo:false,history:null,localImages:{},focusFrame:null,focusSerial:0,sourceDraft:false,sourceDraftCount:0,draftSerial:0,workspaceView:'projects',projects:[],libraryLoading:false,sessionBindings:{},relationPending:false,styles:[]};
   private listeners=new Set<()=>void>(); private disposed=false;
   private saveTimer:ReturnType<typeof setTimeout>|undefined; private pollTimer:ReturnType<typeof setTimeout>|undefined;
   private editSerial=0; private dirty=false; private savingPromise:Promise<void>|null=null; private saveFailed=false;
@@ -198,6 +198,24 @@ export class StudioController {
       if(['create','open','focus','duplicate'].includes(endpoint))this.showStudio();
       this.update({notice,conflict:false,error:''});return true;
     }catch(e){this.update({error:message(e),...(isConflict(e)?{conflict:true}:{})});return false;}finally{this.update({pending:false});}
+  }
+  /** Rebuild preview without setting global pending, so parameter edits are never dropped while a preview prepares. */
+  async refreshPreview():Promise<boolean>{
+    if(this.disposed||this.state.previewing||this.state.pending)return false;
+    await this.flush();if(this.disposed||this.dirty||this.state.conflict||this.state.pending)return false;
+    if(this.state.sourceDraft)return false;
+    const projectId=this.state.snapshot?.project?.id,revision=this.serverRevision;
+    if(!projectId||!Number.isSafeInteger(revision))return false;
+    const current=this.snapshotReadGuard(projectId);
+    this.update({previewing:true});
+    try{
+      const snapshot=await this.api.call<StudioSnapshot>('preview',{projectId,expectedRevision:revision});
+      if(current()&&snapshot.project?.id===projectId&&(revision===null||snapshot.project.revision>=revision))this.accept(snapshot,true);
+      return true;
+    }catch(e){
+      if(current())this.update({error:message(e),...(isConflict(e)?{conflict:true}:{})});
+      return false;
+    }finally{this.update({previewing:false});}
   }
   /** Background workflow refreshes never follow another project's global selection. */
   async refreshMediaProject():Promise<boolean>{
