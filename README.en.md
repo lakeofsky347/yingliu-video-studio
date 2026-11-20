@@ -6,18 +6,18 @@
 
 Yingliu (`yingliu-video-studio`) is a video creation plugin for DSH Desktop. Give it a topic and some assets, then let a model plan the storyboard and create animations. You can also connect image, video, and speech services. Edit the visuals, arrange sound, preview, and export whenever you are ready. Projects stay on your computer so you can return to them later.
 
-Current version: **0.8.3**. [Release notes](docs/RELEASE-0.8.3.md)
+Current version **1.0.0** · [Release notes](docs/RELEASE-1.0.0.md)
 
 [![Yingliu studio: assets on the left, storyboard canvas in the center, shot properties on the right, and shot order and preview below](docs/images/readme/workbench-en.png)](docs/images/readme/workbench-en.png)
 
-*The current studio in English with a local demo project. The film keeps its original Chinese text. Click to enlarge. [Screenshot source](docs/images/readme/SOURCES.md)*
+*The earlier English studio with a local demo project. The film keeps its original Chinese text. Click to enlarge. [Screenshot source](docs/images/readme/SOURCES.md)*
 
 <a id="setup"></a>
 ## Install and set up
 
 The studio supports English and Chinese. Switch languages in **DSH Settings → General → Language**. Controls, messages, and dates update immediately; your film text, asset names, and unsaved edits stay unchanged.
 
-1. In DSH, open **Plugin management → Add plugin** and enter `yingliu-video-studio` to install a published version. You can also enter the absolute path to a local `.tgz` package. Enable the plugin after installation.
+1. In DSH, open **Plugin management → Add plugin** and enter `yingliu-video-studio@1.0.0`. You can also enter the absolute path to a local `yingliu-video-studio-1.0.0.tgz`. Enable the plugin after installation.
 2. Click the **Video Studio** tab above the conversation to open the studio. To keep chatting while you edit, click **Open Video Studio in the right sidebar** at the top right of the conversation. The film icon in the left navigation opens the full-width studio.
 3. On the home page, open **Environment settings** and check Chrome / Chromium, FFmpeg, and ffprobe. These tools process media, inspect frames, and export video. If a tool is not found automatically, enter the absolute path to its executable and click **Save and check environment**.
 4. Configure a creative model in DSH, then select it under **Creative model** at the top of a film's workspace. Set up image, video, and speech services separately when needed, or use your own existing assets.
@@ -33,7 +33,7 @@ Install the local tools yourself; the plugin will try to find them automatically
 2. Import images, text, audio, or video into **Assets** on the left. Use **Add text** to paste your copy directly.
 3. Select a **Creative model**, click **Generate storyboard**, and review the shots, assets, and timing.
 4. Click **Generate visuals** to have the model create the shot animations. For model-generated video, select the **Model video** production mode and use asset generation or the production workflow described below.
-5. Click **Preview**, then adjust the shots, text, and sound.
+5. Play the preview in **Monitor**, then adjust the shots, text, and sound.
 6. When everything looks right, click **Export video**. Play or open the MP4 from **Exported films**.
 
 **Generating a storyboard and generating visuals are separate steps.** Generating the storyboard again replaces the overall shot arrangement. For a smaller change, use shot properties or **Edit with words**.
@@ -66,11 +66,11 @@ This panel also controls whether the project may generate still images or use yo
 | Text, colors, duration, and motion | Select a shot and edit its **Shot properties** on the right |
 | Image position and size | Expand **Image position and scale** to adjust placement, scale, and fit |
 | Assets used by a shot | Select **Use** under **Linked assets**, or **Reference** if the asset is only for the model's guidance |
-| Playback order | Drag the shot strip below the canvas, or connect shots on the canvas; use **Connect in strip order** when needed |
-| Changes in plain language | Click **Edit with words** in **Film preview**, choose the current shot or the whole film, and submit your request |
-| Detailed animation changes | Edit the current shot's HTML, CSS, and JS in **Scene source**, then click **Save source**; use **Restore last working version** if something goes wrong |
+| Playback order | Drag shots on the timeline or link them in **Storyboard canvas**. If the sequence is incomplete, use **Connect in timeline order** |
+| Changes in plain language | Click **Edit with words** in the stage toolbar, choose the current shot or the whole film, and submit your request |
+| Detailed animation changes | Edit the current shot's HTML, CSS, and JS in the **Scene source** panel below the timeline, then click **Save source**. Use **Restore last working version** if something goes wrong |
 
-Click **Refresh preview** after editing. Imported assets still need to be assigned to a shot; reference assets do not appear in the film automatically. Moving nodes on the canvas only changes the workspace layout.
+To rebuild manually, click **Check resources and refresh preview** in the stage toolbar. Imported assets still need to be assigned to a shot; reference assets do not appear in the film automatically. Moving nodes on the canvas only changes the workspace layout.
 
 Save or discard source drafts before previewing or exporting. If changing a property has no visible effect, ask the model to update the scene or check that its source code uses that property.
 
@@ -174,8 +174,8 @@ On a different computer, configure models, keys, and conversation links again. T
 | No creative model is available | Configure a model in DSH, then select it in the studio; configure image and video models separately under **Media models** |
 | The production mode is not confirmed | Open **Production requirements**, select the mode and allowed scope, then confirm and save |
 | An imported asset is missing from the picture | Set images to **Use** under **Linked assets**; select and save videos under **Video clip** |
-| The shot order is not connected | Check the shot strip and click **Connect in strip order** |
-| Preview or export is unavailable | Resolve unsaved source drafts, then check the local tools under **Environment** |
+| The shot order is not connected | Check the timeline, then click **Connect in timeline order** in **Storyboard canvas** |
+| Preview or export is unavailable | Resolve unsaved source drafts, then check the local tools under **Runtime environment** |
 | A project conflict or interrupted task appears | Follow the prompts to preserve local edits and reload the project; check the task panel for the cause and available resume or retry actions |
 
 <a id="development"></a>
@@ -183,6 +183,6 @@ On a different computer, configure models, keys, and conversation links again. T
 
 Earlier release notes and topic-specific documents are primarily in Chinese.
 
-[Language and localization](docs/LOCALIZATION.md) · [Release notes](docs/RELEASE-0.8.3.md) · [Models and media](docs/MULTIMODAL.md) · [Model capabilities](docs/MODEL-CAPABILITIES.md) · [Developer API](docs/API.md) · [Host compatibility](docs/COMPATIBILITY.md) · [Platform support](docs/PLATFORM-SUPPORT.md) · [Project origins](docs/ORIGIN.md)
+[Language and localization](docs/LOCALIZATION.md) · [Release notes](docs/RELEASE-1.0.0.md) · [Models and media](docs/MULTIMODAL.md) · [Model capabilities](docs/MODEL-CAPABILITIES.md) · [Developer API](docs/API.md) · [Host compatibility](docs/COMPATIBILITY.md) · [Platform support](docs/PLATFORM-SUPPORT.md) · [Project origins](docs/ORIGIN.md)
 
 This project is licensed under **GPL-3.0-only**. See the [license](LICENSE), [copyright and source notice](NOTICE), and [third-party notices](THIRD_PARTY_NOTICES.md).

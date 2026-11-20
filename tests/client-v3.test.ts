@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { createProject } from '../src/core/index.ts';
+import { createProject, deleteShot } from '../src/core/index.ts';
 import { StudioController, StudioRequestError } from '../src/client/controller.ts';
 import { SourceDraftStore } from '../src/client/source-drafts.ts';
 import { SourceEditor } from '../src/client/SourceEditor.tsx';
@@ -45,6 +45,63 @@ test('source drafts survive shot, project, page-equivalent and controller naviga
   await controller.focusProject(first.id,{shotId:shot.id,frame:149});assert.equal(controller.getSnapshot().sourceDraftCount,1);assert.equal(controller.getSnapshot().focusFrame,149);assert.equal(controller.getSnapshot().selected,shot.id);
   assert.equal(f.calls.filter(call=>call.endpoint==='saveSource').length,0);await controller.dispose();
   const reopened=new StudioController(f.api,new SourceDraftStore(storage));await reopened.load();assert.equal(reopened.getSourceDraft(shot.id)?.source.html,'<div>local draft</div>');await reopened.dispose();
+});
+
+test('automatic preview sends one preparation request and preserves concurrent edits',async()=>{
+  const f=fixture(),base=f.api.call.bind(f.api);
+  const controller=new StudioController(f.api,new SourceDraftStore(memoryStorage()));
+  const entered=deferred<void>(),prepared=deferred<StudioSnapshot>();
+  let requests=0;
+  try{
+    await controller.load();
+    const before=f.snapshot,project=before.project!;
+    f.api.call=async <T>(endpoint:string,payload:any)=>{
+      if(endpoint!=='preview')return base<T>(endpoint,payload);
+      requests++;
+      assert.deepEqual(payload,{projectId:project.id,expectedRevision:project.revision,prepareOnly:true});
+      entered.resolve();
+      return prepared.promise as Promise<T>;
+    };
+    const first=controller.refreshPreview(),second=controller.refreshPreview();
+    await entered.promise;
+    assert.equal(await second,false);
+    assert.equal(controller.getSnapshot().pending,false);
+    controller.edit({...project,title:'预览期间修改',revision:project.revision+1});
+    await controller.flush();
+    prepared.resolve({...before,previewRevision:project.revision});
+    assert.equal(await first,true);
+    assert.equal(requests,1);
+    assert.equal(controller.getSnapshot().previewing,false);
+    assert.equal(controller.getSnapshot().dirty,false);
+    assert.equal(controller.getSnapshot().snapshot?.project?.title,'预览期间修改');
+    assert.equal(controller.confirmedRevision,project.revision+1);
+  }finally{await controller.dispose();}
+});
+
+test('a deletion shortcut cannot undo newer edits or an edit batched with a deletion',async()=>{
+  const f=fixture(),controller=new StudioController(f.api,new SourceDraftStore(memoryStorage()));
+  try{
+    await controller.load();
+    const project=f.snapshot.project!;
+    const first=controller.editWithUndo(deleteShot(project,project.shots[0]!.id));
+    assert.ok(first?.undo);
+    assert.equal(first.undo.available(),true);
+    const pending=controller.getSnapshot().snapshot!.project!;
+    const coalesced=controller.editWithUndo(deleteShot(pending,pending.shots[0]!.id));
+    assert.ok(coalesced);
+    assert.equal(coalesced.undo,undefined);
+    assert.equal(first.undo.available(),false);
+    assert.equal(await first.undo.run(),false);
+    assert.equal(f.calls.some(call=>call.endpoint==='undo'),false);
+    await controller.flush();
+    const saved=f.snapshot.project!;
+    const last=controller.editWithUndo(deleteShot(saved,saved.shots[0]!.id));
+    assert.ok(last?.undo);
+    assert.equal(last.undo.available(),true);
+    assert.equal(await last.undo.run(),true);
+    assert.equal(f.calls.filter(call=>call.endpoint==='undo').length,1);
+    assert.equal(f.calls.find(call=>call.endpoint==='undo')!.payload.expectedRevision,saved.revision+1);
+  }finally{await controller.dispose();}
 });
 
 test('owned parameter autosave advances draft revision and source save clears only the submitted draft',async()=>{

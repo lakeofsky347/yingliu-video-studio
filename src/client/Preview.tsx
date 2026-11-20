@@ -4,7 +4,7 @@ import type { Shot, StudioSnapshot, VideoProject } from '../shared/types.ts';
 import type { StudioController } from './controller.ts';
 import { Icon } from './icons.tsx';
 import { Popover } from './Feedback.tsx';
-import { playhead, timecode } from './playhead-store.ts';
+import { timecode, type Playhead } from './playhead-store.ts';
 
 export function shotFrameRange(project:VideoProject,shotId?:string):{start:number;end:number}{let frame=0;for(const id of project.shotOrder){const shot=project.shots.find(s=>s.id===id);if(!shot)continue;const start=frame;frame+=shot.durationFrames;if(id===shotId)return {start,end:frame};}return {start:0,end:frame};}
 export function frameShotRange(project:VideoProject,frame:number):{shot?:Shot;start:number;end:number;localFrame:number}{
@@ -28,7 +28,7 @@ function FrameThumb({url,frame,active,onSelect,label,failed}:{url?:string;frame:
   return <button className={`vs-keyframe ${active?'is-current':''}`} aria-label={t("{value0} · 第 {value1} 帧", {value0: label, value1: frame})} onClick={()=>onSelect(frame)}>{url&&!imageFailed?<img src={url} alt={t("{value0}缩略帧", {value0: label})} onError={()=>setImageFailed(true)}/>:<div className="vs-keyframe-placeholder">{failed||imageFailed?t("画面加载失败"):t("正在生成缩略帧…")}</div>}<span>{label} <b>F{frame}</b></span></button>;
 }
 
-export function Preview({snapshot,project,selectedShot,controller,focusFrame,focusSerial,busy=false,syncing=false,overlay}:{snapshot:StudioSnapshot;project:VideoProject;selectedShot?:Shot;controller:StudioController;focusFrame?:number|null;focusSerial?:number;busy?:boolean;syncing?:boolean;overlay?:ReactNode}){
+export function Preview({snapshot,project,selectedShot,controller,focusFrame,focusSerial,busy=false,syncing=false,overlay,transport}:{snapshot:StudioSnapshot;project:VideoProject;selectedShot?:Shot;controller:StudioController;focusFrame?:number|null;focusSerial?:number;busy?:boolean;syncing?:boolean;overlay?:ReactNode;transport?:Playhead}){
   useLocale();
   const preview=useRef<HTMLDivElement>(null),iframe=useRef<HTMLIFrameElement>(null),audio=useRef<HTMLAudioElement>(null),currentFrame=useRef(0),handledSpace=useRef(false);
   const [readyKey,setReadyKey]=useState(''),[frame,setFrame]=useState(0),[playing,setPlaying]=useState(false),[sceneId,setSceneId]=useState(''),[showOutput,setShowOutput]=useState(false),[expanded,setExpanded]=useState(false),[jump,setJump]=useState('0'),[jumping,setJumping]=useState(false),[audioError,setAudioError]=useState(''),[capturing,setCapturing]=useState(false),[capture,setCapture]=useState<{path:string;url:string}|null>(null),[previewError,setPreviewError]=useState(''),[reload,setReload]=useState(0);
@@ -79,9 +79,9 @@ export function Preview({snapshot,project,selectedShot,controller,focusFrame,foc
   useEffect(()=>{const element=audio.current;if(!element)return;if(playing&&ready&&!showOutput){element.currentTime=Math.min(element.duration||Infinity,frame/fps);void element.play().catch(()=>{setAudioError('声音尚未播放，点击播放后重试。');setPlaying(false);});}else element.pause();return()=>element.pause();},[playing,ready,showOutput,snapshot.audioUrl]);
   useEffect(()=>{const element=audio.current;if(!element)return;const seconds=frame/fps;if(!playing){try{element.currentTime=seconds;}catch{}}},[frame,fps,playing]);
   // Other surfaces (timeline, canvas, global shortcuts) drive the monitor through the playhead channel.
-  useEffect(()=>{playhead.publish(frame,duration,playing);},[frame,duration,playing]);
-  useEffect(()=>playhead.onSeek(value=>seek(value)),[maxFrame]);
-  useEffect(()=>playhead.onToggle(()=>{if(!ready||showOutput)return false;togglePlay();return true;}),[ready,showOutput,maxFrame]);
+  useEffect(()=>{transport?.publish(frame,duration,playing);},[transport,frame,duration,playing]);
+  useEffect(()=>transport?.onSeek(value=>seek(value)),[transport,maxFrame]);
+  useEffect(()=>transport?.onToggle(()=>{if(!ready||showOutput)return false;togglePlay();return true;}),[transport,ready,showOutput,maxFrame]);
   useEffect(()=>{
     const studio=preview.current?.closest<HTMLElement>('.vs-studio');
     if(!studio)return;

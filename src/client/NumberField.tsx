@@ -9,7 +9,7 @@ export function NumberField({value,onCommit,min,max,step,precision,valid,label,.
   value:number;onCommit:(value:number)=>void;min?:number;max?:number;step?:number;precision?:number;valid?:(value:number)=>boolean;label?:string;
 }){
   const format=(n:number)=>Number.isFinite(n)?String(precision!==undefined?Number(n.toFixed(precision)):n):'';
-  const [draft,setDraft]=useState(format(value)),focused=useRef(false);
+  const [draft,setDraft]=useState(format(value)),focused=useRef(false),cancelled=useRef(false);
   useEffect(()=>{if(!focused.current)setDraft(format(value));},[value,precision]);
   const parsed=draft.trim()===''?NaN:Number(draft);
   const ok=Number.isFinite(parsed)&&(min===undefined||parsed>=min)&&(max===undefined||parsed<=max)&&(!valid||valid(parsed));
@@ -21,6 +21,15 @@ export function NumberField({value,onCommit,min,max,step,precision,valid,label,.
       // Spinner arrows and pasted values commit immediately when they are already valid.
       const native=(event.nativeEvent as InputEvent).inputType;
       if(!native&&event.target.value.trim()!==''&&Number.isFinite(next)&&(min===undefined||next>=min)&&(max===undefined||next<=max)&&(!valid||valid(next))&&next!==value)onCommit(next);}}
-    onBlur={event=>{focused.current=false;commit();props.onBlur?.(event);}}
-    onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();commit();}if(event.key==='Escape'){setDraft(format(value));(event.target as HTMLInputElement).blur();}props.onKeyDown?.(event);}}/>;
+    onBlur={event=>{
+      focused.current=false;
+      if(cancelled.current){cancelled.current=false;setDraft(format(value));}
+      else commit();
+      props.onBlur?.(event);
+    }}
+    onKeyDown={event=>{
+      if(event.key==='Enter'){event.preventDefault();commit();}
+      if(event.key==='Escape'){event.preventDefault();cancelled.current=true;event.currentTarget.blur();}
+      props.onKeyDown?.(event);
+    }}/>;
 }

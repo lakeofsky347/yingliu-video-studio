@@ -2,7 +2,7 @@ import { t, useLocale, systemMessage, getLocale } from './i18n.ts';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from 'react';
 import { addShot, compileSpec, deleteAsset, deleteShot, duplicateShot, reorderShots, specMarkdown, validateGraph } from '../core/index.ts';
 import type { Asset, ProjectLocation, Shot, VideoProject, VideoStyle } from '../shared/types.ts';
-import { StudioController } from './controller.ts';
+import { StudioController, type EditUndo } from './controller.ts';
 import { LiteGraphEditor, type GraphRemoval } from './graph-adapter.ts';
 import { OutputSettings } from './output-settings.tsx';
 import { AudioPanel } from './AudioPanel.tsx';
@@ -20,12 +20,13 @@ import { TaskPanel, HistoryPanel } from './TaskPanel.tsx';
 import { SourceEditor } from './SourceEditor.tsx';
 import { VideoStudioIcon } from './VideoStudioIcon.tsx';
 import { Button, Icon, IconButton } from './icons.tsx';
-import { ConfirmHost, Toasts, confirmAction } from './Feedback.tsx';
-import { expireActionToasts, toast } from './toast-store.ts';
+import { ConfirmationScope, ConfirmHost, Toasts, useCancelConfirmation, useConfirmAction } from './Feedback.tsx';
+import { createToastStore } from './toast-store.ts';
 import { AssetsPanel } from './AssetsPanel.tsx';
 import { PropertiesPanel } from './PropertiesPanel.tsx';
 import { Stage, type StageLayout, type StageMode } from './Stage.tsx';
 import { Timeline } from './Timeline.tsx';
+import { createPlayhead } from './playhead-store.ts';
 import { BottomDrawer, type DrawerTab } from './BottomDrawer.tsx';
 import { EnvironmentPanel, Field } from './EnvironmentPanel.tsx';
 import { CreateFilmDialog } from './CreateFilmDialog.tsx';
@@ -50,16 +51,25 @@ function useLayout(ref:RefObject<HTMLElement>):StageLayout{
   return layout;
 }
 
-export function Studio({controller,currentSessionId,onOpenSession,sessions=[],sessionsLoading=false,sessionsError='',onRefreshSessions}:StudioProps){
+export function Studio(props:StudioProps){return <ConfirmationScope><StudioContent {...props}/></ConfirmationScope>;}
+
+function StudioContent({controller,currentSessionId,onOpenSession,sessions=[],sessionsLoading=false,sessionsError='',onRefreshSessions}:StudioProps){
   useLocale();
+  const confirmAction=useConfirmAction(),cancelConfirmation=useCancelConfirmation();
+  const [toasts]=useState(createToastStore),{toast}=toasts;
+  useEffect(()=>controller.subscribe(toasts.dropUnavailableActions),[controller,toasts]);
   const state=useSyncExternalStore(controller.subscribe,controller.getSnapshot,controller.getSnapshot);
   const snapshot=state.snapshot,project=snapshot?.project||null,task=snapshot?.task;
   const isHome=state.workspaceView==='projects'||!project;
+  useEffect(()=>()=>{cancelConfirmation?.();toasts.clear();},[controller,project?.id,isHome,cancelConfirmation,toasts]);
   const sessionProps={sessions,sessionsLoading,sessionsError,onRefreshSessions,currentSessionId,onOpenSession};
   const busy=state.pending||task?.status==='running';
   const generating=task?.status==='running'&&['storyboard','scenes','modify','audio'].includes(task.kind);
-  const locked=!!generating||state.pending;
+  const validatingPreview=task?.status==='running'&&task.kind==='preview';
+  const locked=generating||validatingPreview||state.pending;
   const studioRef=useRef<HTMLElement>(null),canvasRef=useRef<HTMLCanvasElement>(null),graphRef=useRef<LiteGraphEditor|null>(null),autoPreviewedRef=useRef('');
+  const minimapRef=useRef<HTMLCanvasElement>(null);
+  const [playhead]=useState(createPlayhead);
   const layout=useLayout(studioRef);
   const [stageMode,setStageModeState]=useState<StageMode>(()=>store.get<StageMode>('vs-stage-mode','monitor'));
   const [panel,setPanel]=useState<PanelTab>(()=>store.get<PanelTab>('vs-drawer-tab','audio'));
@@ -88,8 +98,7 @@ export function Studio({controller,currentSessionId,onOpenSession,sessions=[],se
   useEffect(()=>{if(state.focusSerial){if(stageMode==='canvas')setStageMode('split');if(state.selected)graphRef.current?.focus(state.selected);}},[state.focusSerial]);
   const assetBaseUrl=snapshot?.assetBaseUrl||snapshot?.previewUrl;
   const assetUrl=(asset:Asset):string=>state.localImages[asset.id]||(assetBaseUrl&&asset.path?new URL(asset.path,assetBaseUrl).href:'');
-  /** Local edits pass through here so pending undo offers expire once the user keeps editing. */
-  const commit=(next:VideoProject)=>{expireActionToasts();controller.edit(next);};
+  const commit=controller.edit;
   // Debounced auto-preview: ~1.2s after a saved revision settles with an outdated preview, rebuild without locking edits.
   useEffect(()=>{
     if(!project||state.workspaceView!=='studio'||!graphCheck?.ok||state.dirty||state.saving||state.pending||state.previewing||state.conflict||state.sourceDraft||generating||task?.status==='running')return;
@@ -98,43 +107,57 @@ export function Studio({controller,currentSessionId,onOpenSession,sessions=[],se
     const timer=setTimeout(()=>{autoPreviewedRef.current=key;void controller.refreshPreview();},1200);
     return()=>clearTimeout(timer);
   },[project?.id,project?.revision,snapshot?.previewRevision,state.workspaceView,graphCheck?.ok,state.dirty,state.saving,state.pending,state.previewing,state.conflict,state.sourceDraft,generating,task?.status,controller]);
+  const graphUndo=useRef<EditUndo>();
+  const undoAction=(undo:EditUndo|undefined)=>undo?.available()?{label:t("撤销"),...undo}:undefined;
   const onGraphRemoved=(removal:GraphRemoval)=>{
-    if(removal.shots.length)toast({message:removal.shots.length===1?t("已删除镜头「{value0}」",{value0:removal.shots[0]}):t("已删除 {value0} 个镜头",{value0:removal.shots.length}),action:{label:t("撤销"),run:()=>controller.undo()}});
-    for(const asset of removal.assets)toast(asset.links?{message:t("已解除「{value0}」的 {value1} 处关联，资产仍保留在资产库",{value0:asset.name,value1:asset.links}),action:{label:t("撤销"),run:()=>controller.undo()}}:{tone:'info',message:t("「{value0}」没有关联任何镜头。删除资产请在资产库中操作。",{value0:asset.name})});
+    const messages=removal.shots.length?[removal.shots.length===1?t("已删除镜头「{value0}」",{value0:removal.shots[0]}):t("已删除 {value0} 个镜头",{value0:removal.shots.length})]:[];
+    for(const asset of removal.assets)messages.push(asset.links?t("已解除「{value0}」的 {value1} 处关联，资产仍保留在资产库",{value0:asset.name,value1:asset.links}):t("「{value0}」没有关联任何镜头。删除资产请在资产库中操作。",{value0:asset.name}));
+    const action=undoAction(graphUndo.current);graphUndo.current=undefined;
+    for(const [index,message] of messages.entries())toast({message,action:index===messages.length-1?action:undefined});
   };
   const removedRef=useRef(onGraphRemoved);removedRef.current=onGraphRemoved;
   useEffect(()=>{
     if(state.workspaceView!=='studio'||!canvasRef.current||!project)return;
-    const editor=new LiteGraphEditor(canvasRef.current,next=>commit(next),controller.select,setZoom,removal=>removedRef.current(removal));graphRef.current=editor;
+    const editor=new LiteGraphEditor(canvasRef.current,(next,offerUndo)=>{
+      if(!offerUndo)return controller.edit(next);
+      const result=controller.editWithUndo(next);
+      graphUndo.current=result?.undo;
+      return result!==null;
+    },controller.select,setZoom,removal=>removedRef.current(removal),playhead);graphRef.current=editor;
     return()=>{editor.dispose();graphRef.current=null;};
-  },[project?.id,controller,state.workspaceView]);
+  },[project?.id,controller,state.workspaceView,playhead]);
+  useEffect(()=>{graphRef.current?.attachMinimap(canvasVisible?minimapRef.current:null);},[canvasVisible,project?.id,controller,state.workspaceView]);
   useEffect(()=>{if(project)graphRef.current?.setProject(project,assetUrl);},[project,state.localImages,assetBaseUrl,state.workspaceView]);
   useEffect(()=>{graphRef.current?.setSelected(state.selected);},[state.selected,project?.id,state.workspaceView]);
   useEffect(()=>{graphRef.current?.setInteractive(!locked);},[locked]);
   useEffect(()=>{graphRef.current?.applyTheme();},[state.scheme]);
   useEffect(()=>{if(canvasVisible)requestAnimationFrame(()=>graphRef.current?.resize());},[canvasVisible,stageMode,layout]);
-  // Populate real 16:9 shot preview frames on storyboard cards when the canvas is visible.
+  useEffect(()=>{graphRef.current?.clearShotThumbs();},[project?.id,project?.revision,snapshot?.previewUrl,snapshot?.previewRevision]);
+  // Thumbnail requests target the same saved revision as the canvas and obey the host's 3-frame limit.
   useEffect(()=>{
-    if(!canvasVisible||!project||!snapshot?.previewUrl||busy)return;
-    let active=true,cursor=0;
-    const entries:{shotId:string;frame:number}[]=[];
-    for(const id of project.shotOrder){
-      const shot=project.shots.find(s=>s.id===id);if(!shot)continue;
-      entries.push({shotId:shot.id,frame:cursor+Math.floor(Math.max(0,shot.durationFrames-1)/2)});
-      cursor+=shot.durationFrames;
+    const editor=graphRef.current;
+    if(!editor||!canvasVisible||state.workspaceView!=='studio'||!project||!spec?.shots.length||!snapshot?.previewUrl||
+      snapshot.previewRevision!==project.revision||busy||state.dirty||state.saving)return;
+    let active=true;
+    const entries=spec.shots.map(shot=>({shotId:shot.id,frame:Math.floor((shot.startFrame+shot.endFrame-1)/2)}));
+    async function load(projectId:string,revision:number){
+      for(let offset=0;active&&offset<entries.length;offset+=3){
+        const batch=entries.slice(offset,offset+3);
+        try{
+          const result=await controller.api.call<{frames:{frame:number;url:string}[]}>('thumbnails',{
+            projectId,expectedRevision:revision,frames:batch.map(entry=>entry.frame),
+          });
+          if(!active)return;
+          const byFrame=new Map(result.frames.map(item=>[item.frame,item.url]));
+          const urls:Record<string,string>={};
+          for(const {shotId,frame} of batch){const url=byFrame.get(frame);if(url)urls[shotId]=url;}
+          editor?.setShotThumbs(urls);
+        }catch{/* Other batches can still provide thumbnails. */}
+      }
     }
-    if(!entries.length)return;
-    const timer=setTimeout(()=>{
-      void controller.api.call<{frames?:{frame:number;url:string}[]}>('thumbnails',{projectId:project.id,expectedRevision:snapshot.previewRevision,frames:entries.map(e=>e.frame)}).then(result=>{
-        if(!active||!result?.frames?.length)return;
-        const byFrame=new Map(result.frames.map(item=>[item.frame,item.url]));
-        const urls:Record<string,string>={};
-        for(const entry of entries){const url=byFrame.get(entry.frame);if(url)urls[entry.shotId]=url;}
-        graphRef.current?.setShotThumbs(urls);
-      }).catch(()=>{/* thumbnails are optional */});
-    },180);
+    const timer=setTimeout(()=>void load(project.id,project.revision),180);
     return()=>{active=false;clearTimeout(timer);};
-  },[canvasVisible,project?.id,project?.revision,snapshot?.previewUrl,snapshot?.previewRevision,busy,controller]);
+  },[canvasVisible,state.workspaceView,project?.id,project?.revision,spec,snapshot?.previewUrl,snapshot?.previewRevision,busy,state.dirty,state.saving,controller]);
   useEffect(()=>{if(state.notice)toast({tone:'success',message:systemMessage(state.notice)});},[state.notice]);
   useEffect(()=>{if(state.error&&!state.conflict&&!state.dirty&&!directoryOpen)toast({tone:'error',message:systemMessage(state.error)});},[state.error]);
   const lastTask=useRef<{id:string;status:string}|null>(null);
@@ -152,15 +175,15 @@ export function Studio({controller,currentSessionId,onOpenSession,sessions=[],se
     const keyboard=(e:KeyboardEvent)=>{const target=e.target instanceof Element?e.target:null;if(e.defaultPrevented||target?.closest('[role=dialog]'))return;
       if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'&&!isHome){e.preventDefault();setWordOpen(open=>!open);return;}
       if(e.key==='Escape'&&wordOpen){e.preventDefault();setWordOpen(false);return;}
-      if(target?.closest('input, textarea, select, [contenteditable=true]')||generating)return;
+      if(target?.closest('input, textarea, select, [contenteditable=true]')||locked)return;
       if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();e.shiftKey?controller.redo():controller.undo();}
       if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();void controller.flush();}
       if(e.key==='?'||(e.shiftKey&&e.key==='/')){e.preventDefault();setKeysOpen(open=>!open);}
       if(e.key==='['||e.key===']'){const current=controller.getSnapshot(),film=current.snapshot?.project;if(!film?.shots.length)return;const ids=[...film.shotOrder.filter(id=>film.shots.some(shot=>shot.id===id)),...film.shots.map(shot=>shot.id).filter(id=>!film.shotOrder.includes(id))];e.preventDefault();const index=ids.indexOf(current.selected||'');const next=e.key===']'?ids[(Math.max(index,0)+1)%ids.length]:ids[(index<=0?ids.length:index)-1];controller.select(next);graphRef.current?.focus(next);}
     };studio.addEventListener('keydown',keyboard);return()=>studio.removeEventListener('keydown',keyboard);
-  },[controller,generating,wordOpen,isHome]);
+  },[controller,locked,wordOpen,isHome]);
   async function importFiles(files:FileList|null){if(!files)return;for(const file of Array.from(files))await controller.importFile(file);}
-  async function refreshPreview(){if(state.sourceDraft){toast({tone:'warning',message:t("本工程有源码草稿。请在源码面板保存或丢弃草稿后再刷新预览。")});return;}autoPreviewedRef.current=`${project?.id||''}:${project?.revision??''}`;await controller.refreshPreview();}
+  async function refreshPreview(){if(state.sourceDraft){toast({tone:'warning',message:t("本工程有源码草稿。请在源码面板保存或丢弃草稿后再刷新预览。")});return;}autoPreviewedRef.current=`${project?.id||''}:${project?.revision??''}`;await controller.action('preview');}
   async function modify(){if(!instruction.trim()||(editScope==='shot'&&!selectedShot))return;await controller.generate('modify',instruction,editScope==='shot'?selectedShot?.id:undefined);if(!controller.getSnapshot().error){setInstruction('');setWordOpen(false);}}
   function connectOrder(ids:string[]){if(!project)return;const next=reorderShots(project,ids);next.extensions={...next.extensions,graphEdges:ids.map((id,index)=>({from:id,to:ids[index+1]||'film-output'}))};commit(next);}
   const ordered=project?[...project.shotOrder.map(id=>project.shots.find(s=>s.id===id)).filter((s):s is Shot=>Boolean(s)),...project.shots.filter(s=>!project.shotOrder.includes(s.id))]:[];
@@ -168,17 +191,26 @@ export function Studio({controller,currentSessionId,onOpenSession,sessions=[],se
   const coverAsset=project?.assets.find(asset=>asset.kind==='image');
   const coverUrls=project&&coverAsset?{[project.id]:assetUrl(coverAsset)}:{};
   function addShotAfterSelection(){if(!project)return;const after=selectedShot&&project.shotOrder.includes(selectedShot.id)?selectedShot.id:undefined;const next=addShot(project,undefined,after,getLocale());commit(next);const created=next.shots.find(shot=>!project.shots.some(old=>old.id===shot.id));if(created)requestAnimationFrame(()=>controller.select(created.id));}
-  function removeShot(shot:Shot){if(!project)return;controller.edit(deleteShot(project,shot.id));toast({message:t("已删除镜头「{value0}」",{value0:shot.title}),action:{label:t("撤销"),run:()=>controller.undo()}});}
+  function removeShot(shot:Shot){
+    const current=controller.getSnapshot().snapshot?.project;
+    if(!current||current.id!==project?.id||!current.shots.some(item=>item.id===shot.id))return;
+    const result=controller.editWithUndo(deleteShot(current,shot.id));
+    if(result)toast({message:t("已删除镜头「{value0}」",{value0:shot.title}),action:undoAction(result.undo)});
+  }
   async function removeAsset(asset:Asset){
     if(!project)return;const uses=project.shots.filter(shot=>shot.assetIds.includes(asset.id)||shot.referenceIds.includes(asset.id)).length;
     if(!await confirmAction({title:t("删除资产「{value0}」？",{value0:asset.name}),body:uses?t("它正被 {value0} 个镜头使用，删除后这些关联会一并移除。可以立即撤销，或在修改历史中恢复。",{value0:uses}):t("资产会从工程中移除。可以立即撤销，或在修改历史中恢复。"),confirmLabel:t("删除资产"),tone:'danger'}))return;
-    const current=controller.getSnapshot().snapshot?.project;if(!current||!current.assets.some(item=>item.id===asset.id))return;
-    controller.edit(deleteAsset(current,asset.id));toast({message:t("已删除资产「{value0}」",{value0:asset.name}),action:{label:t("撤销"),run:()=>controller.undo()}});
+    const state=controller.getSnapshot(),current=state.snapshot?.project;
+    if(state.workspaceView!=='studio'||!current||current.id!==project.id||!current.assets.some(item=>item.id===asset.id))return;
+    const result=controller.editWithUndo(deleteAsset(current,asset.id));
+    if(result)toast({message:t("已删除资产「{value0}」",{value0:asset.name}),action:undoAction(result.undo)});
   }
   async function generate(kind:'storyboard'|'scenes'){
     if(!project)return;
     if(kind==='storyboard'&&project.shots.length&&((state.history?.entries.length||0)>1||project.shots.some(shot=>shot.assetIds.length||shot.referenceIds.length))){
       if(!await confirmAction({title:t("重新生成分镜？"),body:t("模型会用新的方案替换当前 {value0} 个镜头及其编排。之前的版本保留在「修改历史」中，可以随时恢复。",{value0:project.shots.length}),confirmLabel:t("重新生成"),tone:'danger'}))return;
+      const current=controller.getSnapshot();
+      if(current.workspaceView!=='studio'||current.snapshot?.project?.id!==project.id||current.snapshot.project.revision!==project.revision)return;
     }
     await controller.generate(kind);
   }
@@ -242,16 +274,16 @@ export function Studio({controller,currentSessionId,onOpenSession,sessions=[],se
         {state.sourceDraft&&<div className="vs-banner is-info vs-draft-banner" role="status"><Icon name="code"/><span>{t("{value0} 份源码草稿已保留。保存后才会进入预览和成片。", {value0: state.sourceDraftCount})}</span><Button size="sm" onClick={()=>{openPanel('source');const draft=controller.sourceDrafts().find(value=>project.shots.some(shot=>shot.id===value.shotId));controller.select(draft?.shotId||null);}}>{t("查看源码草稿")}</Button></div>}
       </div>}
       <div className={`vs-workbench ${assetsOpen?'is-assets-open':''}`} data-pane={pane} data-drawer={effectiveDrawerOpen?'open':'closed'}>
-        <AssetsPanel project={project} selectedId={state.selected} assetUrl={assetUrl} pending={state.pending} locked={!!generating}
+        <AssetsPanel project={project} selectedId={state.selected} assetUrl={assetUrl} pending={state.pending} locked={generating||validatingPreview}
           onSelect={id=>{controller.select(id);if(layout==='narrow')setPane('properties');}} onImport={files=>void importFiles(files)} onAddText={()=>setTextOpen(true)} onDelete={asset=>void removeAsset(asset)}
           onClose={layout!=='wide'?()=>setAssetsOpen(false):undefined}/>
         {assetsOpen&&layout==='medium'&&<button type="button" className="vs-scrim" aria-label={t("收起资产库")} onClick={()=>setAssetsOpen(false)}/>}
-        <Stage project={project} snapshot={snapshot!} state={state} controller={controller} layout={layout} stageMode={stageMode} onStageMode={setStageMode}
+        <Stage project={project} snapshot={snapshot!} state={state} controller={controller} playhead={playhead} layout={layout} stageMode={stageMode} onStageMode={setStageMode}
           assetsOpen={assetsOpen} onToggleAssets={()=>{if(layout==='narrow')setPane('assets');else setAssetsOpen(open=>!open);}} onOutputSettings={()=>setOutputOpen(true)}
-          duration={duration} selectedShot={selectedShot} locked={locked} busy={busy} graphCheck={graphCheck} canvasRef={canvasRef} graphRef={graphRef} zoom={zoom}
+          duration={duration} selectedShot={selectedShot} locked={locked} busy={busy} graphCheck={graphCheck} canvasRef={canvasRef} minimapRef={minimapRef} graphRef={graphRef} zoom={zoom}
           onAddShot={addShotAfterSelection} onRefreshPreview={()=>void refreshPreview()} onConnectOrder={connectOrder} ordered={ordered}
           wordOpen={wordOpen} onWordOpen={setWordOpen} editScope={editScope} onEditScope={setEditScope} instruction={instruction} onInstruction={setInstruction} onModify={()=>void modify()}/>
-        <Timeline shots={ordered} fps={fps} selectedId={selectedShot?.id||null} locked={locked} onSelect={id=>{controller.select(id);if(canvasVisible)graphRef.current?.focus(id);}} onReorder={connectOrder} onAdd={addShotAfterSelection} onDelete={id=>{const shot=project.shots.find(s=>s.id===id);if(shot)removeShot(shot);}}/>
+        <Timeline shots={ordered} fps={fps} playhead={playhead} selectedId={selectedShot?.id||null} locked={locked} onSelect={id=>{controller.select(id);if(canvasVisible)graphRef.current?.focus(id);}} onReorder={connectOrder} onAdd={addShotAfterSelection} onDelete={id=>{const shot=project.shots.find(s=>s.id===id);if(shot)removeShot(shot);}}/>
         <div className="vs-pane-switch vs-segmented" role="tablist" aria-label={t("切换面板")}>
           {([['properties','info',selectedShot?t("镜头属性"):selectedAsset?t("资产属性"):t("影片设定")],['assets','image',t("资产库")],['panels','drawer',t("工作面板")]] as const).map(([id,icon,label])=><button type="button" role="tab" key={id} aria-selected={pane===id} className={pane===id?'is-active':''} onClick={()=>setPane(id)}><Icon name={icon}/><span>{label}</span></button>)}
         </div>
@@ -268,7 +300,7 @@ export function Studio({controller,currentSessionId,onOpenSession,sessions=[],se
     {snapshot&&homeModal==='environment'&&<Dialog label={t("运行环境")} onClose={()=>setHomeModal(null)} className="vs-environment-modal"><div className="vs-section-header"><h2>{t("运行环境")}</h2><IconButton icon="close" label={t("关闭")} onClick={()=>setHomeModal(null)}/></div><EnvironmentPanel controller={controller} snapshot={snapshot}/></Dialog>}
     {sessionDialog&&<SessionPicker project={sessionDialog.project} mode={sessionDialog.mode} projects={state.projects} bindings={state.sessionBindings} controller={controller} {...sessionProps} onClose={()=>setSessionDialog(null)}/>}
     {styleLibraryOpen&&<StyleLibrary styles={state.styles} onClose={()=>setStyleLibraryOpen(false)} onSave={style=>controller.saveStyle(style)} onDelete={id=>controller.deleteStyle(id)} onUse={(style:VideoStyle)=>{setNewStyleId(style.id);setStyleLibraryOpen(false);setNewOpen(true);}}/>}
-    {outputOpen&&project&&<Dialog label={t("输出设定")} onClose={()=>setOutputOpen(false)} className="vs-output-modal"><div className="vs-section-header"><h2>{t("输出设定")}</h2><IconButton icon="close" label={t("关闭输出设定")} onClick={()=>setOutputOpen(false)}/></div><OutputSettings project={project} onChange={commit}/></Dialog>}
+    {outputOpen&&project&&<Dialog label={t("输出设定")} onClose={()=>setOutputOpen(false)} className="vs-output-modal"><div className="vs-section-header"><h2>{t("输出设定")}</h2><IconButton icon="close" label={t("关闭输出设定")} onClick={()=>setOutputOpen(false)}/></div><fieldset className="vs-property-scroll" disabled={locked}><OutputSettings project={project} onChange={commit}/></fieldset></Dialog>}
     {newOpen&&<CreateFilmDialog controller={controller} state={state} sessions={sessions} initialStyleId={newStyleId} onClose={()=>{setNewOpen(false);setNewStyleId('');}}/>}
     {directoryOpen&&<Dialog label={t("打开工程目录")} onClose={()=>setDirectoryOpen(false)} busy={busy}><div className="vs-section-header"><div><h2>{t("打开已有影片工程")}</h2><p className="vs-modal-lead">{t("选择包含 project.json 的本地工程目录，素材与源码会一起打开。")}</p></div><IconButton icon="close" label={t("关闭工程目录")} onClick={()=>setDirectoryOpen(false)} disabled={busy}/></div>
       <Field label={t("打开现有项目目录")}><input autoFocus data-dialog-autofocus value={openPath} onChange={event=>setOpenPath(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'&&isAbsolutePath(openPath.trim())&&!state.pending){event.preventDefault();void controller.action('open',{path:openPath.trim()}).then(ok=>{if(ok)setDirectoryOpen(false);});}}} placeholder={t("粘贴工程文件夹的绝对路径")} aria-invalid={openPath.trim()!==''&&!isAbsolutePath(openPath.trim())||undefined}/></Field>
@@ -290,7 +322,7 @@ export function Studio({controller,currentSessionId,onOpenSession,sessions=[],se
       <li><span>{t("收起大预览")}</span><span><kbd>Esc</kbd></span></li>
     </ul></Dialog>}
     <ConfirmHost/>
-    <Toasts/>
+    <Toasts store={toasts}/>
   </main>;
 }
 

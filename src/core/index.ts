@@ -315,7 +315,9 @@ export function deleteShot(project:VideoProject,shotId:string):VideoProject {
 }
 export function duplicateShot(project:VideoProject,shotId:string,locale:StudioLocale='zh'):VideoProject {
   const original=shotOf(project,shotId),shot=copy(original);shot.id=id('shot');shot.title+=formatMessage(locale,'（副本）');shot.sourcePath=`shots/${shot.id}`;
-  const next=addShot(project,shot,shotId),position=project.graph.positions[shotId];
+  const connected=project.shotOrder.includes(shotId);
+  const next=connected?addShot(project,shot,shotId):changed(project),position=project.graph.positions[shotId];
+  if(!connected)next.shots.push(shot);
   const copies=plainObject(next.extensions.sourceCopies)?next.extensions.sourceCopies:{};
   next.extensions.sourceCopies={...copies,[shot.id]:original.sourcePath};
   const video=project.videoClips?.find(clip=>clip.shotId===shotId);if(video)next.videoClips=[...(next.videoClips??[]),{...copy(video),id:id('video-clip'),shotId:shot.id}];

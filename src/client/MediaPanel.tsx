@@ -5,7 +5,7 @@ import type { MediaOperation, MediaTask } from '../jobs/contracts.ts';
 import type { ModelDefinition, RegistrySnapshot } from '../models/contracts.ts';
 import { StudioController } from './controller.ts';
 import { ModelCenter } from './ModelCenter.tsx';
-import { confirmAction } from './Feedback.tsx';
+import { useConfirmAction } from './Feedback.tsx';
 import { protocolInfo, protocolKind } from '../models/protocols.ts';
 
 const phaseNames:Record<MediaTask['phase'],string>={pending:'等待执行',submitting:'正在提交',queued:'远端排队',running:'正在生成',downloading:'下载结果',validating:'检查媒体',ready:'待采用',applying:'正在采用',complete:'已采用',failed:'未完成',cancelled:'远端已取消',unknown:'提交结果待确认'};
@@ -18,6 +18,7 @@ export function mediaModels(catalog:RegistrySnapshot,operation:MediaOperation):M
 export function mediaUsageLabel(task:Pick<MediaTask,'usage'>):string{return typeof task.usage?.cost==='number'?`${task.usage.cost.toFixed(4)} ${task.usage.currency||t("（币种未提供）")}`:t("费用未知");}
 export function MediaPanel({controller,project,selectedShot,mediaOnly=false}:{controller:StudioController;project:VideoProject;selectedShot?:Shot;mediaOnly?:boolean}){
   useLocale();
+  const confirmAction=useConfirmAction();
   const state=useSyncExternalStore(controller.subscribe,controller.getSnapshot,controller.getSnapshot);
   const [catalog,setCatalog]=useState<RegistrySnapshot>({version:1,connections:[],models:[],roles:[]}),[tasks,setTasks]=useState<MediaTask[]>([]);
   const [operation,setOperation]=useState<MediaOperation>('text-to-image'),[modelId,setModelId]=useState(''),[prompt,setPrompt]=useState(''),[shotId,setShotId]=useState(selectedShot?.id||'');
@@ -34,7 +35,7 @@ export function MediaPanel({controller,project,selectedShot,mediaOnly=false}:{co
   useEffect(()=>{if(models.some(model=>model.id===modelId))return;const role=operation==='text-to-image'?'image':'video',preferred=catalog.roles.find(binding=>binding.role===role)?.modelId;setModelId(models.find(model=>model.id===preferred)?.id||models[0]?.id||'');},[catalog,operation,modelId]);
   useEffect(()=>{setImageIds([]);setAllowUpload(false);},[shotId,operation,modelId]);
   useEffect(()=>{setSize('');setDurationSeconds('');setWidth('');setHeight('');setParameters('{}');},[operation,modelId]);
-  async function run(work:()=>Promise<void>,message:string){setBusy(true);setError('');setNotice('');try{await work();await refreshTasks();setNotice(message);}catch(cause){setError(errorMessage(cause));}finally{setBusy(false);}}
+  async function run(work:()=>Promise<void|boolean>,message:string){setBusy(true);setError('');setNotice('');try{if(await work()===false)return;await refreshTasks();setNotice(message);}catch(cause){setError(errorMessage(cause));}finally{setBusy(false);}}
   async function generate(){await run(async()=>{const value=JSON.parse(parameters||'{}');if(!value||typeof value!=='object'||Array.isArray(value))throw new Error("生成参数须为 JSON 对象");if(operation==='image-to-video'&&(!imageIds.length||!allowUpload))throw new Error("请明确选择参考图片并允许本次上传");await controller.mediaCommand('media.generate',{operation,prompt:prompt.trim(),modelId,shotId:shotId||undefined,parameters:{...value,...(operation==='text-to-image'?(size?{size}:{}):{...(durationSeconds?{durationSeconds:Number(durationSeconds)}:{}),...(width?{width:Number(width)}:{}),...(height?{height:Number(height)}:{})})},...(operation==='image-to-video'?{imageAssetIds:imageIds,allowImageUpload:allowUpload}:{})});},"生成任务已保存，可以继续编辑影片。完成后请采用结果。");}
   return <section className="vs-media-panel" aria-label={t("素材生成")}>
     <div className="vs-media-heading"><div><h3>{t("模型与素材生成")}</h3><p>{t("生成图片或视频，再将检查通过的结果加入当前工程。")}</p></div><button disabled={disabled} onClick={()=>setConfigOpen(value=>!value)}>{configOpen?t("收起模型中心"):t("配置模型连接")}</button></div>
@@ -55,7 +56,7 @@ export function MediaPanel({controller,project,selectedShot,mediaOnly=false}:{co
       <p>{task.prompt}</p><small>{task.model.name} · {formatDate(task.createdAt)} · {mediaUsageLabel(task)}</small><p>{systemMessage(task.message)}</p>{task.error&&<p className="vs-inline-error">{systemMessage(task.error)}</p>}
       {task.observation==='paused'&&!ended&&<p className="vs-media-help">{t("停止等待不会确认云端取消。恢复后查询原任务。")}</p>}
       {task.phase==='ready'&&task.startRevision!==project.revision&&<p className="vs-media-help">{t("生成后工程已更新。采用会基于当前已保存版本重新检查目标镜头。")}</p>}
-      <div className="vs-media-actions">{task.phase==='ready'&&<button disabled={disabled} onClick={()=>void run(async()=>{const legacy=!task.productionPolicyFingerprint;if(legacy&&!await confirmAction({title:t("确认采用旧候选？"),body:t("这是升级前的候选，没有制作许可快照。确认已审看该素材，并按本工程当前模式采用？本操作不会重新生成。"),confirmLabel:t("采用结果")}))return;await controller.mediaCommand('media.apply',{taskId:task.id,confirmLegacyPolicy:legacy},true);},"结果已采用，已更新素材和镜头。")}>{t("采用结果")}</button>}{(task.observation==='paused'||['failed','unknown'].includes(task.phase))&&!ended&&<button disabled={disabled} onClick={()=>void run(async()=>{await controller.mediaCommand('media.retry',{taskId:task.id});},"已恢复查询或结果获取。")}>{t("恢复／重试获取")}</button>}{inProgress&&task.observation==='active'&&<button disabled={disabled} onClick={()=>void run(async()=>{await controller.mediaCommand('media.pause',{taskId:task.id});},"已停止等待；云端状态仍保留。")}>{t("停止等待")}</button>}{!ended&&task.phase!=='ready'&&task.remoteStatus!=='succeeded'&&task.remoteStatus!=='failed'&&<button disabled={disabled} onClick={()=>void run(async()=>{await controller.mediaCommand('media.cancel',{taskId:task.id});},"已处理取消请求，请查看远端状态。")}>{t("请求远端取消")}</button>}</div>
+      <div className="vs-media-actions">{task.phase==='ready'&&<button disabled={disabled} onClick={()=>void run(async()=>{const legacy=!task.productionPolicyFingerprint;if(legacy&&!await confirmAction({title:t("确认采用旧候选？"),body:t("这是升级前的候选，没有制作许可快照。确认已审看该素材，并按本工程当前模式采用？本操作不会重新生成。"),confirmLabel:t("采用结果")}))return false;if(controller.getSnapshot().snapshot?.project?.id!==project.id)return false;await controller.mediaCommand('media.apply',{taskId:task.id,confirmLegacyPolicy:legacy},true);},"结果已采用，已更新素材和镜头。")}>{t("采用结果")}</button>}{(task.observation==='paused'||['failed','unknown'].includes(task.phase))&&!ended&&<button disabled={disabled} onClick={()=>void run(async()=>{await controller.mediaCommand('media.retry',{taskId:task.id});},"已恢复查询或结果获取。")}>{t("恢复／重试获取")}</button>}{inProgress&&task.observation==='active'&&<button disabled={disabled} onClick={()=>void run(async()=>{await controller.mediaCommand('media.pause',{taskId:task.id});},"已停止等待；云端状态仍保留。")}>{t("停止等待")}</button>}{!ended&&task.phase!=='ready'&&task.remoteStatus!=='succeeded'&&task.remoteStatus!=='failed'&&<button disabled={disabled} onClick={()=>void run(async()=>{await controller.mediaCommand('media.cancel',{taskId:task.id});},"已处理取消请求，请查看远端状态。")}>{t("请求远端取消")}</button>}</div>
       {task.applied&&<small>{t("已加入 {count} 项素材 · 工程 v{revision}",{count:task.applied.assetIds.length,revision:task.applied.revision})}</small>}
     </article>;})}</div></div>
   </section>;

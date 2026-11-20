@@ -13,6 +13,7 @@ export interface StudioState {
   styles:VideoStyle[];
 }
 export class StudioRequestError extends Error {constructor(message:string,readonly code:string){super(message);this.name='StudioRequestError';}}
+export interface EditUndo { available:()=>boolean; run:()=>Promise<boolean> }
 export class RpcStudioApi implements StudioApi {
   constructor(private rpc:ClientRpc,private signal?:AbortSignal) {}
   async call<T>(endpoint:string,payload:unknown={}):Promise<T> {
@@ -28,7 +29,7 @@ export class StudioController {
   private state:StudioState={snapshot:null,loading:true,pending:false,previewing:false,saving:false,dirty:false,conflict:false,error:'',notice:'',scheme:'dark',selected:null,route:{provider:'',model:''},canUndo:false,canRedo:false,history:null,localImages:{},focusFrame:null,focusSerial:0,sourceDraft:false,sourceDraftCount:0,draftSerial:0,workspaceView:'projects',projects:[],libraryLoading:false,sessionBindings:{},relationPending:false,styles:[]};
   private listeners=new Set<()=>void>(); private disposed=false;
   private saveTimer:ReturnType<typeof setTimeout>|undefined; private pollTimer:ReturnType<typeof setTimeout>|undefined;
-  private editSerial=0; private dirty=false; private savingPromise:Promise<void>|null=null; private saveFailed=false;
+  private editSerial=0; private savedEditSerial=0; private dirty=false; private savingPromise:Promise<void>|null=null; private saveFailed=false;
   private polling=false; private actionEpoch=0; private snapshotReadSerial=0; private serverRevision:number|null=null; private serverProjectId:string|null=null;
   private drafts:SourceDraftStore;
   private libraryReadSerial=0;
@@ -149,12 +150,30 @@ export class StudioController {
   discardSourceDraft(shotId:string,projectId=this.state.snapshot?.project?.id):void{if(!projectId)return;this.drafts.delete(projectId,shotId);this.update({...this.draftState(),...(!this.dirty?{conflict:false,error:''}:{}),notice:'源码草稿已丢弃，保存的源码保持原样。'});}
   persistDrafts():void{this.drafts.persist();if(this.drafts.warning)this.update({notice:this.drafts.warning});}
   get confirmedRevision():number|null{return this.serverRevision;}
-  edit=(project:VideoProject,_record=true):void=>{
-    if(!this.state.snapshot||this.state.pending||this.state.conflict)return;
-    const task=this.state.snapshot.task;if(task?.status==='running'&&['storyboard','scenes','modify','audio'].includes(task.kind))return;
+  edit=(project:VideoProject,_record=true):boolean=>{
+    if(this.disposed||this.state.snapshot?.project?.id!==project.id||this.state.pending||this.state.conflict)return false;
+    const task=this.state.snapshot.task;if(task?.status==='running'&&task.kind!=='export')return false;
     this.editSerial++;this.dirty=true;this.update({snapshot:{...this.state.snapshot,project},saving:true,dirty:true,notice:'',error:''});
     clearTimeout(this.saveTimer);this.saveTimer=setTimeout(()=>{this.saveTimer=undefined;void this.flush();},450);
+    return true;
   };
+  /** Offer undo only for an isolated save, and recheck ownership after it settles. */
+  editWithUndo(project:VideoProject):{undo?:EditUndo}|null{
+    const revision=this.serverRevision,epoch=this.actionEpoch,serial=this.editSerial+1;
+    const isolated=!this.dirty&&!this.busy&&!this.state.sourceDraft&&revision!==null&&this.serverProjectId===project.id;
+    if(!this.edit(project))return null;
+    if(!isolated||revision===null)return {};
+    const nextRevision=revision+1;
+    const available=()=>!this.disposed&&!this.busy&&!this.state.conflict&&!this.state.sourceDraft&&this.state.snapshot?.project?.id===project.id
+      &&this.editSerial===serial&&this.actionEpoch===epoch
+      &&(this.dirty?this.serverRevision===revision:this.savedEditSerial===serial&&this.serverRevision===nextRevision);
+    return {undo:{available,run:async()=>{
+      if(!available())return false;
+      await this.flush();
+      if(!available()||this.dirty||this.serverRevision!==nextRevision)return false;
+      return this.action('undo',{projectId:project.id,expectedRevision:nextRevision},'已撤销，修改历史保存在工程中。');
+    }}};
+  }
   undo=():void=>{void this.action('undo',{},'已撤销，修改历史保存在工程中。');};
   redo=():void=>{void this.action('redo',{},'已重做。');};
   async flush():Promise<void>{
@@ -165,7 +184,7 @@ export class StudioController {
     const operation=(async()=>{try{
       if(this.serverProjectId!==project.id||!Number.isSafeInteger(this.serverRevision))throw new StudioRequestError('尚未确认工程版本，请先读取最新工程。','REVISION_REQUIRED');
       const snapshot=await this.api.call<StudioSnapshot>('save',{project,expectedRevision:this.serverRevision});
-      if(serial===this.editSerial){this.dirty=false;this.accept(snapshot,false,true);this.update({saving:false,dirty:false,error:'',conflict:false});}
+      if(serial===this.editSerial){this.dirty=false;this.savedEditSerial=serial;this.accept(snapshot,false,true);this.update({saving:false,dirty:false,error:'',conflict:false});}
       else this.accept(snapshot,true,true);
       await this.refreshHistory();
     }catch(e){this.saveFailed=true;this.update({saving:false,error:message(e),conflict:isConflict(e)});}})();
@@ -178,7 +197,7 @@ export class StudioController {
       await this.flush();if(this.dirty)throw new Error(this.state.error||'工程尚未保存，请重试保存。');
       if(this.state.sourceDraft&&['preview','export','generate','retry','undo','redo'].includes(endpoint))throw new Error('本工程有源码草稿。请在源码面板保存或丢弃草稿后再执行此操作；切换页面会保留草稿。');
       const targetId=(payload as {projectId?:string})?.projectId??this.state.snapshot?.project?.id;
-      const mutations=['save','saveSource','restoreSource','apply','rename','duplicate','undo','redo','retry','job.retry','import','audio','audio.sfx','generate','production.set','video.clip.save','video.clip.remove','video.clip.extract'];
+      const mutations=['save','saveSource','restoreSource','apply','rename','duplicate','undo','redo','retry','job.retry','import','audio','audio.sfx','generate','preview','production.set','video.clip.save','video.clip.remove','video.clip.extract'];
       let revision=(payload as {expectedRevision?:number})?.expectedRevision;
       if(mutations.includes(endpoint)&&revision===undefined){
         if(targetId===this.serverProjectId)revision=this.serverRevision??undefined;
@@ -199,17 +218,17 @@ export class StudioController {
       this.update({notice,conflict:false,error:''});return true;
     }catch(e){this.update({error:message(e),...(isConflict(e)?{conflict:true}:{})});return false;}finally{this.update({pending:false});}
   }
-  /** Rebuild preview without setting global pending, so parameter edits are never dropped while a preview prepares. */
+  /** Prepare the saved revision's preview in the host command queue without starting a validation task. */
   async refreshPreview():Promise<boolean>{
-    if(this.disposed||this.state.previewing||this.state.pending)return false;
-    await this.flush();if(this.disposed||this.dirty||this.state.conflict||this.state.pending)return false;
-    if(this.state.sourceDraft)return false;
+    if(this.disposed||this.state.previewing||this.busy)return false;
+    await this.flush();
+    if(this.disposed||this.state.previewing||this.busy||this.dirty||this.state.conflict||this.state.sourceDraft)return false;
     const projectId=this.state.snapshot?.project?.id,revision=this.serverRevision;
     if(!projectId||!Number.isSafeInteger(revision))return false;
     const current=this.snapshotReadGuard(projectId);
     this.update({previewing:true});
     try{
-      const snapshot=await this.api.call<StudioSnapshot>('preview',{projectId,expectedRevision:revision});
+      const snapshot=await this.api.call<StudioSnapshot>('preview',{projectId,expectedRevision:revision,prepareOnly:true});
       if(current()&&snapshot.project?.id===projectId&&(revision===null||snapshot.project.revision>=revision))this.accept(snapshot,true);
       return true;
     }catch(e){

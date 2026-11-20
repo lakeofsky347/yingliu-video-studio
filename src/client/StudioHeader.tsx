@@ -38,7 +38,7 @@ export function StudioHeader({project,state,providers,steps,task,busy,graphOk,ca
     <ol className="vs-stepper" aria-label={t("制作阶段")}>
       {steps.map((step,index)=><li key={step.id} className={`is-${step.state}`}>
         {index>0&&<i className="vs-step-line" aria-hidden="true"/>}
-        <button type="button" title={step.hint} aria-current={step.state==='current'?'step':undefined} onClick={()=>onStep(step.id)}>
+        <button type="button" aria-label={step.label} title={step.hint} aria-current={step.state==='current'?'step':undefined} onClick={()=>onStep(step.id)}>
           <span className="vs-step-dot" aria-hidden="true">{step.state==='done'?<Icon name="check"/>:step.state==='warning'||step.state==='stale'?<Icon name="warning"/>:step.state==='running'?<span className="vs-spinner"/>:index+1}</span>
           <span className="vs-step-label">{step.label}</span>
         </button>
@@ -49,13 +49,13 @@ export function StudioHeader({project,state,providers,steps,task,busy,graphOk,ca
         <span className="vs-spinner"/><span className="vs-task-pill-text">{systemMessage(task.message)||taskLabel(task.kind)}</span><b>{Math.round(task.progress*100)}%</b>
         <button type="button" onClick={onCancel} aria-label={t("取消")} title={t("取消")}><Icon name="close"/></button>
       </div>}
-      <Popover label={t("创作模型")} className="vs-model-popover" trigger={({open,toggle,ref})=><button type="button" ref={ref} className={`vs-model-chip ${model?'':'is-empty'}`} aria-expanded={open} onClick={toggle} title={t("创作模型")}>
+      <Popover label={t("创作模型")} className="vs-model-popover" trigger={({open,toggle,ref})=><button type="button" ref={ref} className={`vs-model-chip ${model?'':'is-empty'}`} aria-label={model?model.name:t("选择模型")} aria-expanded={open} onClick={toggle} title={t("创作模型")}>
         <Icon name="spark"/><span>{model?model.name:t("选择模型")}</span><Icon name="chevronDown"/></button>}>
         {()=><ModelPicker state={state} providers={providers} onRoute={onRoute}/>}
       </Popover>
-      <Button icon="spark" className="vs-header-generate" disabled={busy} onClick={()=>onGenerate('storyboard')} title={t("让模型规划镜头、素材与时长")}>{t("生成分镜")}</Button>
-      <Button icon="wand" className="vs-header-generate" disabled={busy||!graphOk} onClick={()=>onGenerate('scenes')} title={graphOk?t("让模型为每个镜头制作动画"):t("主链待连接")}>{t("生成画面")}</Button>
-      <Button variant="primary" icon="download" disabled={busy||!canExport} onClick={onExport}>{t("导出视频")}</Button>
+      <Button icon="spark" className="vs-header-generate" disabled={busy} onClick={()=>onGenerate('storyboard')} aria-label={t("生成分镜")} title={t("让模型规划镜头、素材与时长")}>{t("生成分镜")}</Button>
+      <Button icon="wand" className="vs-header-generate" disabled={busy||!graphOk} onClick={()=>onGenerate('scenes')} aria-label={t("生成画面")} title={graphOk?t("让模型为每个镜头制作动画"):t("主链待连接")}>{t("生成画面")}</Button>
+      <Button variant="primary" icon="download" disabled={busy||!canExport} onClick={onExport} aria-label={t("导出视频")} title={t("导出视频")}>{t("导出视频")}</Button>
       <Popover label={t("更多操作")} trigger={({open,toggle,ref})=><button type="button" ref={ref} className="vs-iconbutton" aria-label={t("更多操作")} title={t("更多操作")} aria-expanded={open} onClick={toggle}><Icon name="more"/></button>}>
         {close=><div className="vs-menu">{menu.map(item=><div key={item.id} className={item.separatorBefore?'vs-menu-group':''}><button type="button" className={item.danger?'is-danger':''} disabled={item.disabled} onClick={()=>{close();item.onSelect();}}><Icon name={item.icon}/><span>{item.label}</span>{item.hint&&<kbd>{item.hint}</kbd>}</button></div>)}</div>}
       </Popover>

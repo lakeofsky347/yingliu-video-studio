@@ -3,7 +3,7 @@ import type { LLink } from '@comfyorg/litegraph';
 import { deleteShot, duplicateShot, unbindAsset } from '../core/index.ts';
 import type { Asset, GraphEditorAdapter, Shot, VideoProject } from '../shared/types.ts';
 import { t, subscribeLocale, getLocale } from './i18n.ts';
-import { playhead } from './playhead-store.ts';
+import { createPlayhead, type Playhead } from './playhead-store.ts';
 
 /** Canvas colours come from the studio's CSS custom properties so the graph follows light and dark schemes. */
 interface GraphTheme {
@@ -484,7 +484,7 @@ export class LiteGraphEditor implements GraphEditorAdapter {
   private minimapCleanup:(()=>void)[]=[];
   private minimapTransform:{scale:number;minX:number;minY:number;padX:number;padY:number}|null=null;
 
-  constructor(private canvas:HTMLCanvasElement,private onChange:(project:VideoProject)=>void,private onSelect:(id:string|null)=>void,private onViewport:(scale:number)=>void=()=>{},private onRemoved:(removal:GraphRemoval)=>void=()=>{}){
+  constructor(private canvas:HTMLCanvasElement,private onChange:(project:VideoProject,offerUndo?:boolean)=>boolean|void,private onSelect:(id:string|null)=>void,private onViewport:(scale:number)=>void=()=>{},private onRemoved:(removal:GraphRemoval)=>void=()=>{},private playhead:Playhead=createPlayhead()){
     register();this.graph=new LGraph();this.view=new LGraphCanvas(canvas,this.graph);
     this.view.show_info=false;this.view.background_image='';this.view.clear_background_color=theme.bg;this.view.render_canvas_border=false;
     this.view.render_shadows=false;this.view.render_connections_border=false;this.view.render_connection_arrows=false;
@@ -670,7 +670,7 @@ export class LiteGraphEditor implements GraphEditorAdapter {
     }
 
     // Highlight currently playing shot in sync with the monitor playhead.
-    const stopPlayhead=playhead.subscribe(()=>this.syncPlayheadShot());
+    const stopPlayhead=this.playhead.subscribe(()=>this.syncPlayheadShot());
     this.cleanup.push(stopPlayhead);
 
     // Repaint gently on pointer move when hovering sockets so socket tooltips respond crisply.
@@ -699,7 +699,7 @@ export class LiteGraphEditor implements GraphEditorAdapter {
 
     const key=(event:KeyboardEvent)=>{
       if(event.target!==canvas)return;
-      if(event.key===' '&&!event.repeat&&!(this.view as unknown as {pointer?:{isDown?:boolean}}).pointer?.isDown){event.preventDefault();event.stopPropagation();playhead.toggle();return;}
+      if(event.key===' '&&!event.repeat&&!(this.view as unknown as {pointer?:{isDown?:boolean}}).pointer?.isDown){event.preventDefault();event.stopPropagation();this.playhead.toggle();return;}
       if(event.key==='Delete'||event.key==='Backspace'){event.preventDefault();event.stopImmediatePropagation();this.remove(this.selectedIds());}
       if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='d'){event.preventDefault();event.stopImmediatePropagation();this.duplicateSelection();}
       if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='c'){event.preventDefault();event.stopImmediatePropagation();this.clipboardIds=this.selectedIds();}
@@ -707,16 +707,16 @@ export class LiteGraphEditor implements GraphEditorAdapter {
     };
     const keyboardOwner=canvas.parentElement!;
     keyboardOwner.addEventListener('keydown',key,true);this.cleanup.push(()=>keyboardOwner.removeEventListener('keydown',key,true));
-    const drag=(e:DragEvent)=>{if(e.dataTransfer?.types.includes('application/x-dsh-video-asset')){e.preventDefault();e.dataTransfer.dropEffect='move';}};
-    const drop=(e:DragEvent)=>{const id=e.dataTransfer?.getData('application/x-dsh-video-asset');if(!id||!this.project)return;e.preventDefault();const rect=canvas.getBoundingClientRect();const ds=this.view.ds;const node=this.nodes.get(id);if(!node)return;node.pos=[(e.clientX-rect.left)/ds.scale-ds.offset[0],(e.clientY-rect.top)/ds.scale-ds.offset[1]];this.onSelect(id);this.queueChange();};
+    const drag=(e:DragEvent)=>{if(this.view.allow_interaction&&e.dataTransfer?.types.includes('application/x-dsh-video-asset')){e.preventDefault();e.dataTransfer.dropEffect='move';}};
+    const drop=(e:DragEvent)=>{const id=e.dataTransfer?.getData('application/x-dsh-video-asset');if(!id||!this.project||!this.view.allow_interaction)return;e.preventDefault();const rect=canvas.getBoundingClientRect();const ds=this.view.ds;const node=this.nodes.get(id);if(!node)return;node.pos=[(e.clientX-rect.left)/ds.scale-ds.offset[0],(e.clientY-rect.top)/ds.scale-ds.offset[1]];this.onSelect(id);this.queueChange();};
     canvas.addEventListener('dragover',drag);canvas.addEventListener('drop',drop);this.cleanup.push(()=>{canvas.removeEventListener('dragover',drag);canvas.removeEventListener('drop',drop);});
     this.resize();
   }
 
   private syncPlayheadShot():void{
     if(this.disposed||!this.project)return;
-    const isPlaying=playhead.playing();
-    const frame=playhead.frame();
+    const isPlaying=this.playhead.playing();
+    const frame=this.playhead.frame();
     let activeId='';
     if(isPlaying){
       let cursor=0;
@@ -747,6 +747,13 @@ export class LiteGraphEditor implements GraphEditorAdapter {
       img.src=url;
       node.data.thumb=img;
     }
+  }
+
+  clearShotThumbs():void{
+    if(!Object.keys(this.shotThumbUrls).length)return;
+    this.shotThumbUrls={};
+    for(const node of this.nodes.values())if(node.data.kind==='shot')node.data.thumb=undefined;
+    this.view.setDirty(true,true);
   }
 
   /** Attach an interactive translucent minimap canvas synced with the graph viewport. */
@@ -866,13 +873,15 @@ export class LiteGraphEditor implements GraphEditorAdapter {
   }
 
   setProject(project:VideoProject,assetUrl:(asset:Asset)=>string):void {
-    const signature=projection(project);this.project=project;
+    const signature=projection(project);
+    const sameProject=this.project?.id===project.id;
+    this.project=project;
     const fps=project.target.fps.num/Math.max(1,project.target.fps.den);
     const totalDuration=project.shots.reduce((sum,s)=>sum+s.durationFrames,0)/fps;
     const edges=graphEdges(project);
     const filmConnected=edges.some(e=>e.to==='film-output');
 
-    if(signature===this.serialized){
+    if(sameProject&&signature===this.serialized){
       for(const shot of project.shots){
         const node=this.nodes.get(shot.id);
         if(node){
@@ -895,8 +904,10 @@ export class LiteGraphEditor implements GraphEditorAdapter {
 
     this.setting=true;clearTimeout(this.timer);
     try{
-      const initial=this.nodes.size===0;
+      const initial=this.nodes.size===0||!sameProject;
+      const selected=sameProject?this.selectedIds():[];
       const scale=this.view.ds.scale,offset=[...this.view.ds.offset] as [number,number];
+      this.view.deselectAll();
       this.graph.clear();this.nodes.clear();
       const assetX=Math.min(SHOT_X,...project.shots.map(s=>project.graph.positions[s.id]?.[0]??SHOT_X))-ASSET_GAP;
       const imageCache=new Map<string,HTMLImageElement>();
@@ -959,6 +970,10 @@ export class LiteGraphEditor implements GraphEditorAdapter {
         const group=new LGraphGroup(saved.title);group.pos=[saved.bounds[0],saved.bounds[1]];group.size=[saved.bounds[2],saved.bounds[3]];
         this.graph.add(group);
       }
+      for(const id of selected){
+        const node=this.nodes.get(id);
+        if(node)this.view.selectNode(node,true);
+      }
 
       this.view.ds.scale=scale;this.view.ds.offset=offset;this.view.setDirty(true,true);this.serialized=signature;
       if(initial){
@@ -1003,7 +1018,7 @@ export class LiteGraphEditor implements GraphEditorAdapter {
   setSelected(id:string|null):void{
     if(this.disposed)return;
     const current=this.selectedIds();
-    if((id&&current.length===1&&current[0]===id)||(!id&&!current.length))return;
+    if((id&&current.includes(id))||(!id&&!current.length))return;
     const prevSetting=this.setting;
     this.setting=true;
     try{
@@ -1018,7 +1033,7 @@ export class LiteGraphEditor implements GraphEditorAdapter {
   }
 
   remove(ids=this.selectedIds()):void{
-    if(!this.project)return;let next=this.project;const removal:GraphRemoval={shots:[],assets:[]};
+    if(!this.project||!this.view.allow_interaction)return;let next=this.project;const removal:GraphRemoval={shots:[],assets:[]};
     for(const id of ids){
       const shot=next.shots.find(s=>s.id===id);if(shot){next=deleteShot(next,id);removal.shots.push(shot.title);continue;}
       const asset=next.assets.find(a=>a.id===id);if(!asset)continue;let links=0;
@@ -1028,18 +1043,31 @@ export class LiteGraphEditor implements GraphEditorAdapter {
       }
       removal.assets.push({name:asset.name,links});
     }
-    if(next!==this.project)this.onChange(next);
+    if(next!==this.project&&this.onChange(next,true)===false)return;
     if(removal.shots.length||removal.assets.length)this.onRemoved(removal);
   }
 
-  duplicate(id:string):void{if(this.project)this.onChange(duplicateShot(this.project,id,getLocale()));}
-  private duplicateSelection():void{if(!this.project)return;let next=this.project;for(const id of this.selectedIds())if(next.shots.some(shot=>shot.id===id))next=duplicateShot(next,id,getLocale());if(next!==this.project)this.onChange(next);}
-  private paste():void{if(!this.project||!this.clipboardIds.length)return;let next=this.project;for(const id of this.clipboardIds){if(next.shots.some(s=>s.id===id))next=duplicateShot(next,id,getLocale());else{const source=next.assets.find(a=>a.id===id);if(!source)continue;const asset={...source,id:`asset-${crypto.randomUUID()}`,name:t('{name} 副本',{name:source.name})};const position=next.graph.positions[id]||this.nodes.get(id)?.pos||[35,55];next={...next,assets:[...next.assets,asset],graph:{...next.graph,positions:{...next.graph.positions,[asset.id]:[position[0]+35,position[1]+35]}},revision:next.revision+1};}}if(next!==this.project)this.onChange(next);}
-  groupSelection():void{const nodes=this.selectedIds().map(id=>this.nodes.get(id)).filter((n):n is StudioNode=>Boolean(n));if(!nodes.length)return;const x=Math.min(...nodes.map(n=>n.pos[0]))-24,y=Math.min(...nodes.map(n=>n.pos[1]-TITLE_H))-34;const right=Math.max(...nodes.map(n=>n.pos[0]+n.size[0]))+24,bottom=Math.max(...nodes.map(n=>n.pos[1]+n.size[1]))+24;const group=new LGraphGroup(t('镜头分组'));group.pos=[x,y];group.size=[right-x,bottom-y];this.graph.add(group);this.queueChange();}
+  duplicate(id:string):void{if(this.project&&this.view.allow_interaction)this.onChange(duplicateShot(this.project,id,getLocale()));}
+  private duplicateSelection():void{if(!this.project||!this.view.allow_interaction)return;let next=this.project;for(const id of this.selectedIds())if(next.shots.some(shot=>shot.id===id))next=duplicateShot(next,id,getLocale());if(next!==this.project)this.onChange(next);}
+  private paste():void{
+    if(!this.project||!this.view.allow_interaction||!this.clipboardIds.length)return;
+    let next=this.project;
+    for(const id of this.clipboardIds){
+      if(next.shots.some(shot=>shot.id===id)){next=duplicateShot(next,id,getLocale());continue;}
+      const source=next.assets.find(asset=>asset.id===id);
+      // The host only accepts new inline text through an ordinary project save.
+      if(!source||source.kind!=='text'||source.path||source.originalPath||source.generation||source.provenance)continue;
+      const asset={...source,id:`asset-${crypto.randomUUID()}`,name:t('{name} 副本',{name:source.name})};
+      const position=next.graph.positions[id]||this.nodes.get(id)?.pos||[35,55];
+      next={...next,assets:[...next.assets,asset],graph:{...next.graph,positions:{...next.graph.positions,[asset.id]:[position[0]+35,position[1]+35]}},revision:next.revision+1};
+    }
+    if(next!==this.project)this.onChange(next);
+  }
+  groupSelection():void{if(!this.view.allow_interaction)return;const nodes=this.selectedIds().map(id=>this.nodes.get(id)).filter((n):n is StudioNode=>Boolean(n));if(!nodes.length)return;const x=Math.min(...nodes.map(n=>n.pos[0]))-24,y=Math.min(...nodes.map(n=>n.pos[1]-TITLE_H))-34;const right=Math.max(...nodes.map(n=>n.pos[0]+n.size[0]))+24,bottom=Math.max(...nodes.map(n=>n.pos[1]+n.size[1]))+24;const group=new LGraphGroup(t('镜头分组'));group.pos=[x,y];group.size=[right-x,bottom-y];this.graph.add(group);this.queueChange();}
 
   /** One readable row: assets stacked cleanly on the left, the shot spine left-to-right, output last. */
   arrange():void{
-    if(!this.project)return;const positions:Record<string,[number,number]>={};let y=ASSET_Y;
+    if(!this.project||!this.view.allow_interaction)return;const positions:Record<string,[number,number]>={};let y=ASSET_Y;
     for(const asset of this.project.assets){
       positions[asset.id]=[SHOT_X-ASSET_GAP,y];
       const height=this.nodes.get(asset.id)?.size[1]??130;

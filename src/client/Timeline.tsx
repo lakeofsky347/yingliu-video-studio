@@ -2,43 +2,66 @@ import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type K
 import type { Shot } from '../shared/types.ts';
 import { t, useLocale } from './i18n.ts';
 import { Icon } from './icons.tsx';
-import { playhead } from './playhead-store.ts';
+import type { Playhead } from './playhead-store.ts';
 
 const SHOT_MIME='application/x-dsh-video-shot';
 /**
  * Proportional shot timeline. Clip widths follow duration, the playhead tracks the monitor without
  * re-rendering React, and clips reorder by drag (with an insertion marker) or Alt+←/→.
  */
-export function Timeline({shots,fps,selectedId,locked,onSelect,onReorder,onAdd,onDelete}:{
-  shots:Shot[];fps:number;selectedId:string|null;locked:boolean;
+export function Timeline({shots,fps,selectedId,locked,playhead,onSelect,onReorder,onAdd,onDelete}:{
+  shots:Shot[];fps:number;selectedId:string|null;locked:boolean;playhead:Playhead;
   onSelect:(id:string)=>void;onReorder:(ids:string[])=>void;onAdd:()=>void;onDelete:(id:string)=>void;
 }){
   useLocale();
-  const track=useRef<HTMLDivElement>(null),head=useRef<HTMLDivElement>(null),clips=useRef<(HTMLElement|null)[]>([]);
+  const track=useRef<HTMLDivElement>(null),ruler=useRef<HTMLDivElement>(null),head=useRef<HTMLDivElement>(null),clips=useRef<(HTMLElement|null)[]>([]);
   const [dragging,setDragging]=useState<string|null>(null),[dropIndex,setDropIndex]=useState<number|null>(null);
   const total=shots.reduce((sum,shot)=>sum+shot.durationFrames,0);
   const starts:number[]=[];shots.reduce((at,shot)=>{starts.push(at);return at+shot.durationFrames;},0);
   const totalSeconds=total/Math.max(1,fps);
   const rulerSteps=totalSeconds>0?Math.min(8,Math.max(3,Math.round(totalSeconds/2))):4;
+  const rulerFrames=Array.from({length:rulerSteps+1},(_,index)=>Math.round(total*index/rulerSteps));
   const rulerMarks=Array.from({length:rulerSteps+1},(_,index)=>{
     const sec=(totalSeconds*index)/rulerSteps;
     const mins=Math.floor(sec/60),rem=Math.floor(sec%60);
     return `${String(mins).padStart(2,'0')}:${String(rem).padStart(2,'0')}`;
   });
-  // Position the playhead from real clip geometry, so minimum clip widths never skew it.
+  // Use the same clip geometry for the playhead and ruler, including minimum clip widths.
   useEffect(()=>{
-    const place=()=>{
-      const element=head.current;if(!element)return;const frame=playhead.frame();
+    const position=(frame:number)=>{
       let index=starts.findIndex((start,i)=>frame>=start&&frame<start+shots[i]!.durationFrames);if(index<0)index=frame>=total?shots.length-1:0;
-      const clip=clips.current[index];if(!clip||!shots[index]){element.style.opacity='0';return;}
+      const clip=clips.current[index];if(!clip||!shots[index])return;
       const local=Math.min(1,Math.max(0,(frame-starts[index]!)/Math.max(1,shots[index]!.durationFrames)));
-      element.style.opacity='1';element.style.transform=`translateX(${clip.offsetLeft+clip.offsetWidth*local}px)`;
+      return clip.offsetLeft+clip.offsetWidth*local;
+    };
+    const place=()=>{
+      const element=head.current,offset=position(playhead.frame());if(!element)return;
+      element.style.opacity=offset===undefined?'0':'1';
+      if(offset!==undefined)element.style.transform=`translateX(${offset}px)`;
       element.classList.toggle('is-playing',playhead.playing());
     };
-    place();const stop=playhead.subscribe(place);
-    const observer=typeof ResizeObserver!=='undefined'?new ResizeObserver(place):null;if(track.current)observer?.observe(track.current);
+    const measure=()=>{
+      place();
+      ruler.current?.querySelectorAll('span').forEach((mark,index)=>{
+        mark.style.left=`${position(rulerFrames[index]!)??0}px`;
+      });
+    };
+    measure();const stop=playhead.subscribe(place);
+    const observer=typeof ResizeObserver!=='undefined'?new ResizeObserver(measure):null;if(track.current)observer?.observe(track.current);
     return()=>{stop();observer?.disconnect();};
   });
+  function seekAt(clientX:number):void{
+    if(total<=0)return;
+    for(let index=0;index<shots.length;index++){
+      const box=clips.current[index]?.getBoundingClientRect();if(!box||box.width<=0)continue;
+      if(clientX<=box.left){playhead.seek(starts[index]!);return;}
+      if(clientX<=box.right){
+        const offset=Math.floor((clientX-box.left)/box.width*shots[index]!.durationFrames);
+        playhead.seek(Math.min(total-1,starts[index]!+offset));return;
+      }
+    }
+    playhead.seek(total-1);
+  }
   function insertionIndex(clientX:number):number{
     for(let i=0;i<shots.length;i++){const clip=clips.current[i];if(!clip)continue;const box=clip.getBoundingClientRect();if(clientX<box.left+box.width/2)return i;}
     return shots.length;
@@ -66,16 +89,15 @@ export function Timeline({shots,fps,selectedId,locked,onSelect,onReorder,onAdd,o
   return <section className="vs-timeline" aria-label={t("时间线")}>
     <div className="vs-timeline-label"><strong>{t("时间线")}</strong><small>{t("{value0} 个镜头 · {value1} 秒", {value0:shots.length, value1:(total/fps).toFixed(1)})}</small></div>
     <div className="vs-timeline-scroll">
-      <div className="vs-timeline-ruler" aria-hidden="true">{rulerMarks.map((mark,index)=><span key={`${mark}-${index}`}>{mark}</span>)}</div>
+      <div ref={ruler} className="vs-timeline-ruler" aria-hidden="true" onPointerDown={event=>{if(event.button===0)seekAt(event.clientX);}}>
+        {shots.length>0&&rulerMarks.map((mark,index)=><span key={index}>{mark}</span>)}
+      </div>
       <div ref={track} className={`vs-timeline-track ${dragging?'is-dragging':''}`} data-keyboard-owner="timeline"
         onDragOver={event=>{if(!event.dataTransfer.types.includes(SHOT_MIME)||locked)return;event.preventDefault();event.dataTransfer.dropEffect='move';const index=insertionIndex(event.clientX);if(index!==dropIndex)setDropIndex(index);}}
         onDragLeave={event=>{if(!track.current?.contains(event.relatedTarget as Node))setDropIndex(null);}}
         onDrop={drop}
         onPointerDown={event=>{
-          // Clicking the empty track scrubs; clicks on clips select them instead.
-          if((event.target as HTMLElement).closest('.vs-clip,.vs-clip-add'))return;
-          const box=track.current!.getBoundingClientRect();const x=event.clientX-box.left+track.current!.scrollLeft;
-          for(let i=0;i<shots.length;i++){const clip=clips.current[i];if(!clip)continue;if(x>=clip.offsetLeft&&x<=clip.offsetLeft+clip.offsetWidth){playhead.seek(starts[i]!+Math.round((x-clip.offsetLeft)/clip.offsetWidth*shots[i]!.durationFrames));return;}}
+          if(event.button===0&&!(event.target as Element).closest('.vs-clip,.vs-clip-add'))seekAt(event.clientX);
         }}>
         {shots.map((shot,index)=><button type="button" key={shot.id} ref={element=>{clips.current[index]=element;}}
           className={`vs-clip ${shot.id===selectedId?'is-active':''} ${dragging===shot.id?'is-dragging':''} ${shot.transition==='fade'?'has-fade':''}`}

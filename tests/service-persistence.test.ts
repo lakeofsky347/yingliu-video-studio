@@ -33,6 +33,37 @@ test('apply validates every source before committing metadata; preview failure p
     const history=await value(service,'history');assert.equal(history.canUndo,true);assert.equal(history.entries.length,2);
   }finally{await service.dispose();await rm(base,{recursive:true,force:true});}
 });
+test('automatic preview preparation lets a queued edit save and leaves validation explicit',async()=>{
+  const base=await mkdtemp(join(tmpdir(),'dsh-preview-queue-')),service=serviceAt(base);
+  let enterPreview!:()=>void,releasePreview!:()=>void;
+  const entered=new Promise<void>(resolve=>{enterPreview=resolve;});
+  const prepareGate=new Promise<void>(resolve=>{releasePreview=resolve;});
+  let checks=0;
+  try{
+    const initial=await value(service,'create',{productionMode:'code_animation',title:'预览测试'}) as StudioSnapshot;
+    const project=initial.project!;
+    const render=service.renderer.preview.bind(service.renderer);
+    service.renderer.preview=async(root,current)=>{enterPreview();await prepareGate;return render(root,current);};
+    service.renderer.check=async()=>{checks++;return {ok:true,errors:[],frames:[]};};
+    const preparation=value(service,'preview',{expectedRevision:project.revision,prepareOnly:true}) as Promise<StudioSnapshot>;
+    await entered;
+    const saving=value(service,'save',{expectedRevision:project.revision,project:{...project,title:'预览期间修改'}}) as Promise<StudioSnapshot>;
+    releasePreview();
+    const [prepared,saved]=await Promise.all([preparation,saving]);
+    assert.equal(prepared.task,null);
+    assert.equal(prepared.previewRevision,project.revision);
+    assert.equal(saved.project!.title,'预览期间修改');
+    assert.equal(saved.previewRevision,project.revision+1);
+    assert.equal(checks,0);
+    const stale=await service.rpc('preview',{expectedRevision:project.revision,prepareOnly:true});
+    assert.equal(stale.ok,false);
+    if(!stale.ok)assert.equal(stale.error.code,'REVISION_CONFLICT');
+    await value(service,'preview',{expectedRevision:saved.project!.revision});
+    const checked=await finished(service);
+    assert.equal(checked.task?.status,'complete');
+    assert.equal(checks,1);
+  }finally{releasePreview();await service.dispose();await rm(base,{recursive:true,force:true});}
+});
 test('running task is journaled before work and export retains its source revision while workbench saves',async()=>{
   const base=await mkdtemp(join(tmpdir(),'dsh-journal-')),service=serviceAt(base);let release!:()=>void;const gate=new Promise<void>(resolve=>release=resolve);let oldSource='';
   try{const initial=await value(service,'create',{productionMode:'code_animation',title:'快照导出'}),shot=initial.project.shots[0];const source=await value(service,'source',{shotId:shot.id});

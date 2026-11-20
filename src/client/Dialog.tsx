@@ -5,12 +5,13 @@ const reducedMotion=()=>typeof matchMedia==='function'&&matchMedia('(prefers-red
 export function Dialog({label,onClose,busy=false,leaving:externalLeaving=false,className='',children}:{label:string;onClose:()=>void;busy?:boolean;leaving?:boolean;className?:string;children:ReactNode}) {
   const [leaving,setLeaving]=useState(false);
   const panel=useRef<HTMLElement>(null),previous=useRef(typeof document==='undefined'?null:document.activeElement as HTMLElement|null),closing=useRef({busy,onClose,leaving:false});
+  const closeTimer=useRef<ReturnType<typeof setTimeout>>();
   closing.current={busy,onClose,leaving:leaving||externalLeaving};
   const requestClose=()=>{
     if(closing.current.busy||closing.current.leaving)return;
     if(reducedMotion()){closing.current.onClose();return;}
     setLeaving(true);closing.current.leaving=true;
-    setTimeout(()=>closing.current.onClose(),150);
+    closeTimer.current=setTimeout(()=>closing.current.onClose(),150);
   };
   useEffect(()=>{
     const dialog=panel.current;
@@ -26,6 +27,7 @@ export function Dialog({label,onClose,busy=false,leaving:externalLeaving=false,c
     };
     dialog.addEventListener('keydown',key);
     return()=>{
+      clearTimeout(closeTimer.current);
       dialog.removeEventListener('keydown',key);
       if(previous.current?.isConnected&&(document.activeElement===document.body||dialog.contains(document.activeElement)))previous.current.focus();
     };

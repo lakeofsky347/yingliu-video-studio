@@ -372,11 +372,13 @@
 .vs-timeline-label{width:94px;white-space:nowrap;flex-shrink:0;display:flex;flex-direction:column;justify-content:center;gap:2px}
 .vs-timeline-label strong{font-size:var(--vs-fs-sm);font-weight:600}
 .vs-timeline-label small{font-size:var(--vs-fs-xs);color:var(--vs-text-3);line-height:1.4;font-variant-numeric:tabular-nums}
-.vs-timeline-scroll{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;padding:5px 7px 6px;border-radius:10px;background:var(--vs-field);border:1px solid var(--vs-line);box-shadow:inset 0 1px 3px rgba(0,0,0,.06)}
-.vs-timeline-ruler{display:flex;justify-content:space-between;align-items:center;padding:0 2px;font:500 10px/1 var(--vs-mono);color:var(--vs-text-3);user-select:none;flex-shrink:0}
-.vs-timeline-ruler span{position:relative;padding-left:6px}
+.vs-timeline-scroll{flex:1;min-width:0;display:grid;grid-template-columns:minmax(100%,max-content);grid-template-rows:13px minmax(0,1fr);gap:4px;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;padding:5px 7px 6px;border-radius:10px;background:var(--vs-field);border:1px solid var(--vs-line);box-shadow:inset 0 1px 3px rgba(0,0,0,.06)}
+.vs-timeline-ruler{position:relative;font:500 10px/1 var(--vs-mono);color:var(--vs-text-3);user-select:none;cursor:crosshair}
+.vs-timeline-ruler span{position:absolute;white-space:nowrap;padding-left:6px}
 .vs-timeline-ruler span::before{content:'';position:absolute;left:0;top:1px;width:1px;height:7px;background:var(--vs-line-strong)}
-.vs-timeline-track{position:relative;flex:1;min-height:0;display:flex;align-items:stretch;gap:5px;min-width:100%;width:max-content;padding:1px 2px}
+.vs-timeline-ruler span:last-child{transform:translateX(-100%);padding:0 6px 0 0}
+.vs-timeline-ruler span:last-child::before{left:auto;right:0}
+.vs-timeline-track{position:relative;flex:1;min-height:0;display:flex;align-items:stretch;gap:5px;padding:1px 2px}
 .vs-timeline-track>.vs-clip{flex:var(--vs-clip-grow,1) 1 0}
 .vs-studio .vs-clip{position:relative;min-width:120px;height:100%;padding:5px 10px 5px 6px;gap:8px;justify-content:flex-start;text-align:left;overflow:hidden;
   border:1px solid var(--vs-line);border-radius:9px;background:var(--vs-surface-2);box-shadow:var(--vs-shadow-1);transition:border-color var(--vs-dur-1),background var(--vs-dur-1),box-shadow var(--vs-dur-2),transform var(--vs-dur-2) var(--vs-ease-spring),opacity var(--vs-dur-1)}
@@ -1135,7 +1137,8 @@
 .vs-header{container:vs-header / inline-size}
 .vs-header h1{overflow:hidden}
 .vs-studio .vs-save-chip{flex-shrink:0}
-.vs-stepper{flex:0 1 auto;min-width:0;justify-content:center}
+.vs-stepper{flex:0 0 auto;justify-content:center}
+@container vs-header (max-width:1480px){:lang(en) .vs-header-generate>span{display:none}.vs-studio:lang(en) .vs-header-generate{padding:0 8px}}
 @container vs-header (max-width:1320px){.vs-crumbs{display:none}.vs-header-generate>span{display:none}.vs-studio .vs-header-generate{padding:0 8px}}
 @container vs-header (max-width:1160px){.vs-stepper .vs-step-label{display:none}.vs-stepper button{padding:0 5px!important}}
 @container vs-header (max-width:1080px){.vs-model-chip>span{max-width:110px}}

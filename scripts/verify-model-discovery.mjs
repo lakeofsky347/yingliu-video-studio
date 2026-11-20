@@ -65,8 +65,16 @@ try{
   const welcome=page.getByRole('button',{name:'继续',exact:true});
   if(await welcome.waitFor({timeout:3000}).then(()=>true,()=>false))await welcome.click();
   await page.getByRole('navigation',{name:'全局面板'}).getByText('映流 · 视频工作台',{exact:true}).click({timeout:60_000});
-  await page.getByRole('button',{name:'媒体模型',exact:true}).click();
-  const center=page.locator('.vs-model-center');
+  const studio=page.locator('[data-video-studio-surface="main"] .vs-studio');
+  const openModels=studio.getByRole('button',{name:'媒体模型',exact:true});
+  const projectHeader=studio.locator('.vs-header');
+  await openModels.or(projectHeader).waitFor();
+  if(await projectHeader.isVisible()){
+    await projectHeader.getByRole('button',{name:'返回影片首页',exact:true}).click();
+  }
+  await openModels.click();
+  const dialog=studio.getByRole('dialog',{name:'媒体模型中心',exact:true});
+  const center=dialog.locator('.vs-model-center');
   await center.waitFor();
 
   const keyField=center.getByLabel('模型连接 API Key',{exact:true});

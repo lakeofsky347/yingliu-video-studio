@@ -2,7 +2,7 @@ import { t, useLocale, systemMessage } from './i18n.ts';
 import { useEffect, useRef, useState } from 'react';
 import type { VideoStyle } from '../shared/types.ts';
 import { Dialog } from './Dialog.tsx';
-import { confirmAction } from './Feedback.tsx';
+import { useConfirmAction } from './Feedback.tsx';
 import { IconButton } from './icons.tsx';
 import { parseStyleFiles } from './style-import.ts';
 
@@ -15,6 +15,7 @@ const formats:Record<VideoStyle['sourceFormat'],string>={markdown:'Markdown',jso
 
 export function StyleLibrary({styles,onClose,onSave,onDelete,onUse}:StyleLibraryProps){
   useLocale();
+  const confirmAction=useConfirmAction();
   const fileInput=useRef<HTMLInputElement>(null),folderInput=useRef<HTMLInputElement>(null);
   const [editing,setEditing]=useState<Partial<VideoStyle>|null>(null),[name,setName]=useState(''),[description,setDescription]=useState(''),[prompt,setPrompt]=useState('');
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');

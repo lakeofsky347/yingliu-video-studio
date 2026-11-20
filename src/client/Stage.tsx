@@ -6,30 +6,25 @@ import { t, useLocale, systemMessage } from './i18n.ts';
 import { Button, Icon, IconButton } from './icons.tsx';
 import { targetLabel } from './output-settings.tsx';
 import { Preview } from './Preview.tsx';
+import type { Playhead } from './playhead-store.ts';
 
 export type StageMode='monitor'|'canvas'|'split';
 export type StageLayout='wide'|'medium'|'narrow';
 
-export function Stage({project,snapshot,state,controller,layout,stageMode,onStageMode,assetsOpen,onToggleAssets,onOutputSettings,duration,selectedShot,locked,busy,graphCheck,canvasRef,graphRef,zoom,onAddShot,onRefreshPreview,onConnectOrder,ordered,wordOpen,onWordOpen,editScope,onEditScope,instruction,onInstruction,onModify}:{
+export function Stage({project,snapshot,state,controller,playhead,layout,stageMode,onStageMode,assetsOpen,onToggleAssets,onOutputSettings,duration,selectedShot,locked,busy,graphCheck,canvasRef,minimapRef,graphRef,zoom,onAddShot,onRefreshPreview,onConnectOrder,ordered,wordOpen,onWordOpen,editScope,onEditScope,instruction,onInstruction,onModify}:{
   project:VideoProject;snapshot:StudioSnapshot;state:StudioState;controller:StudioController;layout:StageLayout;
+  playhead:Playhead;
   stageMode:StageMode;onStageMode:(mode:StageMode)=>void;assetsOpen:boolean;onToggleAssets:()=>void;onOutputSettings:()=>void;
   duration:number;selectedShot?:Shot;locked:boolean;busy:boolean;graphCheck:{ok:boolean;errors:string[]}|null;
-  canvasRef:RefObject<HTMLCanvasElement>;graphRef:RefObject<LiteGraphEditor|null>;zoom:number;
+  canvasRef:RefObject<HTMLCanvasElement>;minimapRef:RefObject<HTMLCanvasElement>;graphRef:RefObject<LiteGraphEditor|null>;zoom:number;
   onAddShot:()=>void;onRefreshPreview:()=>void;onConnectOrder:(ids:string[])=>void;ordered:Shot[];
   wordOpen:boolean;onWordOpen:(open:boolean)=>void;editScope:'shot'|'film';onEditScope:(scope:'shot'|'film')=>void;
   instruction:string;onInstruction:(value:string)=>void;onModify:()=>void;
 }){
   useLocale();
   const wordRef=useRef<HTMLTextAreaElement>(null);
-  const minimapRef=useRef<HTMLCanvasElement>(null);
   useEffect(()=>{if(wordOpen)requestAnimationFrame(()=>wordRef.current?.focus());},[wordOpen]);
   const canvasVisible=stageMode!=='monitor';
-  useEffect(()=>{
-    const editor=graphRef.current;
-    if(!editor)return;
-    editor.attachMinimap(canvasVisible?minimapRef.current:null);
-    return()=>{editor.attachMinimap(null);};
-  },[canvasVisible,project.id,graphRef]);
   const durationOff=Math.abs(duration-project.targetDuration)>Math.max(1,project.targetDuration*.1);
   return <section className="vs-stage" data-mode={stageMode} aria-label={t("舞台")}>
     <div className="vs-stage-toolbar">
@@ -56,7 +51,7 @@ export function Stage({project,snapshot,state,controller,layout,stageMode,onStag
     </div>
     <div className="vs-stage-body">
       <div className="vs-stage-monitor" aria-hidden={stageMode==='canvas'||undefined}>
-        <Preview key={project.id} snapshot={snapshot} project={project} selectedShot={selectedShot} controller={controller} focusFrame={state.focusFrame} focusSerial={state.focusSerial} busy={busy} syncing={state.saving||state.dirty||!!state.previewing}/>
+        <Preview key={project.id} snapshot={snapshot} project={project} selectedShot={selectedShot} controller={controller} transport={playhead} focusFrame={state.focusFrame} focusSerial={state.focusSerial} busy={busy} syncing={state.saving||state.dirty||!!state.previewing}/>
       </div>
       <div className="vs-stage-canvas" aria-hidden={stageMode==='monitor'||undefined}>
         <div className="vs-graph-shell"><canvas ref={canvasRef}/>

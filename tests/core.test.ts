@@ -71,6 +71,20 @@ test('duplicate and delete update order without mutating original scene',()=>{
   assert.equal(addShot(p).shots.length,4);
 });
 
+test('duplicating a disconnected shot keeps the original graph and copies its source',()=>{
+  const project=createProject('断开的分镜');
+  const [a,b,c]=project.shotOrder;
+  const draft=reorderFromGraph(project,[{from:a,to:b},{from:b,to:'film-output'}]);
+  assert.ok(!draft.shotOrder.includes(c));
+  const duplicate=duplicateShot(draft,c),copy=duplicate.shots.at(-1)!;
+  assert.equal(duplicate.shots.length,draft.shots.length+1);
+  assert.notEqual(copy.id,c);
+  assert.deepEqual(duplicate.shotOrder,draft.shotOrder);
+  assert.deepEqual(duplicate.extensions.graphEdges,draft.extensions.graphEdges);
+  assert.equal((duplicate.extensions.sourceCopies as Record<string,string>)[copy.id],draft.shots[2]!.sourcePath);
+  assert.equal(validateProject(duplicate).ok,true);
+});
+
 test('incomplete, branching and cyclic graph drafts save but cannot compile',()=>{
   const p=createProject('图');const [a,b,c]=p.shotOrder;
   const valid=[{from:a,to:b},{from:b,to:c},{from:c,to:'film-output'}];

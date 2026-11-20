@@ -4,11 +4,13 @@
  * re-rendering the whole studio.
  */
 type Listener=()=>void;
-let frame=0,total=0,playing=false;
-const frameListeners=new Set<Listener>();
-const seekHandlers=new Set<(frame:number)=>void>();
-const toggleHandlers=new Set<()=>boolean>();
-export const playhead={
+export type Playhead = ReturnType<typeof createPlayhead>;
+export function createPlayhead(){
+  let frame=0,total=0,playing=false;
+  const frameListeners=new Set<Listener>();
+  const seekHandlers=new Set<(frame:number)=>void>();
+  const toggleHandlers=new Set<()=>boolean>();
+  return {
   frame:():number=>frame,
   total:():number=>total,
   playing:():boolean=>playing,
@@ -20,7 +22,8 @@ export const playhead={
   /** Toggle play on the mounted monitor. Returns true when a monitor handled it. */
   toggle():boolean{let handled=false;for(const handler of [...toggleHandlers])handled=handler()||handled;return handled;},
   onToggle(handler:()=>boolean):()=>void{toggleHandlers.add(handler);return()=>toggleHandlers.delete(handler);},
-};
+  };
+}
 /** mm:ss:ff timecode, the frame field padded to the frame-rate width. */
 export function timecode(value:number,fps:number):string{
   const rate=Math.max(1,Math.round(fps)),safe=Math.max(0,Math.floor(value));

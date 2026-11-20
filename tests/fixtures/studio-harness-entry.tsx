@@ -1,7 +1,7 @@
 import { createRoot } from 'react-dom/client';
 import { Studio } from '../../src/client/Studio.tsx';
 import { StudioController } from '../../src/client/controller.ts';
-import { createProject } from '../../src/core/index.ts';
+import { addShot, createProject } from '../../src/core/index.ts';
 import { setLocale } from '../../src/client/i18n.ts';
 import type { StudioApi, StudioSnapshot, VideoProject } from '../../src/shared/types.ts';
 
@@ -13,7 +13,7 @@ const lagPreview=params.get('lagPreview')==='1';
 setLocale(params.get('locale')||'zh');
 
 function demoProject():VideoProject{
-  const project=createProject('城市漫步 · 影片示例','12 秒城市漫步短片。清晨街道、街角咖啡、河畔落日，三个镜头各 4 秒。中文文案，平缓节奏，青绿与暖金配色。','code_animation');
+  let project=createProject('城市漫步 · 影片示例','12 秒城市漫步短片。清晨街道、街角咖啡、河畔落日，三个镜头各 4 秒。中文文案，平缓节奏，青绿与暖金配色。','code_animation');
   project.id='demo-city-walk';
   project.target={width:1280,height:720,fps:{num:24,den:1},audioMode:'mixed',quality:'standard'};
   project.targetDuration=12;
@@ -23,6 +23,11 @@ function demoProject():VideoProject{
     ['把落日带回家','走到河畔，让今天慢慢收尾。','河面反光与远处桥梁','色调由暖转冷'],
   ];
   project.shots.forEach((shot,i)=>{const [title,subtitle,composition,action]=copy[i]!;shot.title=title;shot.params={...shot.params,text:title,subtitle};shot.intent=subtitle;shot.composition=composition;shot.action=action;shot.durationFrames=96;});
+  if(params.get('shots')==='5'){
+    project=addShot(addShot(project));
+    project.shots.forEach(shot=>{shot.durationFrames=96;});
+    project.targetDuration=20;
+  }
   project.assets=[
     {id:'brief',kind:'text',name:'城市漫步 · 创作简报',description:'影片简报',text:project.topic},
     {id:'tone',kind:'audio',name:'示例提示音（本地合成）',description:'文档演示用提示音',duration:2,path:'assets/tone.wav'},
@@ -72,7 +77,11 @@ const api:StudioApi={async call<T>(endpoint:string,payload:any={}):Promise<T>{
     case 'save':project={...payload.project,revision:project.revision+1};if(!lagPreview&&!(window as any).harnessLagPreview)previewRevision=project.revision;return snapshot() as T;
     case 'preview':previewRevision=project.revision;return snapshot() as T;
     case 'undo':case 'redo':case 'export':case 'generate':return snapshot() as T;
-    case 'thumbnails':return {frames:(payload.frames as number[]).map(frame=>({frame,url:`${origin}/thumb/${frame}.svg`}))} as T;
+    case 'thumbnails':{
+      const frames=payload.frames as number[];
+      if(payload.expectedRevision!==project.revision||frames.length<1||frames.length>3)throw new Error('Thumbnail request does not match the host contract');
+      return {frames:frames.map(frame=>({frame,url:`${origin}/thumb/${frame}.svg`}))} as T;
+    }
     default:return {} as T;
   }
 }};
@@ -85,4 +94,10 @@ document.documentElement.dataset.scheme=scheme;
 const root=document.getElementById('root')!;
 root.className='vs-embedded-surface';
 root.dataset.videoStudioSurface=surface;
-createRoot(root).render(<Studio controller={controller} sessions={[]}/>);
+const stageMode=params.get('stageMode');
+if(stageMode==='canvas'||stageMode==='split')localStorage.setItem('vs-stage-mode',JSON.stringify(stageMode));
+createRoot(root).render(surface==='both'?<>
+  {['main','right'].map(target=><div key={target} className="vs-embedded-surface" data-video-studio-surface={target} style={{height:'50%',flex:'0 0 50%'}}>
+    <Studio controller={controller} sessions={[]}/>
+  </div>)}
+</>:<Studio controller={controller} sessions={[]}/>);

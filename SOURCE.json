@@ -1,16 +1,16 @@
 {
   "repository": "https://github.com/lakeofsky347/yingliu-video-studio",
   "package": "yingliu-video-studio",
-  "version": "0.8.3",
+  "version": "1.0.0",
   "releaseChanges": [
-    "Follow the DSH language setting for Chinese and English studio controls, messages and dates",
-    "Localize production requirements in the studio, clipboard and Markdown exports",
-    "Preserve film content, source drafts, canvas state and unknown provider messages when switching languages",
-    "Provide bilingual README guides and an actual English studio screenshot"
+    "Redesign the workbench around a film monitor, shot timeline, properties inspector and expandable work panels",
+    "Add storyboard canvas navigation, shot thumbnails, and a minimap",
+    "Add asset search and filtering, a plain-language edit popover, and clearer action feedback",
+    "Retry transient Windows Chromium screenshot failures during local rendering"
   ],
   "compatibility": "Uses the DSH locale service for Chinese and English UI. Project schema remains v3 and reads v1/v2; existing film content is preserved. Legacy production mode needs explicit confirmation. Public mutations require expectedRevision. The left navigation entry remains available when optional conversation or right-sidebar APIs are absent.",
-  "baseReleaseCommit": "58cc198df2d54a019027794385e83b440c118acb",
-  "previousRelease": "0.8.2",
+  "baseReleaseCommit": "c481896a23700037a103f98f77d85a9a90f2b072",
+  "previousRelease": "0.8.3",
   "selectiveMigration": {
     "date": "2026-11-11",
     "donorRepository": "https://github.com/lakeofsky347/yingliu-agent",
@@ -36,7 +36,7 @@
     },
     "releaseVersion": "0.8.0"
   },
-  "releaseDocumentation": "docs/RELEASE-0.8.3.md",
+  "releaseDocumentation": "docs/RELEASE-1.0.0.md",
   "internationalization": {
     "codeCommit": "3886393974d176c4a5d24690bc4211611e6faee7",
     "locales": [
