@@ -109,9 +109,32 @@ export function Studio({controller,currentSessionId,onOpenSession,sessions=[],se
     return()=>{editor.dispose();graphRef.current=null;};
   },[project?.id,controller,state.workspaceView]);
   useEffect(()=>{if(project)graphRef.current?.setProject(project,assetUrl);},[project,state.localImages,assetBaseUrl,state.workspaceView]);
+  useEffect(()=>{graphRef.current?.setSelected(state.selected);},[state.selected,project?.id,state.workspaceView]);
   useEffect(()=>{graphRef.current?.setInteractive(!locked);},[locked]);
   useEffect(()=>{graphRef.current?.applyTheme();},[state.scheme]);
   useEffect(()=>{if(canvasVisible)requestAnimationFrame(()=>graphRef.current?.resize());},[canvasVisible,stageMode,layout]);
+  // Populate real 16:9 shot preview frames on storyboard cards when the canvas is visible.
+  useEffect(()=>{
+    if(!canvasVisible||!project||!snapshot?.previewUrl||busy)return;
+    let active=true,cursor=0;
+    const entries:{shotId:string;frame:number}[]=[];
+    for(const id of project.shotOrder){
+      const shot=project.shots.find(s=>s.id===id);if(!shot)continue;
+      entries.push({shotId:shot.id,frame:cursor+Math.floor(Math.max(0,shot.durationFrames-1)/2)});
+      cursor+=shot.durationFrames;
+    }
+    if(!entries.length)return;
+    const timer=setTimeout(()=>{
+      void controller.api.call<{frames?:{frame:number;url:string}[]}>('thumbnails',{projectId:project.id,expectedRevision:snapshot.previewRevision,frames:entries.map(e=>e.frame)}).then(result=>{
+        if(!active||!result?.frames?.length)return;
+        const byFrame=new Map(result.frames.map(item=>[item.frame,item.url]));
+        const urls:Record<string,string>={};
+        for(const entry of entries){const url=byFrame.get(entry.frame);if(url)urls[entry.shotId]=url;}
+        graphRef.current?.setShotThumbs(urls);
+      }).catch(()=>{/* thumbnails are optional */});
+    },180);
+    return()=>{active=false;clearTimeout(timer);};
+  },[canvasVisible,project?.id,project?.revision,snapshot?.previewUrl,snapshot?.previewRevision,busy,controller]);
   useEffect(()=>{if(state.notice)toast({tone:'success',message:systemMessage(state.notice)});},[state.notice]);
   useEffect(()=>{if(state.error&&!state.conflict&&!state.dirty&&!directoryOpen)toast({tone:'error',message:systemMessage(state.error)});},[state.error]);
   const lastTask=useRef<{id:string;status:string}|null>(null);

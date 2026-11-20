@@ -57,7 +57,7 @@
   --vs-shadow-2:0 10px 26px -6px rgba(17,24,39,.12),0 2px 6px rgba(17,24,39,.05);
   --vs-shadow-3:0 22px 52px -12px rgba(17,24,39,.22),0 4px 14px rgba(17,24,39,.08),0 0 0 1px rgba(17,24,39,.06);
   --vs-glass:rgba(255,255,255,.88);--vs-glass-border:rgba(20,24,30,.085);--vs-hud-glass:rgba(18,21,26,.64);
-  --vs-g-bg:#ecebe6;--vs-g-dot:#00000018;--vs-g-node:#ffffff;--vs-g-node-film:#fffdf7;--vs-g-well:#f2f1ed;
+  --vs-g-bg:#f3f2ee;--vs-g-dot:#00000016;--vs-g-node:#ffffff;--vs-g-node-film:#fffdf7;--vs-g-well:#f2f1ed;
   --vs-g-text:#2d333a;--vs-g-strong:#171b20;--vs-g-text-2:#666e77;--vs-g-text-3:#959ca4;--vs-g-accent:#0f8264;--vs-g-media:#6853c4;
   --vs-g-rule:#e7e6e1;--vs-g-film:#9a6b00;--vs-g-title-text:#171b20;--vs-g-title-shot:#d9f0e7;--vs-g-title-film:#f5e7c4;
   --vs-g-title-image:#dde8f7;--vs-g-title-asset:#e9e3f7;--vs-g-port:#575f69;--vs-g-selected:#0f8264;--vs-g-shadow:rgba(17,24,39,.11);
@@ -350,15 +350,18 @@
 .vs-graph-shell canvas:focus-visible{box-shadow:inset 0 0 0 2px var(--vs-accent)}
 .vs-graph-legend{position:absolute;left:12px;bottom:12px;display:flex;gap:12px;padding:6px 12px;border-radius:999px;background:var(--vs-glass);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid var(--vs-glass-border);box-shadow:var(--vs-shadow-dock);color:var(--vs-text-2);font-size:var(--vs-fs-xs);pointer-events:none}
 .vs-graph-legend span{display:flex;align-items:center;gap:6px}
-.vs-graph-legend i{width:8px;height:3px;border-radius:2px}
+.vs-graph-legend i{width:10px;height:3px;border-radius:2px}
 .vs-graph-legend .asset{background:var(--vs-g-link-asset)}
-.vs-graph-legend .reference{background:var(--vs-g-link-reference)}
+.vs-graph-legend .reference{background:transparent;height:0;border-top:2px dashed var(--vs-g-link-reference);border-radius:0}
 .vs-graph-legend .shot{background:var(--vs-g-link-shot)}
-.vs-graph-navigation{position:absolute;right:12px;bottom:12px;display:flex;align-items:center;gap:2px;padding:3px;border-radius:999px;background:var(--vs-glass);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid var(--vs-glass-border);box-shadow:var(--vs-shadow-2)}
+.vs-graph-hud-right{position:absolute;right:12px;bottom:12px;display:flex;align-items:flex-end;gap:8px}
+.vs-graph-navigation{display:flex;align-items:center;gap:2px;padding:3px;border-radius:999px;background:var(--vs-glass);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid var(--vs-glass-border);box-shadow:var(--vs-shadow-2)}
 .vs-studio .vs-graph-navigation button{width:28px;min-width:28px;min-height:28px;padding:0;border:0;border-radius:50%;background:transparent;box-shadow:none;color:var(--vs-text-2)}
 .vs-studio .vs-graph-navigation button:hover:not(:disabled){background:var(--vs-surface-3);color:var(--vs-text)}
 .vs-studio .vs-graph-navigation .vs-zoom-value{width:auto;padding:0 6px;border-radius:999px;font:500 var(--vs-fs-xs)/1 var(--vs-mono)}
 .vs-graph-navigation svg{width:15px;height:15px}
+.vs-graph-minimap{width:136px;height:74px;border-radius:11px;overflow:hidden;background:var(--vs-glass);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid var(--vs-glass-border);box-shadow:var(--vs-shadow-2);cursor:crosshair}
+.vs-graph-minimap canvas{display:block;width:100%;height:100%}
 .vs-chain-note{position:absolute;top:12px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;max-width:calc(100% - 24px);padding:7px 8px 7px 12px;border-radius:var(--vs-radius-md);background:var(--vs-surface);border:1px solid color-mix(in srgb,var(--vs-warning) 45%,var(--vs-line));box-shadow:var(--vs-shadow-2);font-size:var(--vs-fs-sm);animation:vs-fade-up var(--vs-dur-2) var(--vs-ease-out)}
 .vs-chain-note>svg{color:var(--vs-warning)}
 .vs-chain-note>span{display:flex;flex-direction:column;min-width:0;color:var(--vs-text-2)}
@@ -1127,7 +1130,7 @@
 @container vs-stage-toolbar (max-width:760px){.vs-stage-modes span{display:none}}
 @container vs-stage-toolbar (max-width:600px){.vs-word-trigger>span,.vs-duration small{display:none}}
 .vs-graph-shell{container:vs-graph / inline-size}
-@container vs-graph (max-width:620px){.vs-graph-legend{display:none}}
+@container vs-graph (max-width:620px){.vs-graph-legend,.vs-graph-minimap{display:none}}
 /* Header adapts to long titles, English labels and a running task without overlapping. */
 .vs-header{container:vs-header / inline-size}
 .vs-header h1{overflow:hidden}

@@ -21,8 +21,15 @@ export function Stage({project,snapshot,state,controller,layout,stageMode,onStag
 }){
   useLocale();
   const wordRef=useRef<HTMLTextAreaElement>(null);
+  const minimapRef=useRef<HTMLCanvasElement>(null);
   useEffect(()=>{if(wordOpen)requestAnimationFrame(()=>wordRef.current?.focus());},[wordOpen]);
   const canvasVisible=stageMode!=='monitor';
+  useEffect(()=>{
+    const editor=graphRef.current;
+    if(!editor)return;
+    editor.attachMinimap(canvasVisible?minimapRef.current:null);
+    return()=>{editor.attachMinimap(null);};
+  },[canvasVisible,project.id,graphRef]);
   const durationOff=Math.abs(duration-project.targetDuration)>Math.max(1,project.targetDuration*.1);
   return <section className="vs-stage" data-mode={stageMode} aria-label={t("舞台")}>
     <div className="vs-stage-toolbar">
@@ -54,13 +61,19 @@ export function Stage({project,snapshot,state,controller,layout,stageMode,onStag
       <div className="vs-stage-canvas" aria-hidden={stageMode==='monitor'||undefined}>
         <div className="vs-graph-shell"><canvas ref={canvasRef}/>
           <div className="vs-graph-legend"><span><i className="asset"/>{t("实际使用")}</span><span><i className="reference"/>{t("仅供参考")}</span><span><i className="shot"/>{t("播放顺序")}</span></div>
-          <div className="vs-graph-navigation" role="toolbar" aria-label={t("画布缩放")}>
-            <button type="button" aria-label={t("缩小画布")} onClick={()=>graphRef.current?.zoom(zoom/1.2)}><Icon name="minus"/></button>
-            <button type="button" className="vs-zoom-value" aria-label={t("画布 100%")} onClick={()=>graphRef.current?.zoom(1)}>{Math.round(zoom*100)}%</button>
-            <button type="button" aria-label={t("放大画布")} onClick={()=>graphRef.current?.zoom(zoom*1.2)}><Icon name="plus"/></button>
-            <span className="vs-separator"/>
-            <button type="button" aria-label={t("聚焦选中")} title={t("聚焦选中")} disabled={!state.selected} onClick={()=>graphRef.current?.focus(state.selected||undefined)}><Icon name="focus"/></button>
-            <button type="button" aria-label={t("全图概览")} title={t("全图概览")} onClick={()=>graphRef.current?.fit()}><Icon name="fit"/></button>
+          <div className="vs-graph-hud-right">
+            <div className="vs-graph-navigation" role="toolbar" aria-label={t("画布缩放")}>
+              <button type="button" aria-label={t("缩小画布")} onClick={()=>graphRef.current?.zoom(zoom/1.2)}><Icon name="minus"/></button>
+              <button type="button" className="vs-zoom-value" aria-label={t("画布 100%")} onClick={()=>graphRef.current?.zoom(1)}>{Math.round(zoom*100)}%</button>
+              <button type="button" aria-label={t("放大画布")} onClick={()=>graphRef.current?.zoom(zoom*1.2)}><Icon name="plus"/></button>
+              <span className="vs-separator"/>
+              <button type="button" aria-label={t("聚焦选中")} title={t("聚焦选中")} disabled={!state.selected} onClick={()=>graphRef.current?.focus(state.selected||undefined)}><Icon name="focus"/></button>
+              <button type="button" aria-label={t("全图概览")} title={t("全图概览")} onClick={()=>graphRef.current?.fit()}><Icon name="fit"/></button>
+              <button type="button" aria-label={t("整理画布")} title={t("整理画布")} disabled={locked} onClick={()=>graphRef.current?.arrange()}><Icon name="grid"/></button>
+            </div>
+            <div className="vs-graph-minimap" aria-hidden="true" title={t("拖动或点击定位画布")}>
+              <canvas ref={minimapRef}/>
+            </div>
           </div>
           {graphCheck&&!graphCheck.ok&&<div className="vs-chain-note" role="status"><Icon name="warning"/><span><strong>{t("主链待连接")}</strong>{systemMessage(graphCheck.errors[0])}</span><Button size="sm" disabled={locked} onClick={()=>onConnectOrder(ordered.map(s=>s.id))}>{t("按时间线顺序连接")}</Button></div>}
         </div>

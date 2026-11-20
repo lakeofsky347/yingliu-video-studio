@@ -613,5 +613,7 @@ export const clientMainEnglish: Record<string, string> = {
   "确认采用旧候选？": "Adopt this legacy candidate?",
   "本工程有源码草稿。请在源码面板保存或丢弃草稿后再刷新预览。": "This project has unsaved scene source drafts. Save or discard them in Scene source before refreshing the preview.",
   "删除风格「{value0}」？": "Delete style “{value0}”?",
-  "确认采用当前候选？": "Adopt the current candidate?"
+  "确认采用当前候选？": "Adopt the current candidate?",
+  "拖动或点击定位画布": "Drag or click to pan canvas",
+  "{count} 项素材关联": "{count} linked assets"
 };
