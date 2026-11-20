@@ -84,6 +84,9 @@ export function apply(ctx:ClientContext):void {
     useEffect(()=>{if(sessionId)void controller.refreshProjects();},[sessionId]);
     return <Studio controller={controller} currentSessionId={current} sessions={sessions} sessionsLoading={sessionsLoading} sessionsError={sessionsError} onRefreshSessions={refresh} onOpenSession={id=>ctx.uiWorkspace.openSession(sessionTarget(id,ctx.sessions.list.getSnapshot(),value=>ctx.sessions.subagentAddress(value)))}/>;
   }
+  function MainStudio(){
+    return <div className="vs-embedded-surface" data-video-studio-surface="main"><SessionStudio/></div>;
+  }
   function ConversationStudio({sessionId}:{sessionId:string}){
     return <div className="vs-embedded-surface" data-video-studio-surface="conversation"><SessionStudio sessionId={sessionId}/></div>;
   }
@@ -115,7 +118,7 @@ export function apply(ctx:ClientContext):void {
       <details className="vs-toolcard-details"><summary>{t('details')}</summary><pre>{(block.content??[]).map(content=>content.text??'').join('\n')||JSON.stringify(args,null,2)}</pre></details>
     </section>;
   }
-  ctx.slots.inject('main',()=>ctx.slots.register({name:'main',key:panelId,locale:'video-studio'},()=> <SessionStudio/>));
+  ctx.slots.inject('main',()=>ctx.slots.register({name:'main',key:panelId,locale:'video-studio'},MainStudio));
   ctx.slots.inject('sidebar.panellist',()=>ctx.slots.register({name:'sidebar.panellist',id:panelId,order:35,label:()=>t('panel'),locale:'video-studio'},VideoStudioIcon));
   ctx.slots.inject('conversation.view',()=>ctx.slots.register({name:'conversation.view',id:panelId,order:35,label:()=>t('view'),locale:'video-studio'},ConversationStudio));
   // Keep the global panel available when the optional DSH right-sidebar plugin is absent.

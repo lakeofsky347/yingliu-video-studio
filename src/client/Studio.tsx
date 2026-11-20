@@ -1,200 +1,331 @@
 import { t, useLocale, systemMessage, getLocale } from './i18n.ts';
-import { cloneElement, isValidElement, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from 'react';
-import { addShot, bindAsset, compileSpec, deleteAsset, deleteShot, duplicateShot, reorderShots, specMarkdown, unbindAsset, updateShot, validateGraph } from '../core/index.ts';
-import type { Asset, ProjectLocation, Shot, StudioSnapshot, VideoProject, VideoStyle } from '../shared/types.ts';
-import { StudioController } from './controller.ts';
-import { LiteGraphEditor } from './graph-adapter.ts';
-import { ASPECTS, dimensionsForAspect, OutputSettings, targetLabel } from './output-settings.tsx';
-import { Preview } from './Preview.tsx';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from 'react';
+import { addShot, compileSpec, deleteAsset, deleteShot, duplicateShot, reorderShots, specMarkdown, validateGraph } from '../core/index.ts';
+import type { Asset, ProjectLocation, Shot, VideoProject, VideoStyle } from '../shared/types.ts';
+import { StudioController, type EditUndo } from './controller.ts';
+import { LiteGraphEditor, type GraphRemoval } from './graph-adapter.ts';
+import { OutputSettings } from './output-settings.tsx';
 import { AudioPanel } from './AudioPanel.tsx';
 import { ProjectHome } from './ProjectHome.tsx';
 import { StyleLibrary } from './StyleLibrary.tsx';
 import { SessionPicker } from './SessionPicker.tsx';
 import { Dialog } from './Dialog.tsx';
-import { isDelegatedSession, projectSessions, type SessionDirectoryProps } from './session-directory.ts';
+import { projectSessions, type SessionDirectoryProps } from './session-directory.ts';
 import { ExportPanel } from './ExportPanel.tsx';
-import { MediaPanel, VideoClipEditor } from './MediaPanel.tsx';
+import { MediaPanel } from './MediaPanel.tsx';
 import { WorkflowPanel } from './WorkflowPanel.tsx';
 import { ModelCenter } from './ModelCenter.tsx';
-import {ProductionPolicySettings} from './ProductionPolicySettings.tsx';
+import { ProductionPolicySettings } from './ProductionPolicySettings.tsx';
 import { TaskPanel, HistoryPanel } from './TaskPanel.tsx';
 import { SourceEditor } from './SourceEditor.tsx';
 import { VideoStudioIcon } from './VideoStudioIcon.tsx';
+import { Button, Icon, IconButton } from './icons.tsx';
+import { ConfirmationScope, ConfirmHost, Toasts, useCancelConfirmation, useConfirmAction } from './Feedback.tsx';
+import { createToastStore } from './toast-store.ts';
+import { AssetsPanel } from './AssetsPanel.tsx';
+import { PropertiesPanel } from './PropertiesPanel.tsx';
+import { Stage, type StageLayout, type StageMode } from './Stage.tsx';
+import { Timeline } from './Timeline.tsx';
+import { createPlayhead } from './playhead-store.ts';
+import { BottomDrawer, type DrawerTab } from './BottomDrawer.tsx';
+import { EnvironmentPanel, Field } from './EnvironmentPanel.tsx';
+import { CreateFilmDialog } from './CreateFilmDialog.tsx';
+import { StudioHeader, taskLabel, type MenuItem, type StageId, type StepInfo } from './StudioHeader.tsx';
 
-type DockTab='workflow'|'media'|'preview'|'audio'|'spec'|'source'|'environment'|'exports'|'tasks'|'history';
+type PanelTab='media'|'audio'|'source'|'workflow'|'spec'|'history'|'tasks'|'exports'|'environment';
+type Pane='properties'|'assets'|'panels';
 export interface StudioProps extends SessionDirectoryProps { controller:StudioController }
-function Icon({name}:{name:string}){const paths:Record<string,ReactNode>={
-  plus:<path d="M12 5v14M5 12h14"/>,upload:<><path d="M12 16V4m-5 5 5-5 5 5M4 15v5h16v-5"/></>,
-  spark:<><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Z"/><path d="m20 2 .5 1.5L22 4l-1.5.5L20 6l-.5-1.5L18 4l1.5-.5L20 2Z"/></>,
-  play:<path d="m8 5 11 7-11 7V5Z"/>,pause:<><path d="M8 5v14M16 5v14"/></>,stop:<rect x="6" y="6" width="12" height="12" rx="1"/>,
-  grid:<><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>,
-  copy:<><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/></>,delete:<><path d="M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7"/></>,
-  undo:<><path d="M8 4 3 9l5 5M3 9h10a7 7 0 0 1 0 14"/></>,redo:<><path d="m16 4 5 5-5 5M21 9H11a7 7 0 0 0 0 14"/></>,
-  expand:<><path d="M9 3H3v6M15 3h6v6M3 15v6h6M21 15v6h-6"/></>,folder:<path d="M3 6h7l2 3h9v11H3V6Z"/>,
-  check:<path d="m5 12 4 4L19 6"/>,refresh:<><path d="M20 6v5h-5M4 18v-5h5"/><path d="M5 9a7 7 0 0 1 11-5l4 4M4 16l4 4a7 7 0 0 0 11-5"/></>,
-  image:<><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 6-6 4 4 4-5 4 7"/></>,text:<><path d="M4 5h16M12 5v15M8 20h8"/></>,
-  music:<><path d="M9 18V5l11-2v13M9 8l11-2"/><ellipse cx="6" cy="18" rx="3" ry="2"/><ellipse cx="17" cy="16" rx="3" ry="2"/></>,
-  arrow:<path d="M4 12h16m-6-6 6 6-6 6"/>,close:<path d="m5 5 14 14M19 5 5 19"/>,settings:<><path d="M5 3v18M12 3v18M19 3v18"/><path d="M2 8h6M9 15h6M16 9h6"/></>
-};return <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{paths[name]||paths.grid}</svg>;}
-function Button({children,icon,...props}:React.ButtonHTMLAttributes<HTMLButtonElement>&{icon?:string}){return <button {...props}>{icon&&<Icon name={icon}/>}<span>{children}</span></button>;}
-function Field({label,children,hint}:{label:string;children:ReactNode;hint?:string}){
-  const control=isValidElement(children)&&typeof children.type==='string'&&['input','textarea','select'].includes(children.type)
-    ?cloneElement(children as ReactElement<{'aria-label'?:string}>,{'aria-label':label}):children;
-  return <label className="vs-field"><span>{label}</span>{control}{hint&&<small>{hint}</small>}</label>;
+
+const store={
+  get<T>(key:string,fallback:T):T{try{const value=globalThis.localStorage?.getItem(key);return value===null||value===undefined?fallback:JSON.parse(value) as T;}catch{return fallback;}},
+  set(key:string,value:unknown):void{try{globalThis.localStorage?.setItem(key,JSON.stringify(value));}catch{/* optional */}},
+};
+/** Layout follows the studio's own width, so the DSH right sidebar gets the compact layout even in a wide window. */
+function useLayout(ref:RefObject<HTMLElement>):StageLayout{
+  const [layout,setLayout]=useState<StageLayout>('wide');
+  useLayoutEffect(()=>{
+    const element=ref.current;if(!element||typeof ResizeObserver==='undefined')return;
+    const measure=()=>{const width=element.getBoundingClientRect().width;setLayout(width<780?'narrow':width<1180?'medium':'wide');};
+    measure();const observer=new ResizeObserver(measure);observer.observe(element);return()=>observer.disconnect();
+  },[ref]);
+  return layout;
 }
 
-export function Studio({controller,currentSessionId,onOpenSession,sessions=[],sessionsLoading=false,sessionsError='',onRefreshSessions}:StudioProps){
+export function Studio(props:StudioProps){return <ConfirmationScope><StudioContent {...props}/></ConfirmationScope>;}
+
+function StudioContent({controller,currentSessionId,onOpenSession,sessions=[],sessionsLoading=false,sessionsError='',onRefreshSessions}:StudioProps){
   useLocale();
+  const confirmAction=useConfirmAction(),cancelConfirmation=useCancelConfirmation();
+  const [toasts]=useState(createToastStore),{toast}=toasts;
+  useEffect(()=>controller.subscribe(toasts.dropUnavailableActions),[controller,toasts]);
   const state=useSyncExternalStore(controller.subscribe,controller.getSnapshot,controller.getSnapshot);
   const snapshot=state.snapshot,project=snapshot?.project||null,task=snapshot?.task;
   const isHome=state.workspaceView==='projects'||!project;
+  useEffect(()=>()=>{cancelConfirmation?.();toasts.clear();},[controller,project?.id,isHome,cancelConfirmation,toasts]);
   const sessionProps={sessions,sessionsLoading,sessionsError,onRefreshSessions,currentSessionId,onOpenSession};
   const busy=state.pending||task?.status==='running';
-  const generating=task?.status==='running'&&['storyboard','scenes','modify'].includes(task.kind);
-  const [tab,setTab]=useState<DockTab>('preview'),[assetSearch,setAssetSearch]=useState(''),[newOpen,setNewOpen]=useState(false),[directoryOpen,setDirectoryOpen]=useState(false),[styleLibraryOpen,setStyleLibraryOpen]=useState(false);
-  const [newProductionMode,setNewProductionMode]=useState<'code_animation'|'model_video'>('code_animation');
-  const [newTitle,setNewTitle]=useState(''),[newTopic,setNewTopic]=useState(''),[newDuration,setNewDuration]=useState(30),[newAspect,setNewAspect]=useState('16:9'),[newSessionId,setNewSessionId]=useState(''),[newDelegated,setNewDelegated]=useState(false),[newStyleId,setNewStyleId]=useState(''),[openPath,setOpenPath]=useState(''),[textOpen,setTextOpen]=useState(false),[textAsset,setTextAsset]=useState('');
+  const generating=task?.status==='running'&&['storyboard','scenes','modify','audio'].includes(task.kind);
+  const validatingPreview=task?.status==='running'&&task.kind==='preview';
+  const locked=generating||validatingPreview||state.pending;
+  const studioRef=useRef<HTMLElement>(null),canvasRef=useRef<HTMLCanvasElement>(null),graphRef=useRef<LiteGraphEditor|null>(null),autoPreviewedRef=useRef('');
+  const minimapRef=useRef<HTMLCanvasElement>(null);
+  const [playhead]=useState(createPlayhead);
+  const layout=useLayout(studioRef);
+  const [stageMode,setStageModeState]=useState<StageMode>(()=>store.get<StageMode>('vs-stage-mode','monitor'));
+  const [panel,setPanel]=useState<PanelTab>(()=>store.get<PanelTab>('vs-drawer-tab','audio'));
+  const [drawerOpen,setDrawerOpen]=useState(false),[drawerHeight,setDrawerHeight]=useState(()=>store.get('vs-drawer-height',320)),[flash,setFlash]=useState(0);
+  const [pane,setPane]=useState<Pane>('properties'),[assetsOpen,setAssetsOpen]=useState(false);
+  const [homeModal,setHomeModal]=useState<'media'|'environment'|null>(null);
+  const [newOpen,setNewOpen]=useState(false),[newStyleId,setNewStyleId]=useState(''),[directoryOpen,setDirectoryOpen]=useState(false),[styleLibraryOpen,setStyleLibraryOpen]=useState(false);
+  const [openPath,setOpenPath]=useState(''),[textOpen,setTextOpen]=useState(false),[textAsset,setTextAsset]=useState('');
   const [sessionDialog,setSessionDialog]=useState<{project:Pick<ProjectLocation,'id'|'title'>;mode:'associate'|'continue'}|null>(null);
-  const [canvasMax,setCanvasMax]=useState(false),[zoom,setZoom]=useState(.9),[outputOpen,setOutputOpen]=useState(false);
-  const [instruction,setInstruction]=useState(''),[previewKey,setPreviewKey]=useState(0),[editScope,setEditScope]=useState<'shot'|'film'>('film'),[wordEdit,setWordEdit]=useState(true),[dismissedNotice,setDismissedNotice]=useState(''),[keysOpen,setKeysOpen]=useState(false);
-  const studioRef=useRef<HTMLElement>(null),fileRef=useRef<HTMLInputElement>(null),canvasRef=useRef<HTMLCanvasElement>(null),graphRef=useRef<LiteGraphEditor|null>(null);
+  const [zoom,setZoom]=useState(.9),[outputOpen,setOutputOpen]=useState(false),[keysOpen,setKeysOpen]=useState(false);
+  const [wordOpen,setWordOpen]=useState(false),[instruction,setInstruction]=useState(''),[editScope,setEditScope]=useState<'shot'|'film'>('film');
+  const [dismissedTask,setDismissedTask]=useState('');
   const selectedShot=project?.shots.find(s=>s.id===state.selected),selectedAsset=project?.assets.find(a=>a.id===state.selected);
-  const selectedStyle=state.styles.find(style=>style.id===newStyleId);
   const graphCheck=useMemo(()=>project?validateGraph(project):null,[project]);
   const spec=useMemo(()=>{try{return project?compileSpec(project):null;}catch{return null;}},[project]);
   const totalFrames=project?.shots.reduce((sum,s)=>sum+s.durationFrames,0)||0;
   const fps=project?project.target.fps.num/project.target.fps.den:30;
   const duration=totalFrames/fps;
+  const canvasVisible=stageMode!=='monitor';
+  const setStageMode=(mode:StageMode)=>{setStageModeState(mode);store.set('vs-stage-mode',mode);};
+  /** Every entry point to a panel goes through here: open the drawer, select the tab and bring it into view. */
+  const openPanel=(tab:PanelTab)=>{setPanel(tab);store.set('vs-drawer-tab',tab);setDrawerOpen(true);if(layout==='narrow')setPane('panels');setFlash(value=>value+1);};
   useEffect(()=>setEditScope(selectedShot?'shot':'film'),[selectedShot?.id]);
   useEffect(()=>{void controller.refreshVisibleProject();},[controller]);
   useEffect(()=>()=>{controller.persistDrafts();void controller.flush();},[controller]);
-  useEffect(()=>{if(state.focusSerial){setTab('preview');if(state.selected)graphRef.current?.focus(state.selected);}},[state.focusSerial]);
+  useEffect(()=>{if(state.focusSerial){if(stageMode==='canvas')setStageMode('split');if(state.selected)graphRef.current?.focus(state.selected);}},[state.focusSerial]);
   const assetBaseUrl=snapshot?.assetBaseUrl||snapshot?.previewUrl;
   const assetUrl=(asset:Asset):string=>state.localImages[asset.id]||(assetBaseUrl&&asset.path?new URL(asset.path,assetBaseUrl).href:'');
+  const commit=controller.edit;
+  // Debounced auto-preview: ~1.2s after a saved revision settles with an outdated preview, rebuild without locking edits.
+  useEffect(()=>{
+    if(!project||state.workspaceView!=='studio'||!graphCheck?.ok||state.dirty||state.saving||state.pending||state.previewing||state.conflict||state.sourceDraft||generating||task?.status==='running')return;
+    if(snapshot?.previewRevision===project.revision)return;
+    const key=`${project.id}:${project.revision}`;if(autoPreviewedRef.current===key)return;
+    const timer=setTimeout(()=>{autoPreviewedRef.current=key;void controller.refreshPreview();},1200);
+    return()=>clearTimeout(timer);
+  },[project?.id,project?.revision,snapshot?.previewRevision,state.workspaceView,graphCheck?.ok,state.dirty,state.saving,state.pending,state.previewing,state.conflict,state.sourceDraft,generating,task?.status,controller]);
+  const graphUndo=useRef<EditUndo>();
+  const undoAction=(undo:EditUndo|undefined)=>undo?.available()?{label:t("撤销"),...undo}:undefined;
+  const onGraphRemoved=(removal:GraphRemoval)=>{
+    const messages=removal.shots.length?[removal.shots.length===1?t("已删除镜头「{value0}」",{value0:removal.shots[0]}):t("已删除 {value0} 个镜头",{value0:removal.shots.length})]:[];
+    for(const asset of removal.assets)messages.push(asset.links?t("已解除「{value0}」的 {value1} 处关联，资产仍保留在资产库",{value0:asset.name,value1:asset.links}):t("「{value0}」没有关联任何镜头。删除资产请在资产库中操作。",{value0:asset.name}));
+    const action=undoAction(graphUndo.current);graphUndo.current=undefined;
+    for(const [index,message] of messages.entries())toast({message,action:index===messages.length-1?action:undefined});
+  };
+  const removedRef=useRef(onGraphRemoved);removedRef.current=onGraphRemoved;
   useEffect(()=>{
     if(state.workspaceView!=='studio'||!canvasRef.current||!project)return;
-    const editor=new LiteGraphEditor(canvasRef.current,controller.edit,controller.select,setZoom);graphRef.current=editor;
+    const editor=new LiteGraphEditor(canvasRef.current,(next,offerUndo)=>{
+      if(!offerUndo)return controller.edit(next);
+      const result=controller.editWithUndo(next);
+      graphUndo.current=result?.undo;
+      return result!==null;
+    },controller.select,setZoom,removal=>removedRef.current(removal),playhead);graphRef.current=editor;
     return()=>{editor.dispose();graphRef.current=null;};
-  },[project?.id,controller,state.workspaceView]);
+  },[project?.id,controller,state.workspaceView,playhead]);
+  useEffect(()=>{graphRef.current?.attachMinimap(canvasVisible?minimapRef.current:null);},[canvasVisible,project?.id,controller,state.workspaceView]);
   useEffect(()=>{if(project)graphRef.current?.setProject(project,assetUrl);},[project,state.localImages,assetBaseUrl,state.workspaceView]);
-  useEffect(()=>{graphRef.current?.setInteractive(!generating&&!state.pending);},[generating,state.pending]);
+  useEffect(()=>{graphRef.current?.setSelected(state.selected);},[state.selected,project?.id,state.workspaceView]);
+  useEffect(()=>{graphRef.current?.setInteractive(!locked);},[locked]);
+  useEffect(()=>{graphRef.current?.applyTheme();},[state.scheme]);
+  useEffect(()=>{if(canvasVisible)requestAnimationFrame(()=>graphRef.current?.resize());},[canvasVisible,stageMode,layout]);
+  useEffect(()=>{graphRef.current?.clearShotThumbs();},[project?.id,project?.revision,snapshot?.previewUrl,snapshot?.previewRevision]);
+  // Thumbnail requests target the same saved revision as the canvas and obey the host's 3-frame limit.
   useEffect(()=>{
-    const studio=studioRef.current;
-    if(!studio)return;
+    const editor=graphRef.current;
+    if(!editor||!canvasVisible||state.workspaceView!=='studio'||!project||!spec?.shots.length||!snapshot?.previewUrl||
+      snapshot.previewRevision!==project.revision||busy||state.dirty||state.saving)return;
+    let active=true;
+    const entries=spec.shots.map(shot=>({shotId:shot.id,frame:Math.floor((shot.startFrame+shot.endFrame-1)/2)}));
+    async function load(projectId:string,revision:number){
+      for(let offset=0;active&&offset<entries.length;offset+=3){
+        const batch=entries.slice(offset,offset+3);
+        try{
+          const result=await controller.api.call<{frames:{frame:number;url:string}[]}>('thumbnails',{
+            projectId,expectedRevision:revision,frames:batch.map(entry=>entry.frame),
+          });
+          if(!active)return;
+          const byFrame=new Map(result.frames.map(item=>[item.frame,item.url]));
+          const urls:Record<string,string>={};
+          for(const {shotId,frame} of batch){const url=byFrame.get(frame);if(url)urls[shotId]=url;}
+          editor?.setShotThumbs(urls);
+        }catch{/* Other batches can still provide thumbnails. */}
+      }
+    }
+    const timer=setTimeout(()=>void load(project.id,project.revision),180);
+    return()=>{active=false;clearTimeout(timer);};
+  },[canvasVisible,state.workspaceView,project?.id,project?.revision,spec,snapshot?.previewUrl,snapshot?.previewRevision,busy,state.dirty,state.saving,controller]);
+  useEffect(()=>{if(state.notice)toast({tone:'success',message:systemMessage(state.notice)});},[state.notice]);
+  useEffect(()=>{if(state.error&&!state.conflict&&!state.dirty&&!directoryOpen)toast({tone:'error',message:systemMessage(state.error)});},[state.error]);
+  const lastTask=useRef<{id:string;status:string}|null>(null);
+  useEffect(()=>{
+    if(!task){lastTask.current=null;return;}
+    const previous=lastTask.current;lastTask.current={id:task.id,status:task.status};
+    if(!previous||task.status==='running')return;
+    if((previous.id===task.id&&previous.status==='running')||previous.id!==task.id){
+      if(task.status==='complete')toast({tone:'success',message:t("{value0}已完成",{value0:taskLabel(task.kind)}),...(task.kind==='export'?{action:{label:t("查看成片"),run:()=>openPanel('exports')}}:{})});
+      else if(task.status==='cancelled')toast({tone:'info',message:t("{value0}已取消",{value0:taskLabel(task.kind)})});
+    }
+  },[task?.id,task?.status]);
+  useEffect(()=>{
+    const studio=studioRef.current;if(!studio)return;
     const keyboard=(e:KeyboardEvent)=>{const target=e.target instanceof Element?e.target:null;if(e.defaultPrevented||target?.closest('[role=dialog]'))return;
-      if(e.key==='Escape'&&canvasMax&&!target?.closest('.vs-preview.is-expanded')){e.preventDefault();setCanvasMax(false);return;}
-      if(target?.closest('input, textarea, select, [contenteditable=true]')||generating)return;
+      if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'&&!isHome){e.preventDefault();setWordOpen(open=>!open);return;}
+      if(e.key==='Escape'&&wordOpen){e.preventDefault();setWordOpen(false);return;}
+      if(target?.closest('input, textarea, select, [contenteditable=true]')||locked)return;
       if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();e.shiftKey?controller.redo():controller.undo();}
       if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();void controller.flush();}
       if(e.key==='?'||(e.shiftKey&&e.key==='/')){e.preventDefault();setKeysOpen(open=>!open);}
       if(e.key==='['||e.key===']'){const current=controller.getSnapshot(),film=current.snapshot?.project;if(!film?.shots.length)return;const ids=[...film.shotOrder.filter(id=>film.shots.some(shot=>shot.id===id)),...film.shots.map(shot=>shot.id).filter(id=>!film.shotOrder.includes(id))];e.preventDefault();const index=ids.indexOf(current.selected||'');const next=e.key===']'?ids[(Math.max(index,0)+1)%ids.length]:ids[(index<=0?ids.length:index)-1];controller.select(next);graphRef.current?.focus(next);}
     };studio.addEventListener('keydown',keyboard);return()=>studio.removeEventListener('keydown',keyboard);
-  },[controller,generating,canvasMax]);
-  function edit(patch:Partial<VideoProject>){if(project)controller.edit({...project,...patch,revision:project.revision+1,updatedAt:new Date().toISOString()});}
-  function shot(patch:Partial<Shot>){if(project&&selectedShot)controller.edit(updateShot(project,selectedShot.id,patch));}
-  async function create(automatic:boolean){const title=newTitle.trim()||t("我的视频");if(!await controller.action('create',{title,productionMode:newProductionMode,topic:newTopic.trim(),targetDuration:newDuration,target:{...dimensionsForAspect(newAspect,1080),fps:{num:30,den:1},audioMode:'none'},videoStyle:selectedStyle}))return;const created=controller.getSnapshot().snapshot?.project;setNewOpen(false);setNewTitle('');setNewTopic('');if(newSessionId&&created){try{await controller.bindSession(newSessionId,created.id,state.sessionBindings[newSessionId]?.currentProjectId);}catch{return;}}setNewSessionId('');setNewStyleId('');if(automatic)await controller.generate('storyboard');}
+  },[controller,locked,wordOpen,isHome]);
   async function importFiles(files:FileList|null){if(!files)return;for(const file of Array.from(files))await controller.importFile(file);}
-  async function refreshPreview(){await controller.action('preview');setPreviewKey(k=>k+1);}
-  async function modify(){if(!instruction.trim()||(editScope==='shot'&&!selectedShot))return;await controller.generate('modify',instruction,editScope==='shot'?selectedShot?.id:undefined);if(!controller.getSnapshot().error)setInstruction('');}
-  function connectOrder(ids:string[]){if(!project)return;const next=reorderShots(project,ids);next.extensions={...next.extensions,graphEdges:ids.map((id,index)=>({from:id,to:ids[index+1]||'film-output'}))};controller.edit(next);}
+  async function refreshPreview(){if(state.sourceDraft){toast({tone:'warning',message:t("本工程有源码草稿。请在源码面板保存或丢弃草稿后再刷新预览。")});return;}autoPreviewedRef.current=`${project?.id||''}:${project?.revision??''}`;await controller.action('preview');}
+  async function modify(){if(!instruction.trim()||(editScope==='shot'&&!selectedShot))return;await controller.generate('modify',instruction,editScope==='shot'?selectedShot?.id:undefined);if(!controller.getSnapshot().error){setInstruction('');setWordOpen(false);}}
+  function connectOrder(ids:string[]){if(!project)return;const next=reorderShots(project,ids);next.extensions={...next.extensions,graphEdges:ids.map((id,index)=>({from:id,to:ids[index+1]||'film-output'}))};commit(next);}
   const ordered=project?[...project.shotOrder.map(id=>project.shots.find(s=>s.id===id)).filter((s):s is Shot=>Boolean(s)),...project.shots.filter(s=>!project.shotOrder.includes(s.id))]:[];
-  const provider=snapshot?.providers.find(p=>p.id===state.route.provider);
   const relatedSessions=project?projectSessions(project.id,sessions,state.sessionBindings):[];
-  const runningStage=task?.status==='running'?(task.kind==='modify'?'scenes':task.kind):'';
-  const stageNow=runningStage||(tab==='exports'||tab==='tasks'?'export':tab==='preview'||tab==='audio'?'preview':tab==='media'||tab==='source'||tab==='workflow'?'scenes':'storyboard');
-  const tabLabel:Record<DockTab,string>={preview:t("影片预览"),media:t("模型与素材生成"),workflow:t("协作制作"),audio:t("声音与配音"),spec:t("制作要求"),source:t("前端源码"),environment:t("运行环境"),history:t("修改历史"),tasks:t("任务记录"),exports:t("历史成片")};
   const coverAsset=project?.assets.find(asset=>asset.kind==='image');
   const coverUrls=project&&coverAsset?{[project.id]:assetUrl(coverAsset)}:{};
-  return <main ref={studioRef} className={`vs-studio ${isHome?'vs-home-shell':''}`} data-scheme={state.scheme}>
-    <header className="vs-topbar">
-      <button className="vs-brand vs-brand-home" onClick={()=>void controller.showProjects()} aria-label={t("返回影片首页")}><span className="vs-brandmark"><VideoStudioIcon/></span><span><strong>{t("映流")}</strong><small>{isHome?t("DSH 影片首页"):t("DSH 视频工作台")}</small></span></button>
-      <div className="vs-top-actions">{!isHome&&<><Button icon="folder" onClick={()=>void controller.showProjects()}>{t("影片首页")}</Button><Button icon="plus" onClick={()=>setNewOpen(true)} disabled={busy}>{t("新建影片")}</Button></>}<Button icon="spark" aria-pressed={!isHome&&tab==='media'} title={isHome?t("打开媒体模型中心"):t("切换到模型与素材生成")} className={!isHome&&tab==='media'?'is-current':''} onClick={()=>setTab('media')}>{t("媒体模型")}</Button><Button icon="settings" aria-pressed={!isHome&&tab==='environment'} title={isHome?t("打开运行环境"):t("切换到运行环境")} className={!isHome&&tab==='environment'?'is-current':''} onClick={()=>setTab('environment')}>{isHome?t("环境设置"):t("环境")}</Button></div>
-    </header>
-    {!isHome&&<section className="vs-projectbar">
-      <div className="vs-project-title"><span className="vs-eyebrow">{t("会话创作 · 镜头与帧查看")}</span><h1>{state.workspaceView==='projects'?t("我的影片工程"):project?.title||t("让想法连成一部视频")}</h1></div>
-      <div className="vs-model-route"><span>{t("创作模型")}</span><select aria-label={t("模型提供方")} value={state.route.provider} onChange={e=>{const p=snapshot?.providers.find(v=>v.id===e.target.value);controller.setRoute({provider:e.target.value,model:p?.models[0]?.id||''});}}><option value="">{t("选择提供方")}</option>{snapshot?.providers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select><select aria-label={t("创作模型")} value={state.route.model} onChange={e=>controller.setRoute({...state.route,model:e.target.value})}><option value="">{t("选择模型")}</option>{provider?.models.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</select></div>
-      {project&&<div className="vs-session-link"><span>{relatedSessions.length?t("{value0} 个关联会话", {value0: relatedSessions.length}):t("独立工程")}</span>{relatedSessions.length>0&&onOpenSession&&<button onClick={()=>setSessionDialog({project,mode:'continue'})}>{t("继续会话 ↗")}</button>}<button disabled={state.relationPending} onClick={()=>setSessionDialog({project,mode:'associate'})}>{t("关联会话")}</button></div>}
-      {project&&<div className="vs-project-status"><i className={state.saving?'is-saving':''}/>{state.conflict?t("保存冲突"):state.saving?t("正在保存"):state.dirty?t("尚未保存"):state.sourceDraft?t("源码草稿已保留"):t("已保存")}<span>v{project.revision}</span></div>}
-    </section>}
-    {state.error&&<div className="vs-error" role="alert"><span>{systemMessage(state.error)}</span>{state.dirty&&<Button icon="upload" onClick={()=>downloadText(t("{value0}-本地参数副本.json", {value0: project?.title||t("影片")}),JSON.stringify(project,null,2),'application/json;charset=utf-8')}>{t("保存本地参数副本")}</Button>}{state.conflict?<Button icon="refresh" onClick={()=>void controller.load(true)}>{state.dirty?t("放弃本地参数并重新读取"):t("重新读取工程（保留源码草稿）")}</Button>:state.dirty?<Button icon="check" onClick={()=>void controller.flush()}>{t("重试保存")}</Button>:<Button icon="close" aria-label={t("关闭错误")} onClick={controller.clearError}/>}</div>}
-    {state.notice&&state.notice!==dismissedNotice&&<div className="vs-notice" role="status"><Icon name="check"/><span>{systemMessage(state.notice)}</span><button type="button" className="vs-iconbutton" aria-label={t("关闭提示")} onClick={()=>setDismissedNotice(state.notice)}><Icon name="close"/></button></div>}
-    {state.loading?<div className="vs-loading"><span className="vs-spinner"/>{t("正在打开工作台…")}</div>:isHome?<ProjectHome controller={controller} projects={state.projects} bindings={state.sessionBindings} loading={state.libraryLoading} {...sessionProps} coverUrls={coverUrls} onCreate={()=>{setNewStyleId('');setNewOpen(true);}} onOpenDirectory={()=>{setDirectoryOpen(true);setOpenPath('');}} onEnvironment={()=>setTab('environment')} onManageStyles={()=>{void controller.refreshStyles();setStyleLibraryOpen(true);}} onManageSession={(project,mode)=>setSessionDialog({project,mode})}/>:<>
-      {state.sourceDraft&&<div className="vs-draft-banner" role="status"><span>{t("{value0} 份源码草稿已保留。保存后才会进入预览和成片。", {value0: state.sourceDraftCount})}</span><Button onClick={()=>{setTab('source');const draft=controller.sourceDrafts().find(value=>project.shots.some(shot=>shot.id===value.shotId));controller.select(draft?.shotId||null);}}>{t("查看源码草稿")}</Button></div>}
-      <div className="vs-commandbar">
-        <div className="vs-format"><button className="vs-pill" aria-label={t("打开输出设定")} onClick={()=>setOutputOpen(true)}>{targetLabel(project.target)}</button><span>{project.target.audioMode==='mixed'?t("有声"):t("无声")} · {({standard:t("标准"),high:t("高质量"),small:t("更小文件")})[project.target.quality||'standard']}</span><span className="vs-time">{t("{value0} 秒 ", {value0: duration.toFixed(1)})}<small>{t("/ 目标 {value0} 秒", {value0: project.targetDuration})}</small></span></div>
-        <nav className="vs-stages" aria-label={t("制作阶段")}>{([['storyboard',t("分镜"),t("画布上的镜头")],['scenes',t("画面"),t("模型与素材")],['preview',t("预览"),t("影片预览")],['export',t("成片"),t("历史成片")]] as const).map(([id,label,hint],index)=><span key={id}>{index>0&&<i/>}<button type="button" title={hint} className={`${stageNow===id?'is-current':''} ${runningStage===id?'is-running':''}`} onClick={()=>{if(id==='scenes')setTab('media');else if(id==='preview')setTab('preview');else if(id==='export')setTab('exports');}}>{label}</button></span>)}</nav><div className="vs-actions"><Button icon="spark" disabled={busy} onClick={()=>void controller.generate('storyboard')}>{t("生成分镜")}</Button><Button icon="spark" disabled={busy||!graphCheck?.ok} onClick={()=>void controller.generate('scenes')}>{t("生成画面")}</Button><Button icon="play" disabled={busy||!graphCheck?.ok} onClick={()=>{setTab('preview');void refreshPreview();}}>{t("预览")}</Button><Button className="vs-primary" icon="upload" disabled={busy||!graphCheck?.ok} onClick={()=>{setTab('tasks');void controller.action('export');}}>{t("导出视频")}</Button></div>
+  function addShotAfterSelection(){if(!project)return;const after=selectedShot&&project.shotOrder.includes(selectedShot.id)?selectedShot.id:undefined;const next=addShot(project,undefined,after,getLocale());commit(next);const created=next.shots.find(shot=>!project.shots.some(old=>old.id===shot.id));if(created)requestAnimationFrame(()=>controller.select(created.id));}
+  function removeShot(shot:Shot){
+    const current=controller.getSnapshot().snapshot?.project;
+    if(!current||current.id!==project?.id||!current.shots.some(item=>item.id===shot.id))return;
+    const result=controller.editWithUndo(deleteShot(current,shot.id));
+    if(result)toast({message:t("已删除镜头「{value0}」",{value0:shot.title}),action:undoAction(result.undo)});
+  }
+  async function removeAsset(asset:Asset){
+    if(!project)return;const uses=project.shots.filter(shot=>shot.assetIds.includes(asset.id)||shot.referenceIds.includes(asset.id)).length;
+    if(!await confirmAction({title:t("删除资产「{value0}」？",{value0:asset.name}),body:uses?t("它正被 {value0} 个镜头使用，删除后这些关联会一并移除。可以立即撤销，或在修改历史中恢复。",{value0:uses}):t("资产会从工程中移除。可以立即撤销，或在修改历史中恢复。"),confirmLabel:t("删除资产"),tone:'danger'}))return;
+    const state=controller.getSnapshot(),current=state.snapshot?.project;
+    if(state.workspaceView!=='studio'||!current||current.id!==project.id||!current.assets.some(item=>item.id===asset.id))return;
+    const result=controller.editWithUndo(deleteAsset(current,asset.id));
+    if(result)toast({message:t("已删除资产「{value0}」",{value0:asset.name}),action:undoAction(result.undo)});
+  }
+  async function generate(kind:'storyboard'|'scenes'){
+    if(!project)return;
+    if(kind==='storyboard'&&project.shots.length&&((state.history?.entries.length||0)>1||project.shots.some(shot=>shot.assetIds.length||shot.referenceIds.length))){
+      if(!await confirmAction({title:t("重新生成分镜？"),body:t("模型会用新的方案替换当前 {value0} 个镜头及其编排。之前的版本保留在「修改历史」中，可以随时恢复。",{value0:project.shots.length}),confirmLabel:t("重新生成"),tone:'danger'}))return;
+      const current=controller.getSnapshot();
+      if(current.workspaceView!=='studio'||current.snapshot?.project?.id!==project.id||current.snapshot.project.revision!==project.revision)return;
+    }
+    await controller.generate(kind);
+  }
+  function onStep(id:StageId){
+    if(id==='storyboard'){if(stageMode==='monitor')setStageMode('canvas');requestAnimationFrame(()=>graphRef.current?.fit());}
+    else if(id==='scenes')openPanel(project?.productionPolicy?.baseMode==='model_video'?'media':'source');
+    else if(id==='preview'){if(stageMode==='canvas')setStageMode('monitor');}
+    else openPanel('exports');
+  }
+  const runningKind=task?.status==='running'?task.kind:'';
+  const steps:StepInfo[]=project?(()=>{
+    const storyboardDone=project.shots.length>0&&!!graphCheck?.ok;
+    const scenesDone=!!snapshot?.previewUrl&&snapshot.previewRevision!==null;
+    const previewFresh=scenesDone&&snapshot?.previewRevision===project.revision;
+    const latest=project.outputs.at(-1);
+    return [
+      {id:'storyboard',label:t("分镜"),state:runningKind==='storyboard'?'running':storyboardDone?'done':project.shots.length?'warning':'current',hint:storyboardDone?t("{value0} 个镜头，主链完整",{value0:project.shots.length}):project.shots.length?t("主链待连接"):t("画布上的镜头")},
+      {id:'scenes',label:t("画面"),state:runningKind==='scenes'||runningKind==='modify'?'running':scenesDone?'done':storyboardDone?'current':'todo',hint:t("模型与素材")},
+      {id:'preview',label:t("预览"),state:runningKind==='preview'||state.previewing?'running':previewFresh?'done':scenesDone?'stale':'todo',hint:previewFresh?t("预览与当前版本一致"):t("影片预览")},
+      {id:'export',label:t("成片"),state:runningKind==='export'?'running':latest&&latest.revision===project.revision?'done':latest?'stale':previewFresh?'current':'todo',hint:latest?t("最近导出 v{value0}",{value0:latest.revision}):t("历史成片")},
+    ];
+  })():[];
+  const menu:MenuItem[]=project?[
+    {id:'output',label:t("输出设定"),icon:'film',onSelect:()=>setOutputOpen(true)},
+    ...(relatedSessions.length>0&&onOpenSession?[{id:'continue',label:t("继续会话 ↗"),icon:'external',onSelect:()=>setSessionDialog({project,mode:'continue'})}]:[]),
+    {id:'associate',label:relatedSessions.length?t("{value0} 个关联会话",{value0:relatedSessions.length})+' · '+t("关联会话"):t("关联会话"),icon:'link',disabled:state.relationPending,onSelect:()=>setSessionDialog({project,mode:'associate'})},
+    {id:'reveal',label:t("打开项目文件夹 "),icon:'folder',disabled:!snapshot?.root,onSelect:()=>{if(snapshot?.root)void controller.action('reveal',{path:snapshot.root});}},
+    {id:'media',label:t("媒体模型"),icon:'spark',separatorBefore:true,onSelect:()=>openPanel('media')},
+    {id:'environment',label:t("运行环境"),icon:'settings',onSelect:()=>openPanel('environment')},
+    {id:'keys',label:t("快捷键"),icon:'keyboard',hint:'?',onSelect:()=>setKeysOpen(true)},
+    {id:'new',label:t("新建影片"),icon:'plus',separatorBefore:true,disabled:busy,onSelect:()=>setNewOpen(true)},
+    {id:'home',label:t("影片首页"),icon:'grid',onSelect:()=>void controller.showProjects()},
+  ]:[];
+  const drawerTabs:DrawerTab<PanelTab>[]=[
+    {id:'audio',label:t("声音与配音"),icon:'music'},{id:'media',label:t("模型与素材生成"),icon:'spark'},{id:'source',label:t("前端源码"),icon:'code'},
+    {id:'workflow',label:t("协作制作"),icon:'users'},{id:'spec',label:t("制作要求"),icon:'doc'},{id:'history',label:t("修改历史"),icon:'history'},
+    {id:'tasks',label:t("任务记录"),icon:'tasks',badge:task?.status==='failed'||task?.status==='interrupted'?<i className="vs-tab-dot is-danger"/>:task?.status==='running'?<i className="vs-tab-dot is-busy"/>:undefined},
+    {id:'exports',label:t("历史成片"),icon:'film',badge:project?.outputs.length?<small className="vs-tab-count">{project.outputs.length}</small>:undefined},
+    {id:'environment',label:t("运行环境"),icon:'settings'},
+  ];
+  const failedTask=task&&(task.status==='failed'||task.status==='interrupted')&&task.id!==dismissedTask?task:null;
+  const bannerError=state.error&&(state.conflict||state.dirty)?state.error:'';
+  const lockReason=generating?t("正在生成，完成后可以继续编辑"):t("正在处理，请稍候…");
+  const effectiveDrawerOpen=drawerOpen||(layout==='narrow'&&pane==='panels');
+  return <main ref={studioRef} className={`vs-studio ${isHome?'vs-home-shell':''}`} data-scheme={state.scheme} data-layout={layout} lang={getLocale()==='en'?'en':'zh-CN'}>
+    {isHome||!project?<header className="vs-topbar">
+      <button type="button" className="vs-brand vs-brand-home" onClick={()=>void controller.showProjects()} aria-label={t("返回影片首页")}><span className="vs-brandmark"><VideoStudioIcon/></span><span><strong>{t("映流")}</strong><small>{t("DSH 影片首页")}</small></span></button>
+      <div className="vs-top-actions">
+        {state.snapshot?.project&&<Button icon="arrow" onClick={controller.showStudio}>{t("继续上次工程 ↗")}</Button>}
+        <Button icon="spark" title={t("打开媒体模型中心")} onClick={()=>setHomeModal('media')}>{t("媒体模型")}</Button>
+        <Button icon="settings" title={t("打开运行环境")} onClick={()=>setHomeModal('environment')}>{t("环境设置")}</Button>
       </div>
-      {task&&<div className={`vs-task is-${task.status}`} role="status"><span>{task.status==='running'?<span className="vs-spinner"/>:<Icon name={task.status==='complete'?'check':task.status==='failed'?'close':'stop'}/>}</span><div><strong>{systemMessage(task.message)||taskLabel(task.kind)}</strong>{task.error&&<small className="vs-task-error">{systemMessage(task.error)}</small>}<div className="vs-progress"><i style={{width:`${Math.round(task.progress*100)}%`}}/></div></div><span>{Math.round(task.progress*100)}%</span>{task.status==='running'&&<Button icon="stop" onClick={()=>void controller.action('cancel')}>{t("取消")}</Button>}</div>}
-      <fieldset className="vs-workspace" disabled={generating}>
-        <aside className="vs-assets-panel">
-          <div className="vs-section-header"><h2>{t("资产库 ")}<small>{project.assets.length}</small></h2><button className="vs-iconbutton" title={t("导入图片、文字或音频")} onClick={()=>fileRef.current?.click()}><Icon name="plus"/></button></div>
-          <input className="vs-search" aria-label={t("搜索资产")} placeholder={t("搜索图片、文字、音频…")} value={assetSearch} onChange={e=>setAssetSearch(e.target.value)}/>
-          <div className="vs-asset-actions"><Button icon="upload" onClick={()=>fileRef.current?.click()} disabled={state.pending}>{t("导入素材")}</Button><Button icon="text" onClick={()=>setTextOpen(true)}>{t("添加文字")}</Button></div>
-          <input ref={fileRef} hidden multiple type="file" accept="image/png,image/jpeg,image/webp,.txt,.md,text/plain,text/markdown,audio/*,video/*,.mp4,.mov,.m4v,.webm,.mkv,.wav,.mp3,.m4a,.aac,.flac,.ogg" onChange={e=>{void importFiles(e.target.files);e.target.value='';}}/>
-          <div className="vs-assets" onDragOver={e=>{if(e.dataTransfer.types.includes('Files'))e.preventDefault();}} onDrop={e=>{if(e.dataTransfer.files.length){e.preventDefault();void importFiles(e.dataTransfer.files);}}}>
-            {project.assets.filter(a=>`${a.name} ${a.description} ${a.text||''}`.includes(assetSearch)).map(asset=><button key={asset.id} className={`vs-asset ${state.selected===asset.id?'is-selected':''}`} draggable onDragStart={e=>e.dataTransfer.setData('application/x-dsh-video-asset',asset.id)} onClick={()=>controller.select(asset.id)}>
-              <div className={`vs-asset-thumb ${asset.kind==='text'?'is-text':''}`}>{asset.kind==='image'&&assetUrl(asset)?<img src={assetUrl(asset)} alt=""/>:<Icon name={asset.kind==='image'?'image':asset.kind==='audio'?'music':asset.kind==='video'?'play':'text'}/>}</div><div><strong>{asset.name}</strong><small>{asset.kind==='image'?asset.width&&asset.height?`${asset.width} × ${asset.height}`:t("图片素材"):asset.kind==='audio'?t("{value0} 秒 · 音频", {value0: (asset.duration||0).toFixed(1)}):asset.kind==='video'?t("{value0} 秒 · 视频", {value0: (asset.duration||0).toFixed(1)}):truncate(asset.text||asset.description,38)}</small></div>
-            </button>)}
-            {!project.assets.length&&<div className="vs-assets-empty"><Icon name="image"/><p>{t("把图片拖到这里")}</p><small>{t("或添加一段文字，")}<br/>{t("连接到镜头的「使用」或「参考」端口。")}</small></div>}
-          </div><div className="vs-asset-note"><i/>{t(" 图文与音频")}<br/><span>{t("一份资产，可以出现在多个镜头。")}</span></div>
-        </aside>
-        <section className={`vs-canvas-panel ${canvasMax?'is-maximized':''}`}>
-          <div className="vs-canvas-toolbar"><div><Icon name="grid"/><strong>{t("分镜画布")}</strong><span>{t("连接想法，排列故事")}</span></div><div><button className="vs-iconbutton" title={t("撤销 · Ctrl/Cmd Z")} disabled={!state.canUndo} onClick={controller.undo}><Icon name="undo"/></button><button className="vs-iconbutton" title={t("重做 · Ctrl/Cmd Shift Z")} disabled={!state.canRedo} onClick={controller.redo}><Icon name="redo"/></button><span className="vs-separator"/><button className="vs-iconbutton" title={t("选中节点分组")} onClick={()=>graphRef.current?.groupSelection()}><Icon name="folder"/></button><button className="vs-iconbutton" title={t("整理画布")} onClick={()=>graphRef.current?.arrange()}><Icon name="grid"/></button><Button icon="plus" onClick={()=>controller.edit(addShot(project,undefined,selectedShot?.id,getLocale()))}>{t("镜头")}</Button><button className="vs-iconbutton" aria-label={canvasMax?t("收起画布"):t("最大化画布")} title={canvasMax?t("收起画布 · Esc"):t("最大化画布")} onClick={()=>setCanvasMax(!canvasMax)}><Icon name={canvasMax?'close':'expand'}/></button></div></div>
-          <div className="vs-graph-navigation"><button aria-label={t("缩小画布")} onClick={()=>graphRef.current?.zoom(zoom/1.2)}>−</button><button aria-label={t("画布 100%")} onClick={()=>graphRef.current?.zoom(1)}>{Math.round(zoom*100)}%</button><button aria-label={t("放大画布")} onClick={()=>graphRef.current?.zoom(zoom*1.2)}>＋</button><button disabled={!state.selected} onClick={()=>graphRef.current?.focus(state.selected||undefined)}>{t("聚焦选中")}</button><button onClick={()=>graphRef.current?.fit()}>{t("全图概览")}</button><span>{t("拖动空白处平移 · 滚轮缩放")}</span></div>
-          <div className="vs-graph-shell"><canvas ref={canvasRef}/><div className="vs-graph-legend"><span><i className="asset"/>{t("实际使用")}</span><span><i className="reference"/>{t("仅供参考")}</span><span><i className="shot"/>{t("播放顺序")}</span></div></div>
-          {graphCheck&&!graphCheck.ok&&<div className="vs-chain-note"><span>{t("主链待连接")}</span>{systemMessage(graphCheck.errors[0])}<Button onClick={()=>{const ids=ordered.map(s=>s.id);connectOrder(ids);}}>{t("按镜头条连接")}</Button></div>}
-        </section>
-        <aside className="vs-properties">
-          <div className="vs-section-header"><h2>{selectedShot?t("镜头属性"):selectedAsset?t("资产属性"):t("影片设定")}</h2><span className="vs-eyebrow">{selectedShot?'SHOT':selectedAsset?'ASSET':'FILM'}</span></div>
-          <div className="vs-property-scroll">{selectedShot?<>
-            <section className="vs-prop-group"><h3>{t("这一镜")}</h3><Field label={t("镜头标题")}><input value={selectedShot.title} onChange={e=>shot({title:e.target.value})}/></Field><div className="vs-field-pair"><Field label={t("时长（秒）")}><input type="number" min="0.1" step="0.1" value={Number((selectedShot.durationFrames/fps).toFixed(2))} onChange={e=>{const n=Number(e.target.value);if(n>0)shot({durationFrames:Math.max(1,Math.round(n*fps))});}}/></Field><Field label={t("镜头转场")}><select value={selectedShot.transition} onChange={e=>shot({transition:e.target.value as Shot['transition']})}><option value="cut">{t("直接切换")}</option><option value="fade">{t("淡入淡出")}</option></select></Field></div></section>
-            <section className="vs-prop-group"><h3>{t("屏幕上的字")}</h3><Field label={t("屏幕主文字")}><textarea rows={2} value={selectedShot.params.text} onChange={e=>shot({params:{...selectedShot.params,text:e.target.value}})}/></Field><Field label={t("补充文字")}><textarea rows={2} value={selectedShot.params.subtitle} onChange={e=>shot({params:{...selectedShot.params,subtitle:e.target.value}})}/></Field></section>
-            <details className="vs-prop-fold" open><summary>{t("叙事与旁白")}</summary><Field label={t("叙事意图")}><textarea rows={2} value={selectedShot.intent} onChange={e=>shot({intent:e.target.value})}/></Field><Field label={t("构图")}><textarea rows={2} value={selectedShot.composition} onChange={e=>shot({composition:e.target.value})}/></Field><Field label={t("运动意图")}><textarea rows={2} value={selectedShot.action} onChange={e=>shot({action:e.target.value})}/></Field><Field label={t("旁白文案")}><textarea rows={3} value={selectedShot.narration||''} placeholder={t("此镜头的配音文字…")} onChange={e=>shot({narration:e.target.value})}/></Field><Button icon="music" onClick={()=>setTab('audio')}>{t("安排配音与音效")}</Button></details>
-            <details className="vs-prop-fold"><summary>{t("色彩与运动")}</summary><div className="vs-color-fields">{(['background','foreground','accent'] as const).map((key,i)=><Field key={key} label={[t("背景"),t("文字"),t("强调")][i]!}><input type="color" value={selectedShot.params[key]} onChange={e=>shot({params:{...selectedShot.params,[key]:e.target.value}})}/></Field>)}</div><div className="vs-field-pair"><Field label={t("主文字字号")}><input type="number" min="8" max="300" value={selectedShot.params.fontSize} onChange={e=>shot({params:{...selectedShot.params,fontSize:Number(e.target.value)||8}})}/></Field><Field label={t("基础运动")}><select value={selectedShot.params.motion} onChange={e=>shot({params:{...selectedShot.params,motion:e.target.value as Shot['params']['motion']}})}><option value="fade">{t("淡入")}</option><option value="slide">{t("滑入")}</option><option value="zoom">{t("缩放")}</option><option value="none">{t("静止")}</option></select></Field></div></details>
-            <details className="vs-prop-fold"><summary>{t("图片位置与缩放")}</summary><Field label={t("横向位置")}><input type="range" min="0" max="100" step="1" value={selectedShot.params.imageX} onChange={e=>shot({params:{...selectedShot.params,imageX:Number(e.target.value)}})}/></Field><Field label={t("纵向位置")}><input type="range" min="0" max="100" step="1" value={selectedShot.params.imageY} onChange={e=>shot({params:{...selectedShot.params,imageY:Number(e.target.value)}})}/></Field><Field label={t("图片缩放")}><input type="range" min="0.1" max="3" step="0.05" value={selectedShot.params.imageScale} onChange={e=>shot({params:{...selectedShot.params,imageScale:Number(e.target.value)}})}/></Field><Field label={t("图片适应")}><select value={selectedShot.params.imageFit} onChange={e=>shot({params:{...selectedShot.params,imageFit:e.target.value as 'cover'|'contain'}})}><option value="contain">{t("完整展示")}</option><option value="cover">{t("填满区域")}</option></select></Field></details>
-            <VideoClipEditor controller={controller} project={project} shot={selectedShot} assetUrl={assetUrl}/><div className="vs-bindings"><h3>{t("素材关联")}</h3>{project.assets.filter(a=>a.kind!=='audio'&&a.kind!=='video').map(asset=><div key={asset.id}><span>{asset.name}</span><button className={selectedShot.assetIds.includes(asset.id)?'is-active':''} onClick={()=>controller.edit((selectedShot.assetIds.includes(asset.id)?unbindAsset:bindAsset)(project,selectedShot.id,asset.id,'asset'))}>{t("使用")}</button><button className={selectedShot.referenceIds.includes(asset.id)?'is-active':''} onClick={()=>controller.edit((selectedShot.referenceIds.includes(asset.id)?unbindAsset:bindAsset)(project,selectedShot.id,asset.id,'reference'))}>{t("参考")}</button></div>)}{!project.assets.length&&<small>{t("导入图片或文字后，在这里绑定。")}</small>}</div>
-            <div className="vs-property-actions"><Button icon="copy" onClick={()=>controller.edit(duplicateShot(project,selectedShot.id,getLocale()))}>{t("复制镜头")}</Button><Button className="vs-danger" icon="delete" onClick={()=>controller.edit(deleteShot(project,selectedShot.id))}>{t("删除")}</Button></div>
-          </>:selectedAsset?<>
-            {selectedAsset.kind==='image'&&assetUrl(selectedAsset)&&<img className="vs-property-image" src={assetUrl(selectedAsset)} alt={selectedAsset.name}/>}
-            <Field label={t("资产名称")}><input value={selectedAsset.name} onChange={e=>edit({assets:project.assets.map(a=>a.id===selectedAsset.id?{...a,name:e.target.value}:a)})}/></Field>
-            <Field label={t("用途说明")}><textarea rows={4} value={selectedAsset.description} onChange={e=>edit({assets:project.assets.map(a=>a.id===selectedAsset.id?{...a,description:e.target.value}:a)})}/></Field>
-            {selectedAsset.kind==='video'&&<><video className="vs-property-video" controls preload="metadata" src={assetUrl(selectedAsset)}/><p className="vs-media-help">{t("选中镜头，在“视频片段”中绑定此素材并设置裁剪与原声。")}</p></>}{selectedAsset.kind==='audio'&&<><audio className="vs-property-audio" controls src={assetUrl(selectedAsset)}/><Button icon="music" onClick={()=>setTab('audio')}>{t("安排声音片段")}</Button></>}
-            {selectedAsset.kind==='text'&&<Field label={t("文字内容")}><textarea rows={8} value={selectedAsset.text||''} onChange={e=>edit({assets:project.assets.map(a=>a.id===selectedAsset.id?{...a,text:e.target.value}:a)})}/></Field>}
-            <div className="vs-subtle-box">{t("使用素材：会进入镜头画面。")}<br/>{t("仅供参考：指导模型理解构图与风格。")}</div><Button className="vs-danger" icon="delete" onClick={()=>controller.edit(deleteAsset(project,selectedAsset.id))}>{t("删除资产")}</Button>
-          </>:<>
-            <Field label={t("影片标题")}><input value={project.title} onChange={e=>edit({title:e.target.value})}/></Field><Field label={t("主题与想法")}><textarea rows={5} value={project.topic} placeholder={t("要表达什么？希望观众记住什么？")} onChange={e=>edit({topic:e.target.value})}/></Field>
-            <Field label={t("目标片长（秒）")}><input type="number" min="1" value={project.targetDuration} onChange={e=>{const value=Number(e.target.value);if(value>0)edit({targetDuration:value});}}/></Field>
-            <OutputSettings project={project} onChange={controller.edit}/>
-            <div className="vs-subtle-box"><strong>{t("先讲清故事，再生成画面。")}</strong><p>{t("选中镜头可以调整文字、色彩、时长和素材。拖动端口，连接镜头顺序。")}</p></div>
-            <div className="vs-stat-grid"><div><strong>{project.shots.length}</strong><small>{t("镜头")}</small></div><div><strong>{project.assets.length}</strong><small>{t("资产")}</small></div><div><strong>{duration.toFixed(0)}s</strong><small>{t("总时长")}</small></div></div>
-          </>}</div>
-        </aside>
-        <section className="vs-shotstrip"><div className="vs-strip-label"><strong>{t("镜头顺序")}</strong><small>{t("{value0} 个镜头", {value0: ordered.length})}</small></div><div className="vs-shotstrip-scroll">{ordered.map((s,i)=><button key={s.id} className={`vs-shotchip ${s.id===state.selected?'is-active':''}`} draggable onDragStart={e=>e.dataTransfer.setData('application/x-dsh-video-shot',s.id)} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();const id=e.dataTransfer.getData('application/x-dsh-video-shot');const ids=ordered.map(shot=>shot.id).filter(v=>v!==id);ids.splice(ids.indexOf(s.id),0,id);if(project.shots.some(shot=>shot.id===id))connectOrder(ids);}} onClick={()=>controller.select(s.id)}><b>{String(i+1).padStart(2,'0')}</b><span>{s.title}<small>{t("{value0} 秒", {value0: (s.durationFrames/fps).toFixed(1)})}</small></span></button>)}<button className="vs-addshot" onClick={()=>controller.edit(addShot(project,undefined,undefined,getLocale()))} title={t("添加镜头")}><Icon name="plus"/></button></div></section>
-        <section className="vs-dock"><div className="vs-dock-header"><div className="vs-tabgroups"><div className="vs-tabs" role="tablist" aria-label={t("主要工作面板")}>{(['preview','media','audio','source'] as DockTab[]).map(id=><button key={id} role="tab" aria-selected={tab===id} className={tab===id?'is-active':''} onClick={()=>setTab(id)}>{tabLabel[id]}</button>)}</div><div className="vs-tabs vs-tabs-more" role="tablist" aria-label={t("更多工作面板")}>{(['workflow','spec','history','tasks','exports','environment'] as DockTab[]).map(id=><button key={id} role="tab" aria-selected={tab===id} className={tab===id?'is-active':''} onClick={()=>setTab(id)}>{tabLabel[id]}</button>)}</div></div>{tab==='preview'&&<><Button icon="text" onClick={()=>setWordEdit(value=>!value)}>{wordEdit?t("收起改词"):t("用文字修改")}</Button><Button icon="refresh" disabled={busy||!graphCheck?.ok} onClick={()=>void refreshPreview()}>{t("刷新预览")}</Button></>}</div>
-          <div className="vs-dock-content" role="tabpanel">{tab==='workflow'?<WorkflowPanel key={project.id} controller={controller} project={project} selectedShot={selectedShot} plugin/>:tab==='media'?<MediaPanel controller={controller} project={project} selectedShot={selectedShot} mediaOnly/>:tab==='history'?<HistoryPanel controller={controller}/>:tab==='tasks'?<TaskPanel controller={controller}/>:tab==='exports'?<ExportPanel project={project} controller={controller}/>:tab==='preview'?<div className={wordEdit?'vs-preview-layout':'vs-preview-layout is-stage'}><Preview key={project.id} snapshot={snapshot!} project={project} selectedShot={selectedShot} controller={controller} focusFrame={state.focusFrame} focusSerial={state.focusSerial} busy={busy}/><div className="vs-ai-edit"><div className="vs-edit-scope"><span className="vs-eyebrow">EDIT WITH WORDS</span><select aria-label={t("修改范围")} value={editScope} onChange={e=>setEditScope(e.target.value as 'shot'|'film')}><option value="shot" disabled={!selectedShot}>{t("当前镜头")}</option><option value="film">{t("整部影片")}</option></select></div><h3>{editScope==='shot'&&selectedShot?t("修改「{value0}」", {value0: selectedShot.title}):t("继续打磨整部影片")}</h3><p>{editScope==='shot'?t("用一句话改变这个镜头，保留其他镜头。"):t("统一调整整片风格、文字或节奏。")}</p><textarea rows={3} placeholder={t("例如：标题从左侧滑入，图片缓慢放大，整体改成奶油色。")} value={instruction} onChange={e=>setInstruction(e.target.value)} onKeyDown={e=>{if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){e.preventDefault();void modify();}}}/><Button className="vs-primary" icon="spark" disabled={busy||!instruction.trim()||(editScope==='shot'&&!selectedShot)} onClick={()=>void modify()}>{editScope==='shot'?t("修改这个镜头"):t("修改整部影片")}</Button></div></div>:tab==='audio'?<AudioPanel project={project} snapshot={snapshot!} controller={controller} assetUrl={assetUrl} selectedShot={selectedShot} busy={busy}/>:tab==='spec'?<div className="vs-spec-view"><ProductionPolicySettings project={project} controller={controller}/>{spec?<><div className="vs-spec-meta"><span>{t("{value0} 个镜头", {value0: spec.shots.length})}</span><span>{t("{value0} 秒", {value0: spec.durationSeconds.toFixed(1)})}</span><Button icon="copy" onClick={()=>void navigator.clipboard.writeText(specMarkdown(spec,getLocale())).then(()=>controller.notify('制作要求已复制。')).catch(()=>controller.notify('复制失败，可以在下方选择文本。'))}>{t("复制")}</Button><Button icon="upload" onClick={()=>downloadText(t("{value0}-制作要求.md", {value0: project.title}),specMarkdown(spec,getLocale()),'text/markdown;charset=utf-8')}>{t("导出 Markdown")}</Button><Button icon="upload" onClick={()=>downloadText(t("{value0}-制作要求.json", {value0: project.title}),JSON.stringify(spec,null,2),'application/json;charset=utf-8')}>{t("导出 JSON")}</Button></div><pre>{specMarkdown(spec,getLocale())}</pre></>:<div className="vs-dock-empty"><Icon name="grid"/><p>{t("把镜头连接成一条主链，制作要求会自动整理。")}</p><small>{graphCheck?.errors.map(systemMessage).join(t('；'))}</small></div>}</div>:tab==='source'?<SourceEditor controller={controller} selectedShot={selectedShot} busy={busy} version={`${project.revision}:${task?.status==='complete'?task.id:''}`}/>:<Environment controller={controller} snapshot={snapshot!}/>}</div>
-        </section>
-      </fieldset>
-      <footer className="vs-footer"><span><i/>{t(" 本地创作 · 图文、音频与视频输入")}</span><span>{snapshot?.root&&<button onClick={()=>void controller.action('reveal',{path:snapshot.root})} title={snapshot.root}>{t("打开项目文件夹 ")}<Icon name="arrow"/></button>}</span><button type="button" onClick={()=>setKeysOpen(true)}>{t("快捷键")}</button><span>{t(" [ ] 切换镜头 · 空格播放")}</span></footer>
+    </header>:<StudioHeader project={project} state={state} providers={snapshot?.providers||[]} steps={steps} task={task} busy={busy} graphOk={!!graphCheck?.ok} canExport={!!graphCheck?.ok}
+      onHome={()=>void controller.showProjects()} onRename={title=>commit({...project,title,revision:project.revision+1,updatedAt:new Date().toISOString()})}
+      onStep={onStep} onGenerate={kind=>void generate(kind)} onExport={()=>void controller.action('export')} onCancel={()=>void controller.action('cancel')} onHistory={()=>openPanel('history')}
+      onRoute={controller.setRoute} menu={menu}/>}
+    {state.loading?<div className="vs-loading"><div className="vs-skeleton-grid" aria-hidden="true"><i/><i/><i/><i/></div><span>{t("正在打开工作台…")}</span></div>:isHome||!project?<ProjectHome controller={controller} projects={state.projects} bindings={state.sessionBindings} loading={state.libraryLoading} {...sessionProps} coverUrls={coverUrls} onCreate={()=>{setNewStyleId('');setNewOpen(true);}} onOpenDirectory={()=>{setDirectoryOpen(true);setOpenPath('');}} onEnvironment={()=>setHomeModal('environment')} onManageStyles={()=>{void controller.refreshStyles();setStyleLibraryOpen(true);}} onManageSession={(film,mode)=>setSessionDialog({project:film,mode})}/>:<>
+      {(bannerError||state.sourceDraft||failedTask)&&<div className="vs-banners">
+        {bannerError&&<div className="vs-banner is-danger" role="alert"><Icon name="warning"/><span>{systemMessage(bannerError)}</span>{state.dirty&&<Button size="sm" icon="download" onClick={()=>downloadText(t("{value0}-本地参数副本.json", {value0: project.title||t("影片")}),JSON.stringify(project,null,2),'application/json;charset=utf-8')}>{t("保存本地参数副本")}</Button>}{state.conflict?<Button size="sm" icon="refresh" onClick={()=>void controller.load(true)}>{state.dirty?t("放弃本地参数并重新读取"):t("重新读取工程（保留源码草稿）")}</Button>:state.dirty?<Button size="sm" icon="check" onClick={()=>void controller.flush()}>{t("重试保存")}</Button>:null}</div>}
+        {failedTask&&<div className="vs-banner is-warning" role="status"><Icon name="warning"/><span><strong>{systemMessage(failedTask.message)||taskLabel(failedTask.kind)}</strong>{failedTask.error&&<small className="vs-task-error">{systemMessage(failedTask.error)}</small>}</span><Button size="sm" icon="tasks" onClick={()=>openPanel('tasks')}>{t("查看任务记录")}</Button><IconButton icon="close" label={t("关闭提示")} onClick={()=>setDismissedTask(failedTask.id)}/></div>}
+        {state.sourceDraft&&<div className="vs-banner is-info vs-draft-banner" role="status"><Icon name="code"/><span>{t("{value0} 份源码草稿已保留。保存后才会进入预览和成片。", {value0: state.sourceDraftCount})}</span><Button size="sm" onClick={()=>{openPanel('source');const draft=controller.sourceDrafts().find(value=>project.shots.some(shot=>shot.id===value.shotId));controller.select(draft?.shotId||null);}}>{t("查看源码草稿")}</Button></div>}
+      </div>}
+      <div className={`vs-workbench ${assetsOpen?'is-assets-open':''}`} data-pane={pane} data-drawer={effectiveDrawerOpen?'open':'closed'}>
+        <AssetsPanel project={project} selectedId={state.selected} assetUrl={assetUrl} pending={state.pending} locked={generating||validatingPreview}
+          onSelect={id=>{controller.select(id);if(layout==='narrow')setPane('properties');}} onImport={files=>void importFiles(files)} onAddText={()=>setTextOpen(true)} onDelete={asset=>void removeAsset(asset)}
+          onClose={layout!=='wide'?()=>setAssetsOpen(false):undefined}/>
+        {assetsOpen&&layout==='medium'&&<button type="button" className="vs-scrim" aria-label={t("收起资产库")} onClick={()=>setAssetsOpen(false)}/>}
+        <Stage project={project} snapshot={snapshot!} state={state} controller={controller} playhead={playhead} layout={layout} stageMode={stageMode} onStageMode={setStageMode}
+          assetsOpen={assetsOpen} onToggleAssets={()=>{if(layout==='narrow')setPane('assets');else setAssetsOpen(open=>!open);}} onOutputSettings={()=>setOutputOpen(true)}
+          duration={duration} selectedShot={selectedShot} locked={locked} busy={busy} graphCheck={graphCheck} canvasRef={canvasRef} minimapRef={minimapRef} graphRef={graphRef} zoom={zoom}
+          onAddShot={addShotAfterSelection} onRefreshPreview={()=>void refreshPreview()} onConnectOrder={connectOrder} ordered={ordered}
+          wordOpen={wordOpen} onWordOpen={setWordOpen} editScope={editScope} onEditScope={setEditScope} instruction={instruction} onInstruction={setInstruction} onModify={()=>void modify()}/>
+        <Timeline shots={ordered} fps={fps} playhead={playhead} selectedId={selectedShot?.id||null} locked={locked} onSelect={id=>{controller.select(id);if(canvasVisible)graphRef.current?.focus(id);}} onReorder={connectOrder} onAdd={addShotAfterSelection} onDelete={id=>{const shot=project.shots.find(s=>s.id===id);if(shot)removeShot(shot);}}/>
+        <div className="vs-pane-switch vs-segmented" role="tablist" aria-label={t("切换面板")}>
+          {([['properties','info',selectedShot?t("镜头属性"):selectedAsset?t("资产属性"):t("影片设定")],['assets','image',t("资产库")],['panels','drawer',t("工作面板")]] as const).map(([id,icon,label])=><button type="button" role="tab" key={id} aria-selected={pane===id} className={pane===id?'is-active':''} onClick={()=>setPane(id)}><Icon name={icon}/><span>{label}</span></button>)}
+        </div>
+        <PropertiesPanel project={project} controller={controller} selectedShot={selectedShot} selectedAsset={selectedAsset} assetUrl={assetUrl} fps={fps} duration={duration}
+          locked={locked} lockReason={lockReason} commit={commit} onOpenPanel={openPanel} onDeleteShot={removeShot} onDeleteAsset={asset=>void removeAsset(asset)}
+          onDuplicateShot={shot=>commit(duplicateShot(project,shot.id,getLocale()))}/>
+        <BottomDrawer tabs={drawerTabs} active={panel} open={effectiveDrawerOpen} height={drawerHeight} flash={flash}
+          onSelect={tab=>{setPanel(tab);store.set('vs-drawer-tab',tab);setDrawerOpen(true);}} onToggle={()=>setDrawerOpen(open=>!open)} onResize={height=>{setDrawerHeight(height);store.set('vs-drawer-height',height);}}>
+          {panel==='workflow'?<WorkflowPanel key={project.id} controller={controller} project={project} selectedShot={selectedShot} plugin/>:panel==='media'?<MediaPanel controller={controller} project={project} selectedShot={selectedShot} mediaOnly/>:panel==='history'?<HistoryPanel controller={controller}/>:panel==='tasks'?<TaskPanel controller={controller}/>:panel==='exports'?<ExportPanel project={project} controller={controller}/>:panel==='audio'?<AudioPanel project={project} snapshot={snapshot!} controller={controller} assetUrl={assetUrl} selectedShot={selectedShot} busy={busy}/>:panel==='spec'?<div className="vs-spec-view"><ProductionPolicySettings project={project} controller={controller}/>{spec?<><div className="vs-spec-meta"><span>{t("{value0} 个镜头", {value0: spec.shots.length})}</span><span>{t("{value0} 秒", {value0: spec.durationSeconds.toFixed(1)})}</span><Button size="sm" icon="copy" onClick={()=>void navigator.clipboard.writeText(specMarkdown(spec,getLocale())).then(()=>controller.notify('制作要求已复制。')).catch(()=>controller.notify('复制失败，可以在下方选择文本。'))}>{t("复制")}</Button><Button size="sm" icon="download" onClick={()=>downloadText(t("{value0}-制作要求.md", {value0: project.title}),specMarkdown(spec,getLocale()),'text/markdown;charset=utf-8')}>{t("导出 Markdown")}</Button><Button size="sm" icon="download" onClick={()=>downloadText(t("{value0}-制作要求.json", {value0: project.title}),JSON.stringify(spec,null,2),'application/json;charset=utf-8')}>{t("导出 JSON")}</Button></div><pre>{specMarkdown(spec,getLocale())}</pre></>:<div className="vs-dock-empty"><Icon name="grid"/><p>{t("把镜头连接成一条主链，制作要求会自动整理。")}</p><small>{graphCheck?.errors.map(systemMessage).join(t('；'))}</small></div>}</div>:panel==='source'?<SourceEditor controller={controller} selectedShot={selectedShot} busy={busy} version={`${project.revision}:${task?.status==='complete'?task.id:''}`}/>:<EnvironmentPanel controller={controller} snapshot={snapshot!}/>}
+        </BottomDrawer>
+      </div>
     </>}
-    {snapshot&&isHome&&tab==='media'&&<Dialog label={t("媒体模型中心")} onClose={()=>setTab('preview')} className="vs-model-modal"><div className="vs-section-header"><h2>{t("媒体模型中心")}</h2><button onClick={()=>setTab('preview')} aria-label={t("关闭模型中心")}>×</button></div><ModelCenter api={controller.api} mediaOnly blocked={busy}/></Dialog>}
-    {snapshot&&isHome&&tab==='environment'&&<Dialog label={t("运行环境")} onClose={()=>setTab('preview')} className="vs-environment-modal"><div className="vs-section-header"><h2>{t("运行环境")}</h2><button className="vs-iconbutton" onClick={()=>setTab('preview')} aria-label={t("关闭")}><Icon name="close"/></button></div><Environment controller={controller} snapshot={snapshot}/></Dialog>}
+    {snapshot&&homeModal==='media'&&<Dialog label={t("媒体模型中心")} onClose={()=>setHomeModal(null)} className="vs-model-modal"><div className="vs-section-header"><h2>{t("媒体模型中心")}</h2><IconButton icon="close" label={t("关闭模型中心")} onClick={()=>setHomeModal(null)}/></div><ModelCenter api={controller.api} mediaOnly blocked={busy}/></Dialog>}
+    {snapshot&&homeModal==='environment'&&<Dialog label={t("运行环境")} onClose={()=>setHomeModal(null)} className="vs-environment-modal"><div className="vs-section-header"><h2>{t("运行环境")}</h2><IconButton icon="close" label={t("关闭")} onClick={()=>setHomeModal(null)}/></div><EnvironmentPanel controller={controller} snapshot={snapshot}/></Dialog>}
     {sessionDialog&&<SessionPicker project={sessionDialog.project} mode={sessionDialog.mode} projects={state.projects} bindings={state.sessionBindings} controller={controller} {...sessionProps} onClose={()=>setSessionDialog(null)}/>}
     {styleLibraryOpen&&<StyleLibrary styles={state.styles} onClose={()=>setStyleLibraryOpen(false)} onSave={style=>controller.saveStyle(style)} onDelete={id=>controller.deleteStyle(id)} onUse={(style:VideoStyle)=>{setNewStyleId(style.id);setStyleLibraryOpen(false);setNewOpen(true);}}/>}
-    {outputOpen&&project&&<Dialog label={t("输出设定")} onClose={()=>setOutputOpen(false)} className="vs-output-modal"><div className="vs-section-header"><h2>{t("输出设定")}</h2><button className="vs-iconbutton" aria-label={t("关闭输出设定")} onClick={()=>setOutputOpen(false)}><Icon name="close"/></button></div><OutputSettings project={project} onChange={controller.edit}/></Dialog>}
-    {newOpen&&<Dialog label={t("开启一部新影片")} onClose={()=>setNewOpen(false)} busy={busy} className="vs-create-modal"><div className="vs-section-header"><h2>{t("开启一部新影片")}</h2><button className="vs-iconbutton" onClick={()=>setNewOpen(false)} aria-label={t("关闭")}><Icon name="close"/></button></div><p>{t("一个主题就能开始，也可以先建立项目，再导入图片和文字。")}</p><Field label={t("影片名称")}><input autoFocus value={newTitle} onChange={e=>setNewTitle(e.target.value)} placeholder={t("给这部影片起个名字")}/></Field><Field label={t("主题与制作想法")}><textarea rows={4} value={newTopic} onChange={e=>setNewTopic(e.target.value)} placeholder={t("例如：用三张产品图片，制作一段 30 秒的极简新品介绍。")}/></Field><Field label={t("制作模式")}><select value={newProductionMode} onChange={event=>setNewProductionMode(event.target.value as typeof newProductionMode)}><option value="code_animation">{t("代码动画")}</option><option value="model_video">{t("模型视频")}</option></select><small>{t("此选择会约束生成工具和成片来源；之后可在制作要求中明确修改。")}</small></Field><Field label={t("制作风格（可选）")}><select value={newStyleId} onChange={event=>setNewStyleId(event.target.value)}><option value="">{t("不选择风格")}</option>{state.styles.map(style=><option key={style.id} value={style.id}>{style.name}</option>)}</select><small>{t("风格会随影片保存，并用于生成分镜与镜头。")}</small></Field><div className="vs-field-pair"><Field label={t("初始目标片长（秒）")}><input type="number" min="1" value={newDuration} onChange={event=>setNewDuration(Number(event.target.value))}/></Field><Field label={t("初始输出比例")}><select value={newAspect} onChange={event=>setNewAspect(event.target.value)}>{ASPECTS.map(aspect=><option value={aspect.id} key={aspect.id}>{t(aspect.label)} · 1080p · 30 FPS</option>)}</select></Field></div><Field label={t("关联已有会话（可选）")}><select value={newSessionId} onChange={event=>setNewSessionId(event.target.value)}><option value="">{t("暂不关联，先进入工作台")}</option>{sessions.filter(session=>!session.archived&&(newDelegated||!isDelegatedSession(session))).map(session=><option value={session.id} key={session.id} disabled={session.running}>{session.displayTitle}{session.originLabel?` · ${session.originLabel}`:''}{session.running?t(" · 执行中"):''}</option>)}</select><small>{t("创建后将影片设为所选会话的当前工程，已有影片仍保留关联。")}</small></Field><label className="vs-home-delegated"><input type="checkbox" checked={newDelegated} onChange={event=>{setNewDelegated(event.target.checked);if(!event.target.checked&&sessions.some(session=>session.id===newSessionId&&isDelegatedSession(session)))setNewSessionId('');}}/>{t("显示子代理／团队任务")}</label><div className="vs-modal-actions"><Button disabled={busy||!(newDuration>0)} onClick={()=>void create(false)}>{newSessionId?t("创建并关联"):t("创建影片")}</Button><Button className="vs-primary" icon="spark" disabled={busy||!(newDuration>0)||!newTopic.trim()||!state.route.model} onClick={()=>void create(true)}>{t("创建并生成分镜")}</Button></div></Dialog>}
-    {directoryOpen&&<Dialog label={t("打开工程目录")} onClose={()=>setDirectoryOpen(false)} busy={busy}><div className="vs-section-header"><h2>{t("打开已有影片工程")}</h2><button aria-label={t("关闭工程目录")} onClick={()=>setDirectoryOpen(false)} disabled={busy}>✕</button></div><p>{t("选择包含 project.json 的本地工程目录，素材与源码会一起打开。")}</p><Field label={t("打开现有项目目录")}><input autoFocus data-dialog-autofocus value={openPath} onChange={event=>setOpenPath(event.target.value)} placeholder={t("粘贴工程文件夹的绝对路径")}/></Field>{state.error&&<p className="vs-inline-error" role="alert">{systemMessage(state.error)}</p>}<div className="vs-modal-actions"><button onClick={()=>setDirectoryOpen(false)} disabled={busy}>{t("取消")}</button><Button className="vs-primary" icon="folder" disabled={!openPath.trim()||state.pending} onClick={()=>void controller.action('open',{path:openPath.trim()}).then(success=>{if(success)setDirectoryOpen(false);})}>{t("打开项目")}</Button></div></Dialog>}
-    {textOpen&&<Dialog label={t("添加文字资产")} onClose={()=>setTextOpen(false)} busy={state.pending}><div className="vs-section-header"><h2>{t("添加文字资产")}</h2><button className="vs-iconbutton" aria-label={t("关闭")} onClick={()=>setTextOpen(false)}><Icon name="close"/></button></div><textarea className="vs-textasset-input" rows={8} value={textAsset} onChange={e=>setTextAsset(e.target.value)} placeholder={t("粘贴文案、故事、产品介绍或风格参考…")} data-dialog-autofocus/><div className="vs-modal-actions"><Button className="vs-primary" icon="plus" disabled={!textAsset.trim()||state.pending} onClick={()=>void controller.action('import',{name:truncate(textAsset.trim().split('\n')[0]||t("文字素材"),22),mime:'text/plain',text:textAsset}).then(()=>{if(!controller.getSnapshot().error){setTextOpen(false);setTextAsset('');}})}>{t("加入资产库")}</Button></div></Dialog>}
-    {keysOpen&&<Dialog label={t("快捷键")} onClose={()=>setKeysOpen(false)}><div className="vs-section-header"><h2>{t("快捷键")}</h2><button type="button" className="vs-iconbutton" aria-label={t("关闭快捷键")} onClick={()=>setKeysOpen(false)}><Icon name="close"/></button></div><ul className="vs-keys"><li><span>{t("上一个 / 下一个镜头")}</span><kbd>[</kbd><kbd>]</kbd></li><li><span>{t("播放或暂停")}</span><kbd>{t("空格")}</kbd></li><li><span>{t("上一帧 / 下一帧")}</span><kbd>Alt</kbd><kbd>←</kbd><kbd>→</kbd></li><li><span>{t("撤销 / 重做")}</span><kbd>⌘ Z</kbd><kbd>⇧ ⌘ Z</kbd></li><li><span>{t("保存工程")}</span><kbd>⌘ S</kbd></li><li><span>{t("提交改词")}</span><kbd>⌘ Enter</kbd></li><li><span>{t("收起画布或大预览")}</span><kbd>Esc</kbd></li></ul></Dialog>}
+    {outputOpen&&project&&<Dialog label={t("输出设定")} onClose={()=>setOutputOpen(false)} className="vs-output-modal"><div className="vs-section-header"><h2>{t("输出设定")}</h2><IconButton icon="close" label={t("关闭输出设定")} onClick={()=>setOutputOpen(false)}/></div><fieldset className="vs-property-scroll" disabled={locked}><OutputSettings project={project} onChange={commit}/></fieldset></Dialog>}
+    {newOpen&&<CreateFilmDialog controller={controller} state={state} sessions={sessions} initialStyleId={newStyleId} onClose={()=>{setNewOpen(false);setNewStyleId('');}}/>}
+    {directoryOpen&&<Dialog label={t("打开工程目录")} onClose={()=>setDirectoryOpen(false)} busy={busy}><div className="vs-section-header"><div><h2>{t("打开已有影片工程")}</h2><p className="vs-modal-lead">{t("选择包含 project.json 的本地工程目录，素材与源码会一起打开。")}</p></div><IconButton icon="close" label={t("关闭工程目录")} onClick={()=>setDirectoryOpen(false)} disabled={busy}/></div>
+      <Field label={t("打开现有项目目录")}><input autoFocus data-dialog-autofocus value={openPath} onChange={event=>setOpenPath(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'&&isAbsolutePath(openPath.trim())&&!state.pending){event.preventDefault();void controller.action('open',{path:openPath.trim()}).then(ok=>{if(ok)setDirectoryOpen(false);});}}} placeholder={t("粘贴工程文件夹的绝对路径")} aria-invalid={openPath.trim()!==''&&!isAbsolutePath(openPath.trim())||undefined}/></Field>
+      {openPath.trim()!==''&&!isAbsolutePath(openPath.trim())&&<p className="vs-field-hint is-warn">{t("请输入以 / 或盘符开头的绝对路径。")}</p>}
+      {!!snapshot?.recent?.length&&<div className="vs-recent-list"><p className="vs-eyebrow">{t("最近打开")}</p>{snapshot.recent.slice(0,5).map(item=><button type="button" key={item.path} onClick={()=>setOpenPath(item.path)} title={item.path}><Icon name="folder"/><span><strong>{item.title}</strong><small>{item.path}</small></span></button>)}</div>}
+      {state.error&&<p className="vs-inline-error" role="alert">{systemMessage(state.error)}</p>}
+      <div className="vs-modal-actions"><button type="button" onClick={()=>setDirectoryOpen(false)} disabled={busy}>{t("取消")}</button><Button variant="primary" icon="folder" disabled={!isAbsolutePath(openPath.trim())||state.pending} onClick={()=>void controller.action('open',{path:openPath.trim()}).then(ok=>{if(ok)setDirectoryOpen(false);})}>{t("打开项目")}</Button></div></Dialog>}
+    {textOpen&&<Dialog label={t("添加文字资产")} onClose={()=>setTextOpen(false)} busy={state.pending}><div className="vs-section-header"><div><h2>{t("添加文字资产")}</h2><p className="vs-modal-lead">{t("文案、故事或风格说明都可以连接到镜头，成为画面或参考。")}</p></div><IconButton icon="close" label={t("关闭")} onClick={()=>setTextOpen(false)}/></div><textarea className="vs-textasset-input" aria-label={t("文字素材")} rows={10} value={textAsset} onChange={e=>setTextAsset(e.target.value)} placeholder={t("粘贴文案、故事、产品介绍或风格参考…")} data-dialog-autofocus/><div className="vs-modal-actions"><Button variant="primary" icon="plus" disabled={!textAsset.trim()||state.pending} onClick={()=>void controller.action('import',{name:truncate(textAsset.trim().split('\n')[0]||t("文字素材"),22),mime:'text/plain',text:textAsset}).then(()=>{if(!controller.getSnapshot().error){setTextOpen(false);setTextAsset('');}})}>{t("加入资产库")}</Button></div></Dialog>}
+    {keysOpen&&<Dialog label={t("快捷键")} onClose={()=>setKeysOpen(false)} className="vs-keys-modal"><div className="vs-section-header"><h2>{t("快捷键")}</h2><IconButton icon="close" label={t("关闭快捷键")} onClick={()=>setKeysOpen(false)}/></div><ul className="vs-keys">
+      <li><span>{t("播放或暂停")}</span><span><kbd>{t("空格")}</kbd></span></li>
+      <li><span>{t("上一帧 / 下一帧")}</span><span><kbd>Alt</kbd><kbd>←</kbd><kbd>→</kbd></span></li>
+      <li><span>{t("上一个 / 下一个镜头")}</span><span><kbd>[</kbd><kbd>]</kbd></span></li>
+      <li><span>{t("在时间线上移动镜头")}</span><span><kbd>Alt</kbd><kbd>←</kbd><kbd>→</kbd></span></li>
+      <li><span>{t("用文字修改")}</span><span><kbd>⌘ K</kbd></span></li>
+      <li><span>{t("提交改词")}</span><span><kbd>⌘ Enter</kbd></span></li>
+      <li><span>{t("撤销 / 重做")}</span><span><kbd>⌘ Z</kbd><kbd>⇧ ⌘ Z</kbd></span></li>
+      <li><span>{t("保存工程")}</span><span><kbd>⌘ S</kbd></span></li>
+      <li><span>{t("删除选中镜头 / 解除资产关联")}</span><span><kbd>Delete</kbd></span></li>
+      <li><span>{t("收起大预览")}</span><span><kbd>Esc</kbd></span></li>
+    </ul></Dialog>}
+    <ConfirmHost/>
+    <Toasts store={toasts}/>
   </main>;
 }
 
-function Environment({controller,snapshot}:{controller:StudioController;snapshot:StudioSnapshot}){
-  useLocale();
-  const [settings,setSettings]=useState({...snapshot.environment});useEffect(()=>setSettings({...snapshot.environment}),[snapshot.environment]);
-  const checks=[['browserPath',t("Chromium 浏览器"),'browserAvailable'],['ffmpegPath',t("FFmpeg 编码器"),'ffmpegAvailable'],['ffprobePath',t("ffprobe 媒体检查"),'ffprobeAvailable']] as const;
-  return <div className="vs-environment"><div><span className="vs-eyebrow">LOCAL RENDER</span><h3>{t("本地渲染环境")}</h3><p>{t("预览在浏览器中运行；成片由本地 Chromium 逐帧捕获，再交给 FFmpeg 编码。路径留空时使用已检测到的环境。")}</p></div><div className="vs-environment-fields">{checks.map(([key,label,available])=><Field key={key} label={label}><div className="vs-env-row"><span className={snapshot.environment[available]?'is-ready':'is-missing'}>{snapshot.environment[available]?t("已就绪"):t("待配置")}</span><input value={settings[key]} placeholder={t("工具的绝对路径")} onChange={e=>setSettings({...settings,[key]:e.target.value})}/></div></Field>)}<Field label={t("视频文件上限（MiB）")}><input aria-label={t("视频文件上限（MiB）")} type="number" min="1" max="512" step="1" value={(settings.maxVideoBytes??512*1024*1024)/(1024*1024)} onChange={event=>setSettings({...settings,maxVideoBytes:Number(event.target.value)*1024*1024})}/><small>{t("每个导入或生成视频的最大大小，默认 512 MiB。可降低上限以控制本地存储和处理开销。")}</small></Field><Button className="vs-primary" icon="check" disabled={!(settings.maxVideoBytes===undefined||Number.isInteger(settings.maxVideoBytes/(1024*1024))&&settings.maxVideoBytes>=1024*1024&&settings.maxVideoBytes<=512*1024*1024)} onClick={()=>void controller.action('environment',{browserPath:settings.browserPath,ffmpegPath:settings.ffmpegPath,ffprobePath:settings.ffprobePath,maxVideoBytes:settings.maxVideoBytes??512*1024*1024},'环境配置已更新。')}>{t("保存并检查环境")}</Button></div></div>;
-}
+function isAbsolutePath(value:string):boolean{return value.startsWith('/')||value.startsWith('~')||/^[a-zA-Z]:[\\/]/.test(value)||value.startsWith('\\\\');}
 function truncate(value:string,length:number):string{const units=[...value];return units.length>length?units.slice(0,length-1).join('')+'…':value;}
-function taskLabel(kind:string):string{return ({storyboard:t("生成分镜"),scenes:t("生成画面"),modify:t("修改镜头"),preview:t("准备预览"),export:t("导出视频")} as Record<string,string>)[kind]||t("正在处理");}
-
 function downloadText(name:string,text:string,mime:string):void{const blob=new Blob([text],{type:mime});const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=name.replace(/[\\/:*?"<>|]/g,'-');document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);}

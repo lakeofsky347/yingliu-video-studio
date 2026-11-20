@@ -266,8 +266,23 @@ export class VideoRenderer {
     const session=this.captureSessions.get(page);if(!session)throw new Error('Frame capture session unavailable');
     // Lossless PNG with fast compression. The viewport and scale are fixed at openPage(),
     // so repeated caret/style/font preparation and viewport probes are unnecessary.
-    const capture=await deadline(session.send('Page.captureScreenshot',{format:'png',optimizeForSpeed:true,
-      clip:{x:0,y:0,width:spec.target.width,height:spec.target.height,scale},captureBeyondViewport:false}),'Screenshot '+frame).catch(error=>{throw withTaskFailure(error,'render_frame');});
+    const screenshotParams={format:'png' as const,optimizeForSpeed:true,
+      clip:{x:0,y:0,width:spec.target.width,height:spec.target.height,scale},captureBeyondViewport:false};
+    let capture:{data:string}|undefined;
+    for(let attempt=0;attempt<3;attempt++){
+      try{
+        capture=await deadline(session.send('Page.captureScreenshot',screenshotParams),'Screenshot '+frame);
+        break;
+      }catch(error){
+        const message=error instanceof Error?error.message:String(error);
+        if(attempt<2&&message.includes('Unable to capture screenshot')){
+          await deadline(page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve())))),'Compositor frame '+frame).catch(()=>{});
+          continue;
+        }
+        throw withTaskFailure(error,'render_frame');
+      }
+    }
+    if(!capture)throw withTaskFailure(new Error('Unable to capture screenshot'),'render_frame');
     return {buffer:Buffer.from(capture.data,'base64'),shotId:result.info.sceneId};
   }
   /** Static previews share one short-lived browser and are cached against the render inputs. */

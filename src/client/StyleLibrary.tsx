@@ -2,6 +2,8 @@ import { t, useLocale, systemMessage } from './i18n.ts';
 import { useEffect, useRef, useState } from 'react';
 import type { VideoStyle } from '../shared/types.ts';
 import { Dialog } from './Dialog.tsx';
+import { useConfirmAction } from './Feedback.tsx';
+import { IconButton } from './icons.tsx';
 import { parseStyleFiles } from './style-import.ts';
 
 interface StyleLibraryProps {
@@ -13,6 +15,7 @@ const formats:Record<VideoStyle['sourceFormat'],string>={markdown:'Markdown',jso
 
 export function StyleLibrary({styles,onClose,onSave,onDelete,onUse}:StyleLibraryProps){
   useLocale();
+  const confirmAction=useConfirmAction();
   const fileInput=useRef<HTMLInputElement>(null),folderInput=useRef<HTMLInputElement>(null);
   const [editing,setEditing]=useState<Partial<VideoStyle>|null>(null),[name,setName]=useState(''),[description,setDescription]=useState(''),[prompt,setPrompt]=useState('');
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
@@ -32,18 +35,18 @@ export function StyleLibrary({styles,onClose,onSave,onDelete,onUse}:StyleLibrary
     finally{setBusy(false);if(fileInput.current)fileInput.current.value='';if(folderInput.current)folderInput.current.value='';}
   }
   async function remove(style:VideoStyle){
-    if(!window.confirm(t("从风格库中删除「{value0}」？已应用到影片的风格副本会保留。", {value0: style.name})))return;
+    if(!await confirmAction({title:t("删除风格「{value0}」？",{value0:style.name}),body:t("从风格库中删除「{value0}」？已应用到影片的风格副本会保留。", {value0: style.name}),confirmLabel:t("删除"),tone:'danger'}))return;
     setBusy(true);setError('');setNotice('');try{await onDelete(style.id);setNotice(`已删除「${style.name}」。`);}catch(cause){setError(cause instanceof Error?cause.message:'风格删除失败');}finally{setBusy(false);}
   }
   return <Dialog label={t("视频制作风格库")} onClose={onClose} busy={busy} className="vs-style-library">
-    <div className="vs-section-header"><div><span className="vs-eyebrow">STYLE LIBRARY</span><h2>{t("视频制作风格")}</h2></div><button className="vs-iconbutton" onClick={onClose} disabled={busy} aria-label={t("关闭风格库")}>×</button></div>
+    <div className="vs-section-header"><div><h2>{t("视频制作风格")}</h2></div><IconButton icon="close" label={t("关闭风格库")} onClick={onClose} disabled={busy}/></div>
     <p className="vs-style-intro">{t("创建自己的风格说明，或导入现有风格文件。应用到新影片后，风格提示会随影片保存，并用于生成分镜与镜头。")}</p>
     <div className="vs-style-tools"><button className="vs-primary" onClick={()=>fileInput.current?.click()} disabled={busy}>{t("导入文件")}</button><button onClick={()=>folderInput.current?.click()} disabled={busy}>{t("导入风格文件夹")}</button><button onClick={()=>edit()} disabled={busy}>{t("新建自定义风格")}</button><span>{t("支持 Markdown / TXT、JSON、ZIP 与文件夹")}</span></div>
     <input ref={fileInput} type="file" accept=".md,.markdown,.txt,.json,.zip" multiple hidden onChange={event=>void importFiles(event.currentTarget.files)}/>
     <input ref={folderInput} type="file" multiple hidden onChange={event=>void importFiles(event.currentTarget.files)}/>
     {error&&<p className="vs-inline-error" role="alert">{systemMessage(error)}</p>}{notice&&<p className="vs-style-notice" role="status">{systemMessage(notice)}</p>}
     {editing&&<section className="vs-style-editor" aria-label={editing.id?t("编辑风格"):t("新建风格")}>
-      <div className="vs-section-header"><h3>{editing.id?t("编辑风格"):t("新建自定义风格")}</h3><button className="vs-iconbutton" onClick={()=>setEditing(null)} disabled={busy} aria-label={t("取消编辑")}>×</button></div>
+      <div className="vs-section-header"><h3>{editing.id?t("编辑风格"):t("新建自定义风格")}</h3><IconButton icon="close" label={t("取消编辑")} onClick={()=>setEditing(null)} disabled={busy}/></div>
       <label className="vs-field"><span>{t("风格名称")}</span><input maxLength={100} value={name} onChange={event=>setName(event.target.value)} placeholder={t("例如：厚涂油画")}/></label>
       <label className="vs-field"><span>{t("简短说明（可选）")}</span><input maxLength={1000} value={description} onChange={event=>setDescription(event.target.value)} placeholder={t("适合的题材或风格特点")}/></label>
       <label className="vs-field"><span>{t("风格描述")}</span><textarea rows={9} maxLength={80000} value={prompt} onChange={event=>setPrompt(event.target.value)} placeholder={t("写下画面、色彩、镜头、节奏和声音等制作要求…")}/></label>
