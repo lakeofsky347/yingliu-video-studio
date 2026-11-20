@@ -22,10 +22,10 @@ export function previewPlaybackFrame(from:number,elapsedMs:number,fps:number,med
   if(!Number.isFinite(raw)||raw>=Math.max(0,duration))return {frame:maxFrame,ended:true};
   return {frame:Math.max(0,raw),ended:false};
 }
-function FrameThumb({url,frame,onSelect,label,failed}:{url?:string;frame:number;onSelect:(frame:number)=>void;label:string;failed:boolean}){
+function FrameThumb({url,frame,active,onSelect,label,failed}:{url?:string;frame:number;active:boolean;onSelect:(frame:number)=>void;label:string;failed:boolean}){
   useLocale();
   const [imageFailed,setImageFailed]=useState(false);
-  return <button className="vs-keyframe" aria-label={t("{value0} · 第 {value1} 帧", {value0: label, value1: frame})} onClick={()=>onSelect(frame)}>{url&&!imageFailed?<img src={url} alt={t("{value0}缩略帧", {value0: label})} onError={()=>setImageFailed(true)}/>:<div className="vs-keyframe-placeholder">{failed||imageFailed?t("画面加载失败"):t("正在生成缩略帧…")}</div>}<span>{label} <b>F{frame}</b></span></button>;
+  return <button className={`vs-keyframe ${active?'is-current':''}`} aria-label={t("{value0} · 第 {value1} 帧", {value0: label, value1: frame})} onClick={()=>onSelect(frame)}>{url&&!imageFailed?<img src={url} alt={t("{value0}缩略帧", {value0: label})} onError={()=>setImageFailed(true)}/>:<div className="vs-keyframe-placeholder">{failed||imageFailed?t("画面加载失败"):t("正在生成缩略帧…")}</div>}<span>{label} <b>F{frame}</b></span></button>;
 }
 
 export function Preview({snapshot,project,selectedShot,controller,focusFrame,focusSerial,busy=false,syncing=false,overlay}:{snapshot:StudioSnapshot;project:VideoProject;selectedShot?:Shot;controller:StudioController;focusFrame?:number|null;focusSerial?:number;busy?:boolean;syncing?:boolean;overlay?:ReactNode}){
@@ -155,7 +155,7 @@ export function Preview({snapshot,project,selectedShot,controller,focusFrame,foc
       </Popover>
     </div>
     {capture&&<div className="vs-captured-frame"><Icon name="check"/><a href={capture.url} target="_blank" rel="noreferrer">{t("查看已保存 PNG ↗")}</a><button type="button" onClick={()=>void controller.action('reveal',{path:capture.path})}>{t("打开 PNG 文件")}</button><button type="button" className="vs-iconbutton" aria-label={t("关闭提示")} onClick={()=>setCapture(null)}><Icon name="close"/></button></div>}
-    {snapshot.previewUrl&&ready&&!showOutput&&<div className="vs-keyframe-strip"><div className="vs-eyebrow" data-testid="keyframe-scope">{selectedShot?t("选中「{value0}」的关键帧", {value0: selectedShot.title}):t("全片关键帧")}</div><div className="vs-keyframes" aria-label={t("镜头关键帧")}>{marks.map((number,index)=><FrameThumb key={`${thumbnailKey}:${number}`} url={thumbnails.key===thumbnailKey?thumbnails.urls[number]:undefined} failed={thumbnails.key===thumbnailKey&&thumbnails.failed} frame={number} label={index===0?t("首帧"):index===marks.length-1?t("末帧"):t("中帧")} onSelect={seek}/>)}</div></div>}
+    {snapshot.previewUrl&&ready&&!showOutput&&<div className="vs-keyframe-strip"><div className="vs-eyebrow" data-testid="keyframe-scope">{selectedShot?t("选中「{value0}」的关键帧", {value0: selectedShot.title}):t("全片关键帧")}</div><div className="vs-keyframes" aria-label={t("镜头关键帧")}>{marks.map((number,index)=><FrameThumb key={`${thumbnailKey}:${number}`} url={thumbnails.key===thumbnailKey?thumbnails.urls[number]:undefined} failed={thumbnails.key===thumbnailKey&&thumbnails.failed} frame={number} active={Math.abs(frame-number)<=2} label={index===0?t("首帧"):index===marks.length-1?t("末帧"):t("中帧")} onSelect={seek}/>)}</div></div>}
     {audioError&&<p className="vs-inline-error">{systemMessage(audioError)}</p>}
     {previewError&&<p className="vs-inline-error" role="alert">{systemMessage(previewError)}<button onClick={()=>setReload(value=>value+1)}>{t("重新加载预览")}</button></p>}
   </div>;

@@ -92,18 +92,22 @@ export function PropertiesPanel({project,controller,selectedShot,selectedAsset,a
           <Button variant="danger" icon="delete" size="sm" onClick={()=>onDeleteShot(selectedShot)}>{t("删除")}</Button>
         </div>
       </>:selectedAsset?<>
-        {selectedAsset.kind==='image'&&assetUrl(selectedAsset)&&<img className="vs-property-image" src={assetUrl(selectedAsset)} alt={selectedAsset.name}/>}
-        <Field label={t("资产名称")}><input value={selectedAsset.name} onChange={e=>asset({name:e.target.value})}/></Field>
-        <Field label={t("用途说明")}><textarea rows={3} value={selectedAsset.description} onChange={e=>asset({description:e.target.value})}/></Field>
-        {selectedAsset.kind==='video'&&<><video className="vs-property-video" controls preload="metadata" src={assetUrl(selectedAsset)}/><p className="vs-media-help">{t("选中镜头，在“视频片段”中绑定此素材并设置裁剪与原声。")}</p></>}
-        {selectedAsset.kind==='audio'&&<><audio className="vs-property-audio" controls src={assetUrl(selectedAsset)}/><Button icon="music" size="sm" onClick={()=>onOpenPanel('audio')}>{t("安排声音片段")}</Button></>}
-        {selectedAsset.kind==='text'&&<Field label={t("文字内容")}><textarea rows={8} value={selectedAsset.text||''} onChange={e=>asset({text:e.target.value})}/></Field>}
+        <section className="vs-prop-group">
+          {selectedAsset.kind==='image'&&assetUrl(selectedAsset)&&<img className="vs-property-image" src={assetUrl(selectedAsset)} alt={selectedAsset.name}/>}
+          <Field label={t("资产名称")}><input value={selectedAsset.name} onChange={e=>asset({name:e.target.value})}/></Field>
+          <Field label={t("用途说明")}><textarea rows={3} value={selectedAsset.description} onChange={e=>asset({description:e.target.value})}/></Field>
+          {selectedAsset.kind==='video'&&<><video className="vs-property-video" controls preload="metadata" src={assetUrl(selectedAsset)}/><p className="vs-media-help">{t("选中镜头，在“视频片段”中绑定此素材并设置裁剪与原声。")}</p></>}
+          {selectedAsset.kind==='audio'&&<><audio className="vs-property-audio" controls src={assetUrl(selectedAsset)}/><Button icon="music" size="sm" onClick={()=>onOpenPanel('audio')}>{t("安排声音片段")}</Button></>}
+          {selectedAsset.kind==='text'&&<Field label={t("文字内容")}><textarea rows={8} value={selectedAsset.text||''} onChange={e=>asset({text:e.target.value})}/></Field>}
+        </section>
         <div className="vs-legend-box"><p><i className="is-asset"/>{t("使用素材：会进入镜头画面。")}</p><p><i className="is-reference"/>{t("仅供参考：指导模型理解构图与风格。")}</p></div>
         <div className="vs-property-actions"><span/><Button variant="danger" icon="delete" size="sm" onClick={()=>onDeleteAsset(selectedAsset)}>{t("删除资产")}</Button></div>
       </>:<>
-        <Field label={t("影片标题")}><input value={project.title} onChange={e=>edit({title:e.target.value})}/></Field>
-        <Field label={t("主题与想法")}><textarea rows={4} value={project.topic} placeholder={t("要表达什么？希望观众记住什么？")} onChange={e=>edit({topic:e.target.value})}/></Field>
-        <Field label={t("目标片长（秒）")}><NumberField value={project.targetDuration} min={1} step={1} label={t("目标片长（秒）")} onCommit={value=>edit({targetDuration:value})}/></Field>
+        <section className="vs-prop-group">
+          <Field label={t("影片标题")}><input value={project.title} onChange={e=>edit({title:e.target.value})}/></Field>
+          <Field label={t("主题与想法")}><textarea rows={4} value={project.topic} placeholder={t("要表达什么？希望观众记住什么？")} onChange={e=>edit({topic:e.target.value})}/></Field>
+          <Field label={t("目标片长（秒）")}><NumberField value={project.targetDuration} min={1} step={1} label={t("目标片长（秒）")} onCommit={value=>edit({targetDuration:value})}/></Field>
+        </section>
         <div className="vs-stat-grid"><div><strong>{project.shots.length}</strong><small>{t("镜头")}</small></div><div><strong>{project.assets.length}</strong><small>{t("资产")}</small></div><div><strong>{duration.toFixed(1)}<em>s</em></strong><small>{t("总时长")}</small></div></div>
         <Fold id="output" title={t("输出设定")} defaultOpen><OutputSettings project={project} onChange={commit}/></Fold>
         <div className="vs-tip-box"><Icon name="info"/><div><strong>{t("先讲清故事，再生成画面。")}</strong><p>{t("选中镜头可以调整文字、色彩、时长和素材。拖动端口，连接镜头顺序。")}</p></div></div>

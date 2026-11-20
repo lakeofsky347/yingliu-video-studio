@@ -18,6 +18,13 @@ export function Timeline({shots,fps,selectedId,locked,onSelect,onReorder,onAdd,o
   const [dragging,setDragging]=useState<string|null>(null),[dropIndex,setDropIndex]=useState<number|null>(null);
   const total=shots.reduce((sum,shot)=>sum+shot.durationFrames,0);
   const starts:number[]=[];shots.reduce((at,shot)=>{starts.push(at);return at+shot.durationFrames;},0);
+  const totalSeconds=total/Math.max(1,fps);
+  const rulerSteps=totalSeconds>0?Math.min(8,Math.max(3,Math.round(totalSeconds/2))):4;
+  const rulerMarks=Array.from({length:rulerSteps+1},(_,index)=>{
+    const sec=(totalSeconds*index)/rulerSteps;
+    const mins=Math.floor(sec/60),rem=Math.floor(sec%60);
+    return `${String(mins).padStart(2,'0')}:${String(rem).padStart(2,'0')}`;
+  });
   // Position the playhead from real clip geometry, so minimum clip widths never skew it.
   useEffect(()=>{
     const place=()=>{
@@ -59,6 +66,7 @@ export function Timeline({shots,fps,selectedId,locked,onSelect,onReorder,onAdd,o
   return <section className="vs-timeline" aria-label={t("时间线")}>
     <div className="vs-timeline-label"><strong>{t("时间线")}</strong><small>{t("{value0} 个镜头 · {value1} 秒", {value0:shots.length, value1:(total/fps).toFixed(1)})}</small></div>
     <div className="vs-timeline-scroll">
+      <div className="vs-timeline-ruler" aria-hidden="true">{rulerMarks.map((mark,index)=><span key={`${mark}-${index}`}>{mark}</span>)}</div>
       <div ref={track} className={`vs-timeline-track ${dragging?'is-dragging':''}`} data-keyboard-owner="timeline"
         onDragOver={event=>{if(!event.dataTransfer.types.includes(SHOT_MIME)||locked)return;event.preventDefault();event.dataTransfer.dropEffect='move';const index=insertionIndex(event.clientX);if(index!==dropIndex)setDropIndex(index);}}
         onDragLeave={event=>{if(!track.current?.contains(event.relatedTarget as Node))setDropIndex(null);}}
@@ -78,6 +86,7 @@ export function Timeline({shots,fps,selectedId,locked,onSelect,onReorder,onAdd,o
           onDragEnd={()=>{setDragging(null);setDropIndex(null);}}
           onKeyDown={event=>keys(event,index)}
           onClick={()=>{if(shot.id===selectedId)playhead.seek(starts[index]!);else onSelect(shot.id);}}>
+          <span className="vs-clip-swatch" aria-hidden="true" style={{'--vs-swatch-bg':shot.params.background,'--vs-swatch-fg':shot.params.foreground,'--vs-swatch-accent':shot.params.accent} as CSSProperties}><i/></span>
           <b>{String(index+1).padStart(2,'0')}</b>
           <span className="vs-clip-body"><strong>{shot.title}</strong><small>{t("{value0} 秒", {value0:(shot.durationFrames/fps).toFixed(1)})}{shot.transition==='fade'?` · ${t("淡入淡出")}`:''}</small></span>
         </button>)}

@@ -38,7 +38,7 @@ export function AssetsPanel({project,selectedId,assetUrl,pending,locked,onSelect
     <div className="vs-assets">
       {visible.map(asset=>{const count=uses(asset),url=asset.kind==='image'?assetUrl(asset):'';return <div key={asset.id} className={`vs-asset ${selectedId===asset.id?'is-selected':''}`}>
         <button type="button" className="vs-asset-main" draggable onDragStart={e=>{e.dataTransfer.setData('application/x-dsh-video-asset',asset.id);e.dataTransfer.effectAllowed='move';}} onClick={()=>onSelect(asset.id)} aria-pressed={selectedId===asset.id}>
-          <span className={`vs-asset-thumb is-${asset.kind}`}>{url?<img src={url} alt="" loading="lazy"/>:<Icon name={KIND_ICON[asset.kind]}/>}</span>
+          <span className={`vs-asset-thumb is-${asset.kind}`}>{url?<img src={url} alt="" loading="lazy"/>:asset.kind==='audio'?<span className="vs-mini-wave" aria-hidden="true"><i/><i/><i/><i/><i/></span>:<Icon name={KIND_ICON[asset.kind]}/>}</span>
           <span className="vs-asset-text"><strong>{asset.name}</strong><small>{asset.kind==='image'?asset.width&&asset.height?`${asset.width} × ${asset.height}`:t("图片素材"):asset.kind==='audio'?t("{value0} 秒 · 音频", {value0: (asset.duration||0).toFixed(1)}):asset.kind==='video'?t("{value0} 秒 · 视频", {value0: (asset.duration||0).toFixed(1)}):truncate(asset.text||asset.description,38)}</small></span>
           {count>0&&<span className="vs-asset-uses" title={t("已用于 {value0} 个镜头", {value0:count})}>{count}</span>}
         </button>
