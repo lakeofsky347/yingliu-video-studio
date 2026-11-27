@@ -28,29 +28,32 @@ function FrameThumb({url,frame,active,onSelect,label,failed}:{url?:string;frame:
   return <button className={`vs-keyframe ${active?'is-current':''}`} aria-label={t("{value0} · 第 {value1} 帧", {value0: label, value1: frame})} onClick={()=>onSelect(frame)}>{url&&!imageFailed?<img src={url} alt={t("{value0}缩略帧", {value0: label})} onError={()=>setImageFailed(true)}/>:<div className="vs-keyframe-placeholder">{failed||imageFailed?t("画面加载失败"):t("正在生成缩略帧…")}</div>}<span>{label} <b>F{frame}</b></span></button>;
 }
 
-export function Preview({snapshot,project,selectedShot,controller,focusFrame,focusSerial,busy=false,syncing=false,overlay,transport}:{snapshot:StudioSnapshot;project:VideoProject;selectedShot?:Shot;controller:StudioController;focusFrame?:number|null;focusSerial?:number;busy?:boolean;syncing?:boolean;overlay?:ReactNode;transport?:Playhead}){
+export function Preview({snapshot,project,selectedShot,controller,focusFrame,focusSerial,busy=false,syncing=false,visible=true,overlay,transport}:{snapshot:StudioSnapshot;project:VideoProject;selectedShot?:Shot;controller:StudioController;focusFrame?:number|null;focusSerial?:number;busy?:boolean;syncing?:boolean;visible?:boolean;overlay?:ReactNode;transport?:Playhead}){
   useLocale();
   const preview=useRef<HTMLDivElement>(null),iframe=useRef<HTMLIFrameElement>(null),audio=useRef<HTMLAudioElement>(null),currentFrame=useRef(0),handledSpace=useRef(false);
   const [readyKey,setReadyKey]=useState(''),[frame,setFrame]=useState(0),[playing,setPlaying]=useState(false),[sceneId,setSceneId]=useState(''),[showOutput,setShowOutput]=useState(false),[expanded,setExpanded]=useState(false),[jump,setJump]=useState('0'),[jumping,setJumping]=useState(false),[audioError,setAudioError]=useState(''),[capturing,setCapturing]=useState(false),[capture,setCapture]=useState<{path:string;url:string}|null>(null),[previewError,setPreviewError]=useState(''),[reload,setReload]=useState(0);
-  const duration=project.shots.reduce((n,s)=>n+s.durationFrames,0),fps=project.target.fps.num/project.target.fps.den;
+  const [reloading,setReloading]=useState(false);
+  const duration=useMemo(()=>shotFrameRange(project).end,[project.shotOrder,project.shots]);
+  const fps=project.target.fps.num/project.target.fps.den;
   currentFrame.current=frame;
   const maxFrame=Math.max(0,duration-1),origin=snapshot.previewUrl?new URL(snapshot.previewUrl).origin:'';
   const previewKey=JSON.stringify([project.id,snapshot.previewUrl,snapshot.previewRevision,reload,showOutput]),ready=!!snapshot.previewUrl&&readyKey===previewKey;
   const requestFrame=useRef<(frame:number)=>void>(()=>{});
   const previewUrl=useMemo(()=>{if(!snapshot.previewUrl)return '';const value=new URL(snapshot.previewUrl);value.searchParams.set('render','manual');return value.href;},[snapshot.previewUrl]);
-  const range=useMemo(()=>shotFrameRange(project,selectedShot?.id),[project.shotOrder,project.shots,selectedShot?.id]);
+  const selectedInFilm=!!selectedShot&&project.shotOrder.includes(selectedShot.id);
+  const range=useMemo(()=>shotFrameRange(project,selectedInFilm?selectedShot?.id:undefined),[project.shotOrder,project.shots,selectedInFilm,selectedShot?.id]);
   const currentRange=useMemo(()=>frameShotRange(project,frame),[project.shotOrder,project.shots,frame]);
   const marks=useMemo(()=>keyframeNumbers(range.start,range.end),[range.start,range.end]);
   const boundaries=useMemo(()=>{let at=0;const values:number[]=[];for(const id of project.shotOrder){const shot=project.shots.find(s=>s.id===id);if(!shot)continue;at+=shot.durationFrames;if(at<duration)values.push(at);}return values;},[project.shotOrder,project.shots,duration]);
-  const thumbnailKey=JSON.stringify([snapshot.previewUrl,marks]);
+  const thumbnailKey=JSON.stringify([snapshot.previewUrl,snapshot.previewRevision,marks]);
   const [thumbnails,setThumbnails]=useState<{key:string;urls:Record<number,string>;failed:boolean}>({key:'',urls:{},failed:false});
   useEffect(()=>{
-    if(!snapshot.previewUrl||!ready||showOutput||busy)return;
+    if(!snapshot.previewUrl||!ready||showOutput||busy||!visible||syncing||!duration||snapshot.previewRevision!==project.revision)return;
     let active=true;const timer=setTimeout(()=>{
       void controller.api.call<{frames:{frame:number;url:string}[]}>('thumbnails',{projectId:project.id,expectedRevision:snapshot.previewRevision,frames:marks}).then(result=>{if(active)setThumbnails({key:thumbnailKey,urls:Object.fromEntries(result.frames.map(capture=>[capture.frame,capture.url])),failed:false});}).catch(()=>{if(active)setThumbnails({key:thumbnailKey,urls:{},failed:true});});
     },150);
     return()=>{active=false;clearTimeout(timer);};
-  },[thumbnailKey,ready,showOutput,busy,controller,project.id,snapshot.previewRevision]);
+  },[thumbnailKey,ready,showOutput,busy,visible,syncing,duration,controller,project.id,project.revision,snapshot.previewRevision]);
   const seek=(value:number)=>{setPlaying(false);setShowOutput(false);setFrame(Math.max(0,Math.min(maxFrame,Math.round(value))));};
   const togglePlay=()=>{setAudioError('');if(currentFrame.current>=maxFrame)setFrame(0);setPlaying(value=>!value);};
   useEffect(()=>{
@@ -73,7 +76,7 @@ export function Preview({snapshot,project,selectedShot,controller,focusFrame,foc
   },[previewKey,previewUrl,origin]);
   useEffect(()=>{if(ready)requestFrame.current(frame);setJump(String(frame));},[frame,ready]);
   useEffect(()=>{if(!playing||!ready)return;let animation=0;const start=performance.now(),from=frame;const tick=(now:number)=>{const mediaTime=project.target.audioMode==='mixed'&&snapshot.audioUrl&&audio.current&&Number.isFinite(audio.current.currentTime)?audio.current.currentTime:null;const step=previewPlaybackFrame(from,now-start,fps,mediaTime,duration);setFrame(step.frame);if(step.ended){setPlaying(false);return;}animation=requestAnimationFrame(tick);};animation=requestAnimationFrame(tick);return()=>cancelAnimationFrame(animation);},[playing,ready,duration,fps,snapshot.audioUrl,project.target.audioMode]);
-  useEffect(()=>{if(!selectedShot)return;seek(range.start);},[selectedShot?.id,range.start]);
+  useEffect(()=>{if(selectedInFilm)seek(range.start);},[selectedInFilm,selectedShot?.id,range.start]);
   useEffect(()=>{if(focusFrame==null)return;seek(focusFrame);},[focusSerial]);
   useEffect(()=>{if(frame>maxFrame)seek(maxFrame);},[maxFrame]);
   useEffect(()=>{const element=audio.current;if(!element)return;if(playing&&ready&&!showOutput){element.currentTime=Math.min(element.duration||Infinity,frame/fps);void element.play().catch(()=>{setAudioError('声音尚未播放，点击播放后重试。');setPlaying(false);});}else element.pause();return()=>element.pause();},[playing,ready,showOutput,snapshot.audioUrl]);
@@ -96,7 +99,7 @@ export function Preview({snapshot,project,selectedShot,controller,focusFrame,foc
         // Keyboard users activating a focused control keep native Space; pointer-focused controls do not swallow playback.
         const control=target.closest('button, a, summary, [role=tab]');
         if(control&&control!==pointerControl)return;
-        event.preventDefault();handledSpace.current=true;if(!ready||showOutput)return;
+        event.preventDefault();handledSpace.current=true;if(event.repeat||!ready||showOutput)return;
         togglePlay();
       }
       if(target.closest('[data-keyboard-owner]'))return;
@@ -112,6 +115,26 @@ export function Preview({snapshot,project,selectedShot,controller,focusFrame,foc
     studio.addEventListener('keydown',onKey);studio.addEventListener('keyup',onKeyUp);return()=>{studio.removeEventListener('keydown',onKey);studio.removeEventListener('keyup',onKeyUp);studio.removeEventListener('pointerdown',onPointer,true);studio.removeEventListener('keydown',onTab,true);};
   },[ready,showOutput,maxFrame,expanded]);
   async function capturePng(){const capturedFrame=currentFrame.current;setPlaying(false);setCapturing(true);try{await controller.flush();if(controller.getSnapshot().error)throw new Error(controller.getSnapshot().error);const result=await controller.api.call<{frame?:{path:string;url:string}}>('inspect',{projectId:project.id,shotId:frameShotRange(project,capturedFrame).shot?.id,frame:capturedFrame});if(!result.frame)throw new Error('未获得 PNG 帧');setCapture(result.frame);controller.notify(`第 ${capturedFrame} 帧 PNG 已保存到项目中。`);}catch(error){controller.notify(error instanceof Error?error.message:'导出 PNG 失败');}finally{setCapturing(false);}}
+  async function reloadScene(){
+    if(reloading)return;
+    setReloading(true);
+    setPlaying(false);
+    try{
+      if(!await controller.refreshMediaProject())throw new Error('工程状态正在更新，请稍后重新加载画面。');
+      const saved=controller.getSnapshot().snapshot;
+      if(saved?.project?.id!==project.id)return;
+      if(!saved.previewUrl||saved.previewRevision!==saved.project.revision){
+        const prepared=await controller.refreshPreview();
+        const current=controller.getSnapshot();
+        if(current.snapshot?.project?.id!==project.id)return;
+        if(!prepared&&!current.previewing)throw new Error(current.error||'无法准备当前版本的预览，请检查分镜主链后重试。');
+      }
+      setReadyKey('');
+      setPreviewError('');
+      setReload(value=>value+1);
+    }catch(error){setPreviewError(error instanceof Error?error.message:'刷新画面失败，请重试。');}
+    finally{setReloading(false);}
+  }
   const localFrame=currentRange.localFrame;
   const output=project.outputs.at(-1),outdated=snapshot.previewRevision!==null&&snapshot.previewRevision!==project.revision;
   const disabled=!ready||showOutput;
@@ -125,7 +148,7 @@ export function Preview({snapshot,project,selectedShot,controller,focusFrame,foc
         {snapshot.previewUrl&&!ready&&!showOutput&&!previewError&&<span className="vs-preview-loading" aria-hidden="true"/>}
       <div className="vs-monitor-hud">
         <span className="vs-hud-chip" data-testid="current-shot-heading" data-shot-id={currentRange.shot?.id}>{shotLabel}</span>
-        {(outdated||syncing)&&<span className="vs-preview-badge"><i/>{t("正在同步最新修改…")}</span>}
+        {(outdated||syncing||reloading)&&<span className="vs-preview-badge"><i/>{syncing||reloading?t("正在同步最新修改…"):t("预览为已保存的旧版本")}</span>}
       </div>
       <button type="button" className="vs-monitor-expand" aria-label={expanded?t("关闭大预览"):t("打开大预览")} title={expanded?t("收起 · Esc"):t("大预览")} onClick={()=>setExpanded(!expanded)}><Icon name={expanded?'collapse':'expand'}/></button>
       </div>
@@ -149,14 +172,14 @@ export function Preview({snapshot,project,selectedShot,controller,focusFrame,foc
           <button type="button" disabled={disabled||busy||capturing} onClick={()=>{close();void capturePng();}}><Icon name="camera"/><span>{capturing?t("正在保存…"):t("导出当前帧 PNG")}</span></button>
           {output?.url&&<button type="button" onClick={()=>{close();setPlaying(false);setReadyKey('');setShowOutput(value=>!value);}}><Icon name={showOutput?'film':'play'}/><span>{showOutput?t("返回逐帧"):t("播放成片")}</span></button>}
           {output&&<button type="button" onClick={()=>{close();void controller.action('reveal',{path:output.path});}}><Icon name="external"/><span>{t("打开成片 →")}</span></button>}
-          <button type="button" onClick={()=>{close();setReload(value=>value+1);}}><Icon name="refresh"/><span>{t("重新载入画面")}</span></button>
+          <button type="button" disabled={reloading} onClick={()=>{close();void reloadScene();}}><Icon name="refresh"/><span>{t("重新载入画面")}</span></button>
           <div className="vs-menu-note">{currentRange.shot?t("镜头 F{value0} · {value1}s", {value0: localFrame, value1: (localFrame/fps).toFixed(3)}):''}{sceneId&&!showOutput?` · ${project.shots.find(s=>s.id===sceneId)?.title||sceneId}`:''}</div>
         </div>}
       </Popover>
     </div>
     {capture&&<div className="vs-captured-frame"><Icon name="check"/><a href={capture.url} target="_blank" rel="noreferrer">{t("查看已保存 PNG ↗")}</a><button type="button" onClick={()=>void controller.action('reveal',{path:capture.path})}>{t("打开 PNG 文件")}</button><button type="button" className="vs-iconbutton" aria-label={t("关闭提示")} onClick={()=>setCapture(null)}><Icon name="close"/></button></div>}
-    {snapshot.previewUrl&&ready&&!showOutput&&<div className="vs-keyframe-strip"><div className="vs-eyebrow" data-testid="keyframe-scope">{selectedShot?t("选中「{value0}」的关键帧", {value0: selectedShot.title}):t("全片关键帧")}</div><div className="vs-keyframes" aria-label={t("镜头关键帧")}>{marks.map((number,index)=><FrameThumb key={`${thumbnailKey}:${number}`} url={thumbnails.key===thumbnailKey?thumbnails.urls[number]:undefined} failed={thumbnails.key===thumbnailKey&&thumbnails.failed} frame={number} active={Math.abs(frame-number)<=2} label={index===0?t("首帧"):index===marks.length-1?t("末帧"):t("中帧")} onSelect={seek}/>)}</div></div>}
+    {snapshot.previewUrl&&ready&&!showOutput&&duration>0&&<div className="vs-keyframe-strip"><div className="vs-eyebrow" data-testid="keyframe-scope">{selectedInFilm&&selectedShot?t("选中「{value0}」的关键帧", {value0: selectedShot.title}):t("全片关键帧")}</div><div className="vs-keyframes" aria-label={t("镜头关键帧")}>{marks.map((number,index)=><FrameThumb key={`${thumbnailKey}:${number}`} url={thumbnails.key===thumbnailKey?thumbnails.urls[number]:undefined} failed={thumbnails.key===thumbnailKey&&thumbnails.failed} frame={number} active={Math.abs(frame-number)<=2} label={index===0?t("首帧"):index===marks.length-1?t("末帧"):t("中帧")} onSelect={seek}/>)}</div></div>}
     {audioError&&<p className="vs-inline-error">{systemMessage(audioError)}</p>}
-    {previewError&&<p className="vs-inline-error" role="alert">{systemMessage(previewError)}<button onClick={()=>setReload(value=>value+1)}>{t("重新加载预览")}</button></p>}
+    {previewError&&<div className="vs-inline-error vs-render-error" role="alert"><strong>{systemMessage(previewError)}</strong><button type="button" disabled={reloading} onClick={()=>void reloadScene()}>{t("重新加载预览")}</button></div>}
   </div>;
 }

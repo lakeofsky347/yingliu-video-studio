@@ -31,7 +31,7 @@ export function Stage({project,snapshot,state,controller,playhead,layout,stageMo
       <div className="vs-stage-left">
         {layout!=='wide'&&<IconButton icon="sidebar" label={t("资产库")} active={assetsOpen} onClick={onToggleAssets}/>}
         <div className="vs-segmented vs-stage-modes" role="radiogroup" aria-label={t("舞台视图")}>
-          {([['monitor','monitor',t("监视器")],['canvas','graph',t("分镜画布")],['split','split',t("分栏")]] as const).map(([mode,icon,label])=>(layout==='narrow'&&mode==='split')?null:<button type="button" role="radio" key={mode} aria-checked={stageMode===mode} className={stageMode===mode?'is-active':''} title={label} onClick={()=>onStageMode(mode)}><Icon name={icon}/><span>{label}</span></button>)}
+          {([['monitor','monitor',t("监视器")],['canvas','graph',t("分镜画布")],['split','split',t("分栏")]] as const).map(([mode,icon,label])=>(layout==='narrow'&&mode==='split')?null:<button type="button" role="radio" key={mode} aria-label={label} aria-checked={stageMode===mode} className={stageMode===mode?'is-active':''} title={label} onClick={()=>onStageMode(mode)}><Icon name={icon}/><span>{label}</span></button>)}
         </div>
         <button type="button" className="vs-format-chip" aria-label={t("打开输出设定")} title={t("输出设定")} onClick={onOutputSettings}>{targetLabel(project.target)}</button>
         <span className={`vs-duration ${durationOff?'is-off':''}`} title={t("/ 目标 {value0} 秒", {value0: project.targetDuration})}><strong>{duration.toFixed(1)}s</strong><small>/ {project.targetDuration}s</small></span>
@@ -51,7 +51,7 @@ export function Stage({project,snapshot,state,controller,playhead,layout,stageMo
     </div>
     <div className="vs-stage-body">
       <div className="vs-stage-monitor" aria-hidden={stageMode==='canvas'||undefined}>
-        <Preview key={project.id} snapshot={snapshot} project={project} selectedShot={selectedShot} controller={controller} transport={playhead} focusFrame={state.focusFrame} focusSerial={state.focusSerial} busy={busy} syncing={state.saving||state.dirty||!!state.previewing}/>
+        <Preview key={project.id} snapshot={snapshot} project={project} selectedShot={selectedShot} controller={controller} transport={playhead} focusFrame={state.focusFrame} focusSerial={state.focusSerial} busy={busy} syncing={state.saving||state.dirty||!!state.previewing} visible={stageMode!=='canvas'}/>
       </div>
       <div className="vs-stage-canvas" aria-hidden={stageMode==='monitor'||undefined}>
         <div className="vs-graph-shell"><canvas ref={canvasRef}/>

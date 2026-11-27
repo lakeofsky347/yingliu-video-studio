@@ -28,9 +28,12 @@ async function browserFixture(mode:'preview'|'source',run:(page:Awaited<ReturnTy
       const project=${JSON.stringify(project)},snapshot={project,previewUrl:location.origin+'/frame',previewRevision:0,audioUrl:null};
       const state={snapshot},drafts=new Map();window.commits=[];window.notifications=[];
       const controller={subscribe:()=>()=>{},getSnapshot:()=>state,confirmedRevision:0,getSourceDraft:id=>drafts.get(id),sourceDrafts:()=>[],readSource:id=>id===project.shots[0].id?Promise.resolve({html:'SOURCE_A',css:'CSS_A',js:'JS_A'}):new Promise(resolve=>window.resolveB=resolve),setSourceDraft:(id,source,revision)=>drafts.set(id,{source,baseRevision:revision}),api:{call:async()=>({frames:[]})},notify:value=>window.notifications.push(value)};
-      function Fixture(){const [selected,setSelected]=useState(project.shots[0]),[version,setVersion]=useState(0);window.selectB=()=>setSelected(project.shots[1]);window.swapPreview=()=>setVersion(v=>v+1);
+      window.recoveryCalls=[];
+      controller.refreshMediaProject=async()=>{window.recoveryCalls.push('current');state.snapshot={...snapshot,project:{...project,revision:2},previewRevision:1};return true;};
+      controller.refreshPreview=async()=>{window.recoveryCalls.push('prepare');state.snapshot={...state.snapshot,previewUrl:location.origin+'/frame/latest',previewRevision:2};window.acceptSavedPreview(state.snapshot);return true;};
+      function Fixture(){const [selected,setSelected]=useState(project.shots[0]),[version,setVersion]=useState(0),[savedPreview,setSavedPreview]=useState(null);window.selectB=()=>setSelected(project.shots[1]);window.swapPreview=()=>setVersion(v=>v+1);window.acceptSavedPreview=setSavedPreview;
         useLayoutEffect(()=>{window.commits.push({selected:selected.id,value:document.querySelector('textarea')?.value??null});});
-        return ${mode==='source'?'<SourceEditor controller={controller} selectedShot={selected} busy={false} version="fixed"/>':'<Preview controller={controller} project={project} snapshot={{...snapshot,previewRevision:version}} busy={true}/>'};}
+        return ${mode==='source'?'<SourceEditor controller={controller} selectedShot={selected} busy={false} version="fixed"/>':'<Preview controller={controller} project={savedPreview?.project??project} snapshot={savedPreview??{...snapshot,previewRevision:version}} busy={true}/>'};}
       addEventListener('message',event=>{if(event.data?.type==='video-studio/ready')window.readyEvents=(window.readyEvents??0)+1;});
       createRoot(document.getElementById('root')).render(<Fixture/>);`);
     await build({entry:{fixture:entry},outDir:directory,clean:false,format:'esm',platform:'browser',inputOptions:{platform:'browser'},deps:{alwaysBundle:[/.*/]},dts:false,sourcemap:false,logLevel:'silent'});
@@ -65,6 +68,8 @@ test('preview enables playback only after a real frame, rejects an old iframe an
     assert.equal(await page.getByRole('button',{name:'播放',exact:true}).isDisabled(),true);assert.equal(await page.getByText('STALE_ERROR',{exact:false}).count(),0);
     await page.clock.runFor(30_100);await page.getByRole('button',{name:'重新加载预览'}).waitFor();
     await page.getByRole('button',{name:'重新加载预览'}).click();await page.waitForFunction(()=>(window as any).readyEvents>=3);
+    assert.deepEqual(await page.evaluate(()=>(window as any).recoveryCalls),['current','prepare']);
+    assert.match((await page.locator('iframe').getAttribute('src'))??'',/\/frame\/latest\?render=manual$/);
     await page.evaluate(()=>document.querySelector('iframe')!.contentWindow!.postMessage({type:'test-frame'},'*'));
     await page.waitForFunction(()=>!(document.querySelector('button[aria-label="播放"]') as HTMLButtonElement)?.disabled);
     assert.equal(await page.getByRole('alert').count(),0);assert.equal(await page.locator('iframe').count(),1);

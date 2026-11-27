@@ -28,6 +28,16 @@ import {freezeImport,freezeLocalVideo,importDigest,retryLocalAppend} from './loc
 
 interface TaskRequest { endpoint:'preview'|'export'|'generate'; payload:Record<string,string> }
 interface RecordedTask extends TaskState { recordVersion?:1; revision?:number; request?:TaskRequest; retryOf?:string }
+const legacySpeechKey='DSH_VIDEO_STUDIO_TTS_API_KEY';
+function speechOrigin(endpoint:string):string|undefined {
+  const url=URL.parse(endpoint);
+  return url&&['http:','https:'].includes(url.protocol)?url.origin:undefined;
+}
+function failedShotIds(value:unknown):string[]|undefined {
+  if(!Array.isArray(value))return;
+  const ids=[...new Set(value.filter((id):id is string=>typeof id==='string'&&!!id))];
+  return ids.length?ids:undefined;
+}
 
 /** Only failures before synthesize() is called are safe to retry without submission ambiguity. */
 export function speechPreflightFailure(error:unknown):Error&{submissionUncertain:false}{
@@ -36,6 +46,7 @@ export function speechPreflightFailure(error:unknown):Error&{submissionUncertain
 
 export class StudioService {
   readonly store:ProjectStore;readonly renderer:VideoRenderer;
+  private static speechSettingsQueues=new Map<string,Promise<void>>();
   private project:VideoProject|null=null;private root:string|null=null;
   private task:RecordedTask|null=null;private controller?:AbortController;private job?:Promise<void>;
   private commands:Promise<unknown>=Promise.resolve();
@@ -58,7 +69,7 @@ export class StudioService {
   }
   private async initialize(){
     try{this.settings={...this.settings,...JSON.parse(await readFile(join(this.baseDirectory,'environment.json'),'utf8'))};}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
-    try{this.tts={...this.tts,...JSON.parse(await readFile(join(this.baseDirectory,'tts.json'),'utf8'))};delete this.tts.apiKey;}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+    await this.readSpeechSettings();
     const recent=this.restoreRecent?await this.store.recent():[];
     if(recent[0])try{this.project=await this.store.open(recent[0].path);this.root=recent[0].path;await this.recoverTask();await this.refreshPreview();}catch{/* Recent path may have been moved; keep the picker usable. */}
   }
@@ -343,7 +354,59 @@ export class StudioService {
     const result=this.commands.then(work);this.commands=result.then(()=>undefined,()=>undefined);return result;
   }
   private credentials(){return this.ctx.get?.('credentials') as {set(ref:string,value:string):Promise<void>;unset?(ref:string):Promise<void>;resolve(ref:string):Promise<{value:string}|undefined>}|undefined;}
-  private async speechSettings():Promise<TtsSettings>{try{this.tts={...this.tts,...JSON.parse(await readFile(join(this.baseDirectory,'tts.json'),'utf8'))};delete this.tts.apiKey;}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}if(this.tts.endpoint==='local:say')return {...this.tts,apiKey:undefined};const credentials=this.credentials();const key=credentials?await credentials.resolve('DSH_VIDEO_STUDIO_TTS_API_KEY'):undefined;return {...this.tts,apiKey:key?.value};}
+  private get speechSettingsFile(){return join(this.baseDirectory,'tts.json');}
+  private async readSpeechSettings():Promise<void>{
+    try{this.tts={...this.tts,...JSON.parse(await readFile(this.speechSettingsFile,'utf8'))};delete this.tts.apiKey;}
+    catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+  }
+  private queueSpeechSettings<T>(work:()=>Promise<T>):Promise<T>{
+    const queues=StudioService.speechSettingsQueues;
+    const result=(queues.get(this.speechSettingsFile)??Promise.resolve()).then(work);
+    const settled=result.then(()=>undefined,()=>undefined);
+    queues.set(this.speechSettingsFile,settled);
+    void settled.then(()=>{if(queues.get(this.speechSettingsFile)===settled)queues.delete(this.speechSettingsFile);});
+    return result;
+  }
+  private speechSettings():Promise<TtsSettings>{
+    return this.queueSpeechSettings(async()=>{
+      await this.readSpeechSettings();
+      const key=this.tts.endpoint==='local:say'?undefined:await this.credentials()?.resolve(legacySpeechKey);
+      return {...this.tts,apiKey:key?.value};
+    });
+  }
+  private saveSpeechSettings(data:Partial<TtsSettings>):Promise<void>{
+    return this.queueSpeechSettings(async()=>{
+      await this.readSpeechSettings();
+      const options:Partial<TtsSettings>={};
+      if(data.endpoint!==undefined)options.endpoint=data.endpoint;
+      if(data.model!==undefined)options.model=data.model;
+      if(data.voice!==undefined)options.voice=data.voice;
+      if(data.speed!==undefined)options.speed=data.speed;
+      if(data.enabled!==undefined)options.enabled=data.enabled;
+      const next={...this.tts,...options};
+      const onlyClearingKey=data.apiKey===''&&!Object.keys(options).length;
+      if(!onlyClearingKey)validateTtsSettings(next,detectEnvironment(this.settings));
+      const credentials=this.credentials();
+      const nextOrigin=speechOrigin(next.endpoint);
+      if(data.apiKey===undefined){
+        if(nextOrigin&&nextOrigin!==speechOrigin(this.tts.endpoint)&&await credentials?.resolve(legacySpeechKey))throw new Error('更换语音接口域名时，请输入新接口的 API Key，或先清除原语音密钥');
+        await writeDurableFile(this.speechSettingsFile,JSON.stringify(next,null,2)+'\n');
+      }else{
+        if(data.apiKey&&!credentials)throw new Error('宿主凭据服务不可用，请使用本地配音或无密钥端点');
+        if(!data.apiKey&&!credentials?.unset)throw new Error('宿主凭据服务无法清除密钥，请在 DSH 凭据设置中清除');
+        const previousKey=(await credentials!.resolve(legacySpeechKey))?.value;
+        if(data.apiKey)await credentials!.set(legacySpeechKey,String(data.apiKey));
+        else await credentials!.unset!(legacySpeechKey);
+        try{await writeDurableFile(this.speechSettingsFile,JSON.stringify(next,null,2)+'\n');}
+        catch(error){
+          if(previousKey)await credentials!.set(legacySpeechKey,previousKey);
+          else if(credentials!.unset)await credentials!.unset(legacySpeechKey);
+          throw error;
+        }
+      }
+      this.tts=next;
+    });
+  }
   private async redact(text:string):Promise<string>{
     const key=(await this.credentials()?.resolve('DSH_VIDEO_STUDIO_TTS_API_KEY'))?.value;if(key)text=text.split(key).join('[redacted]');
     return text.replace(/Bearer\s+[^\s"',;]+/gi,'Bearer [redacted]').replace(/\bsk-[a-zA-Z0-9_-]{8,}/g,'[redacted]');
@@ -376,6 +439,7 @@ export class StudioService {
       try{const value=JSON.parse(await readFile(await projectPath(root,'.studio/tasks/'+name),'utf8')) as RecordedTask;
         if(!value||typeof value!=='object'||value.id+'.json'!==name||typeof value.startedAt!=='string'||!['storyboard','scenes','modify','preview','export','audio'].includes(value.kind)||!['running','complete','failed','cancelled','interrupted'].includes(value.status))continue;
         const task:RecordedTask={id:value.id,kind:value.kind,status:value.status,startedAt:value.startedAt,progress:Number.isFinite(value.progress)?value.progress:0,message:await this.redact(String(value.message??'')),logPath:await projectPath(root,'.studio/tasks/'+name),finishedAt:typeof value.finishedAt==='string'?value.finishedAt:undefined,error:typeof value.error==='string'?await this.redact(value.error):undefined,shotId:typeof value.shotId==='string'?value.shotId:undefined,recordVersion:value.recordVersion===1?1:undefined,revision:Number.isSafeInteger(value.revision)?value.revision:undefined,failure:sanitizeTaskFailure(value.failure),retryOf:typeof value.retryOf==='string'?value.retryOf:undefined};
+        if(task.status==='failed')task.failedShotIds=failedShotIds(value.failedShotIds);
         const request=value.recordVersion===1&&value.request?this.recordedRequest(value.request.endpoint,value.request.payload):undefined;
         if(request&&((request.endpoint==='preview'||request.endpoint==='export')?request.endpoint===value.kind:request.payload.kind===value.kind)){
           for(const key of Object.keys(request.payload))request.payload[key]=await this.redact(request.payload[key]!);task.request=request;
@@ -401,7 +465,10 @@ export class StudioService {
     this.job=(async()=>{
       let status:TaskState['status']='complete',error:string|undefined;
       try{await work(controller.signal);controller.signal.throwIfAborted();}
-      catch(failure){task.failure=taskFailure(failure,'task_work');status=controller.signal.aborted?'cancelled':'failed';error=failure instanceof Error?failure.message:String(failure);}
+      catch(failure){
+        task.failure=taskFailure(failure,'task_work');status=controller.signal.aborted?'cancelled':'failed';error=failure instanceof Error?failure.message:String(failure);
+        if(status==='failed'&&failure instanceof Error&&'failedShotIds' in failure)task.failedShotIds=failedShotIds(failure.failedShotIds);
+      }
       finally{
         const finished:RecordedTask={...task,status,error:error?await this.redact(error):undefined,progress:status==='complete'?1:task.progress,message:status==='complete'?'已完成':status==='cancelled'?'已取消':await this.redact(error??'任务失败'),finishedAt:new Date().toISOString()};
         // Readers observe terminal completion only after its durable journal is written.
@@ -427,15 +494,22 @@ export class StudioService {
     assertProductionOperation(initial,'code',[shotId]);
     const old=await this.store.readSource(root,shot);const source=await generator.scene(initial,shot,route,signal,instruction?old:undefined,instruction);
     signal.throwIfAborted();await this.enqueue(async()=>{signal.throwIfAborted();this.assertRevision({expectedRevision:initial.revision});const next=this.patched(structuredClone(this.required().project),shotId,source.shotPatch);await this.persist(next,{[shotId]:{html:source.html,css:source.css,js:source.js}},'模型生成镜头',this.task?.id);});
-    let checked=await this.renderer.check(root,this.required().project,this.settings,signal);
+    let checkedProject=this.required().project;
+    let checked=await this.renderer.check(root,checkedProject,this.settings,signal);
+    signal.throwIfAborted();
     if(!checked.ok){
+      const errors=checked.errors.filter(issue=>issue.shotId===shotId);
+      if(!errors.length)throw renderCheckError(checked);
       this.progress(this.task?.progress??0,'发现代码错误，正在修复');
-      const errors=checked.errors.filter(e=>!e.shotId||e.shotId===shotId);if(!errors.length)throw renderCheckError(checked);
-      const repaired=await generator.scene(this.required().project,this.required().project.shots.find(s=>s.id===shotId)!,route,signal,source,`修复运行错误，保留当前设计和可编辑参数：${JSON.stringify(errors)}`);
-      signal.throwIfAborted();await this.enqueue(async()=>{signal.throwIfAborted();await this.persist(this.required().project,{[shotId]:{html:repaired.html,css:repaired.css,js:repaired.js}},'模型修复镜头',this.task?.id);});checked=await this.renderer.check(root,this.required().project,this.settings,signal);
+      const repaired=await generator.scene(checkedProject,checkedProject.shots.find(s=>s.id===shotId)!,route,signal,source,`修复运行错误，保留当前设计和可编辑参数：${JSON.stringify(errors)}`);
+      signal.throwIfAborted();
+      await this.enqueue(async()=>{signal.throwIfAborted();this.assertRevision({expectedRevision:checkedProject.revision});await this.persist(checkedProject,{[shotId]:{html:repaired.html,css:repaired.css,js:repaired.js}},'模型修复镜头',this.task?.id);});
+      checkedProject=this.required().project;
+      checked=await this.renderer.check(root,checkedProject,this.settings,signal);
+      signal.throwIfAborted();
     }
-    if(!checked.ok)throw new Error(checked.errors.map(e=>`镜头 ${e.shotId??shotId} 帧 ${e.frame??'?'}：${e.message}`).join('\n'));
-    await this.enqueue(()=>this.store.markSourceGood(root,shot));
+    if(!checked.ok)throw renderCheckError(checked,checked.errors.map(e=>e.shotId?`镜头 ${e.shotId} 帧 ${e.frame??'?'}：${e.message}`:e.message).join('\n'));
+    await this.enqueue(()=>{signal.throwIfAborted();this.assertRevision({expectedRevision:checkedProject.revision});return this.store.markSourceGood(root,shot);});
   }
   async rpc(endpoint:string,payload:unknown):Promise<RpcResult>{
     await this.initialized;
@@ -467,7 +541,7 @@ export class StudioService {
         case 'save':{if(this.task?.status==='running'&&this.task.kind!=='export')this.assertIdle();const {project}=this.required();if(!data.project||data.project.id!==project.id)throw new Error('项目已切换，请刷新后重试');const next=structuredClone(data.project) as VideoProject;this.assertPublicProjectUpdate(project,next);this.fitAudio(next);await this.persist({...next,outputs:project.outputs}, {},'保存工程');break;}
         case 'apply':await this.apply(data);break;
         case 'import':{this.assertIdle();await this.importLocal(data,false);break;}
-        case 'tts':{this.assertIdle();const options:Partial<TtsSettings>={};for(const key of ['endpoint','model','voice','speed','enabled'] as const)if(data[key]!==undefined)(options as any)[key]=data[key];const next={...this.tts,...options};const onlyClearingKey=data.apiKey===''&&Object.keys(options).length===0;if(!onlyClearingKey)validateTtsSettings(next,detectEnvironment(this.settings));if(data.apiKey!==undefined){const credentials=this.credentials();if(data.apiKey){if(!credentials)throw new Error('宿主凭据服务不可用，请使用本地配音或无密钥端点');await credentials.set('DSH_VIDEO_STUDIO_TTS_API_KEY',String(data.apiKey));}else{if(!credentials?.unset)throw new Error('宿主凭据服务无法清除密钥，请在 DSH 凭据设置中清除');await credentials.unset('DSH_VIDEO_STUDIO_TTS_API_KEY');}}this.tts=next;await mkdir(this.baseDirectory,{recursive:true});await writeFile(join(this.baseDirectory,'tts.json'),JSON.stringify(this.tts,null,2));break;}
+        case 'tts':this.assertIdle();await this.saveSpeechSettings(data);break;
         case 'audio':{
           this.assertIdle();const {root,project}=this.required(),operation=data.operation??data.action;
           if(operation==='synthesize'||operation==='tts'){

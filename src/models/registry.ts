@@ -32,6 +32,12 @@ export class ModelRegistry {
   /** Protect an in-flight request independently of longer-lived remote-job guards. */
   acquire(connectionId:string,modelId?:string):()=>void{const keys=[connectionId,...(modelId?[connectionId+':'+modelId]:[])];for(const key of keys)this.leases.set(key,(this.leases.get(key)??0)+1);let released=false;return()=>{if(released)return;released=true;for(const key of keys){const count=(this.leases.get(key)??1)-1;if(count)this.leases.set(key,count);else this.leases.delete(key);}};}
   async assertUnused(connectionId:string,modelId?:string){if(this.leases.has(modelId?connectionId+':'+modelId:connectionId)||await this.usageGuard(connectionId,modelId))throw new Error('此模型连接仍有任务使用，请先结束任务再删除或修改');}
+  private async assertCredentialOrigin(previous:ProviderConnection|undefined,next:ProviderConnection,apiKey?:string):Promise<void>{
+    if(!previous||new URL(previous.baseUrl).origin===new URL(next.baseUrl).origin||apiKey!==undefined)return;
+    const status=await this.secrets.status?.(previous.credentialRef);
+    const hasKey=status?.hasStoredKey??(status?.available===false||!!await this.secrets.get(previous.credentialRef));
+    if(hasKey)throw new Error('更换接口域名时，请输入新接口的 API Key，或先清除原连接的密钥');
+  }
   private async persist(next:RegistryState){await mkdir(this.directory,{recursive:true});const temporary=this.file+'.tmp-'+randomUUID();try{await writeFile(temporary,JSON.stringify(next,null,2)+'\n',{mode:0o600});await rename(temporary,this.file);this.state=next;}finally{await rm(temporary,{force:true});}}
   private mutate<T>(work:()=>Promise<T>):Promise<T>{const result=this.writes.then(async()=>{await this.initialize();return work();});this.writes=result.then(()=>undefined,()=>undefined);return result;}
   private validate(value:RegistryState){
@@ -47,6 +53,7 @@ export class ModelRegistry {
     const id=captured.id??randomUUID();if(!validId(id))throw new Error('连接 ID 无效');const previous=this.state.connections.find(c=>c.id===id);const protocol=captured.protocol??previous?.protocol??'chat-completions';if(!MODEL_PROTOCOLS.includes(protocol))throw new Error('模型协议无效');
     const next:ProviderConnection={id,name:required(captured.name??previous?.name??'自定义接口','连接名称'),protocol,baseUrl:address(captured.baseUrl??previous?.baseUrl),auth:captured.auth??previous?.auth??'bearer',credentialRef:previous?.credentialRef??this.options.credentialRefFactory?.(id)??`${this.options.namespace??'yingliu.models'}.${id}.api-key`,enabled:captured.enabled??previous?.enabled??true,revision:(previous?.revision??0)+1,requestTimeoutMs:integer(captured.requestTimeoutMs??previous?.requestTimeoutMs??90000,5000,900000,'超时'),concurrency:integer(captured.concurrency??previous?.concurrency??2,1,16,'并发数')};
     if(!['bearer','none'].includes(next.auth)||typeof next.enabled!=='boolean')throw new Error('连接认证或启用设置无效');if(previous&&(previous.protocol!==next.protocol||previous.baseUrl!==next.baseUrl||previous.auth!==next.auth||previous.enabled!==next.enabled))await this.assertUnused(id);
+    await this.assertCredentialOrigin(previous,next,captured.apiKey);
     const state=this.snapshot();state.connections=state.connections.filter(c=>c.id!==id).concat(next);this.validate(state);const commit=()=>this.persist(state);
     if(captured.apiKey===undefined)await commit();else{if(typeof captured.apiKey!=='string'||captured.apiKey.length>16000)throw new Error('API Key 无效');await this.updateCredential(next.credentialRef,captured.apiKey.trim()||undefined,commit);}return structuredClone(next);
   });}
@@ -54,6 +61,7 @@ export class ModelRegistry {
   async saveBundle(connection:ProviderConnection,model:ModelDefinition,defaultRoles:RoleBinding[],project?:()=>Promise<void>):Promise<void>{return this.mutate(async()=>{
     const previous=this.snapshot(),state=this.snapshot();await this.assertUnused(connection.id);
     const existing=state.connections.find(c=>c.id===connection.id);const next={...structuredClone(connection),revision:(existing?.revision??0)+1,credentialRef:existing?.credentialRef??connection.credentialRef};
+    await this.assertCredentialOrigin(existing,next);
     state.connections=state.connections.filter(c=>c.id!==next.id).concat(next);state.models=state.models.filter(m=>m.id!==model.id).concat(structuredClone(model));
     for(const role of defaultRoles)if(!state.roles.some(r=>r.role===role.role))state.roles.push(structuredClone(role));this.validate(state);
     await this.persist(state);try{await project?.();}catch(error){try{await this.persist(previous);}catch{throw new Error('兼容配置保存失败，原模型配置恢复也失败，请检查数据目录权限');}throw error;}
@@ -66,7 +74,19 @@ export class ModelRegistry {
   async removeModel(id:string):Promise<void>{return this.mutate(async()=>{const model=this.state.models.find(m=>m.id===id);if(!model)throw new Error('模型不存在');await this.assertUnused(model.connectionId,id);const state=this.snapshot();state.models=state.models.filter(m=>m.id!==id);state.roles=state.roles.filter(r=>r.modelId!==id);await this.persist(state);});}
   async bindRole(role:ModelRole,modelId:string|null):Promise<void>{return this.mutate(async()=>{if(!MODEL_ROLES.includes(role))throw new Error('模型角色无效');const state=this.snapshot();if(modelId!==null)this.validateBinding(state,role,modelId);state.roles=state.roles.filter(r=>r.role!==role);if(modelId!==null)state.roles.push({role,modelId});await this.persist(state);});}
   async resolve(selection:ModelSelection):Promise<ResolvedModel>{await this.initialize();await this.writes;const input=typeof selection==='string'?{role:selection}:selection;const role=input.role;const id=input.modelId??(role?this.state.roles.find(r=>r.role===role)?.modelId:undefined);const provider=input.connectionId??input.provider;const model=id?this.state.models.find(m=>m.id===id):this.state.models.find(m=>m.connectionId===provider&&(m.id===input.model||m.model===input.model));if(!model)throw new Error(role?'请先配置 '+role+' 角色的模型':'所选模型不存在或已变更');const connection=this.state.connections.find(c=>c.id===model.connectionId);if(!connection||!connection.enabled||!model.enabled)throw new Error('所选模型连接已停用');if(provider&&provider!==connection.id)throw new Error('模型与连接不匹配');if(input.protocol&&input.protocol!==connection.protocol)throw new Error('模型协议不匹配');if(role)this.validateBinding(this.state,role,model.id);return structuredClone({connection,model});}
-  async credential(connection:ProviderConnection|string):Promise<string|undefined>{await this.initialize();const value=typeof connection==='string'?this.state.connections.find(c=>c.id===connection):connection;if(!value)throw new Error('模型连接不存在');if(value.auth==='none')return undefined;const key=await this.secrets.get(value.credentialRef);if(!key)throw new Error('此模型连接未配置 API Key');return key;}
+  private async readCredential(connection:ProviderConnection|string):Promise<string|undefined>{
+    const current=this.state.connections.find(item=>item.id===(typeof connection==='string'?connection:connection.id));
+    if(!current)throw new Error('模型连接不存在');
+    if(typeof connection!=='string'&&(current.auth!==connection.auth||current.credentialRef!==connection.credentialRef||new URL(current.baseUrl).origin!==new URL(connection.baseUrl).origin))throw new Error('模型连接已变更，请重新选择模型后重试');
+    if(current.auth==='none')return undefined;
+    const key=await this.secrets.get(current.credentialRef);
+    if(!key)throw new Error('此模型连接未配置 API Key');
+    return key;
+  }
+  credential(connection:ProviderConnection|string):Promise<string|undefined>{
+    const captured=structuredClone(connection);
+    return this.mutate(()=>this.readCredential(captured));
+  }
   async discoverModels(id:string,expectedRevision:unknown,signal=new AbortController().signal):Promise<ModelDiscoveryResult>{
     const current=()=>{
       const connection=this.state.connections.find(value=>value.id===id);
@@ -77,7 +97,7 @@ export class ModelRegistry {
     const discovered=await this.mutate(async()=>{
       const connection=structuredClone(current());
       if(!protocolInfo(connection.protocol).modelDiscovery)throw new ModelDiscoveryError('MODEL_DISCOVERY_UNSUPPORTED','此协议暂不支持查询模型目录，可手动填写模型 ID。');
-      try{return {connection,key:await this.credential(connection)};}
+      try{return {connection,key:await this.readCredential(connection)};}
       catch{throw new ModelDiscoveryError('MODEL_DISCOVERY_AUTH','此连接的 API Key 不可用，请保存或解锁凭据后重试。');}
     });
     try{return await discoverProviderModels({...discovered,signal});}

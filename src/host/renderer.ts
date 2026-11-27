@@ -21,7 +21,11 @@ import {taskFailure,withTaskFailure,type TaskFailureDiagnostic} from '../shared/
 export interface FrameCapture { frame:number; shotId:string; path:string; sha256:string }
 export interface RenderIssue { shotId?:string; frame?:number; message:string;failure?:TaskFailureDiagnostic }
 export interface RenderCheckResult { ok:boolean; errors:RenderIssue[]; frames:FrameCapture[]; reportPath?:string }
-export function renderCheckError(result:RenderCheckResult):Error {const error=new Error(result.errors.map(issue=>issue.message).join('\n'));return Object.assign(error,{failure:result.errors.find(issue=>issue.failure)?.failure??taskFailure(error,'render_check')});}
+export function renderCheckError(result:RenderCheckResult,message=result.errors.map(issue=>issue.message).join('\n')):Error {
+  const error=new Error(message);
+  const failedShotIds=[...new Set(result.errors.flatMap(issue=>issue.shotId?[issue.shotId]:[]))];
+  return Object.assign(error,{failure:result.errors.find(issue=>issue.failure)?.failure??taskFailure(error,'render_check'),...(failedShotIds.length?{failedShotIds}:{})});
+}
 export interface CandidatePlayback {candidateHash:string;url:string;mime:'video/mp4';duration:number;frameCount:number;shotIds:string[]}
 export interface CandidatePlaybackInput {project:VideoProject;sources:Record<string,SceneSource>;expectedRevision?:number}
 interface CandidatePlaybackEntry {controller:AbortController;promise:Promise<CandidatePlayback>;root?:string;renderer?:VideoRenderer;server?:ProjectServer;complete:boolean}

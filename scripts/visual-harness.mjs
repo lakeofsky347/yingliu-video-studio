@@ -55,9 +55,11 @@ for(const scheme of ['light','dark']){
   matrix.push({name:`studio-1440-${scheme}`,width:1440,height:900,query:`scheme=${scheme}`});
   matrix.push({name:`studio-1024-${scheme}`,width:1024,height:768,query:`scheme=${scheme}&surface=conversation`});
   matrix.push({name:`studio-720-${scheme}`,width:720,height:900,query:`scheme=${scheme}&surface=right`});
+  matrix.push({name:`studio-main-and-right-${scheme}`,width:1720,height:900,query:`scheme=${scheme}&surface=split-host`});
 }
 matrix.push({name:'studio-1440-light-running',width:1440,height:900,query:'scheme=light&task=running'});
 matrix.push({name:'studio-1440-en',width:1440,height:900,query:'scheme=light&locale=en'});
+matrix.push({name:'studio-main-and-right-en',width:1720,height:900,query:'scheme=dark&locale=en&surface=split-host'});
 // Interaction states: each step runs in the page before the screenshot.
 const click=selector=>async page=>{await page.locator(selector).first().click();await page.waitForTimeout(450);};
 const role=(name)=>async page=>{await page.getByRole('button',{name,exact:true}).first().click();await page.waitForTimeout(450);};

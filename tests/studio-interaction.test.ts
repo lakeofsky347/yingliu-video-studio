@@ -202,6 +202,69 @@ test('the timeline ruler and gaps seek using the actual clip positions',{skip:!e
   });
 });
 
+test('pointer reorder scrolls the timeline edge and releasing outside cancels',{skip:!env.browserAvailable,timeout:90_000},async()=>{
+  await studio('scheme=light&shots=5',async page=>{
+    await page.setViewportSize({width:440,height:900});
+    const scroll=page.locator('.vs-timeline-scroll'),clips=scroll.locator('.vs-clip');
+    await scroll.scrollIntoViewIfNeeded();
+    const titles=await clips.locator('strong').allTextContents();
+    const scroller=await scroll.boundingBox(),first=await clips.first().boundingBox();
+    assert.ok(scroller&&first);
+    const y=first.y+first.height/2;
+    const start=async()=>{
+      await scroll.evaluate(element=>{element.scrollLeft=0;});
+      await page.mouse.move(first.x+first.width/2,y);
+      await page.mouse.down();
+      await page.mouse.move(scroller.x+scroller.width-6,y,{steps:8});
+      await page.waitForFunction(()=>{
+        const element=document.querySelector('.vs-timeline-scroll');
+        return !!element&&element.scrollWidth>element.clientWidth&&element.scrollLeft>=element.scrollWidth-element.clientWidth-1;
+      });
+    };
+    await start();
+    await page.mouse.move(scroller.x+scroller.width-6,scroller.y-16);
+    await page.mouse.up();
+    await scroll.locator('.vs-drop-marker').waitFor({state:'detached'});
+    assert.deepEqual(await clips.locator('strong').allTextContents(),titles);
+    assert.equal((await calls(page)).filter(endpoint=>endpoint==='save').length,0);
+    await start();
+    await page.mouse.up();
+    await page.waitForFunction(()=>((window as any).harnessCalls as {endpoint:string}[]).some(call=>call.endpoint==='save'));
+    assert.deepEqual(await clips.locator('strong').allTextContents(),[...titles.slice(1),titles[0]]);
+  });
+});
+
+test('asset kind filter falls back to all when the active category becomes empty',{skip:!env.browserAvailable,timeout:90_000},async()=>{
+  await studio('scheme=light',async page=>{
+    const filters=page.getByRole('group',{name:'按类型筛选'});
+    await filters.getByRole('button',{name:/音频/}).click();
+    assert.equal(await page.locator('.vs-asset').count(),1);
+    const row=page.locator('.vs-asset',{hasText:'示例提示音'});
+    await row.hover();
+    await row.getByRole('button',{name:'删除资产「示例提示音（本地合成）」'}).click();
+    await page.getByRole('dialog').getByRole('button',{name:'删除资产',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelectorAll('.vs-asset').length===2);
+    assert.equal(await filters.getByRole('button',{name:/全部/}).getAttribute('aria-pressed'),'true');
+  });
+});
+
+test('a narrow host right pane shows keyframes alongside the wide workbench',{skip:!env.browserAvailable,timeout:90_000},async()=>{
+  await studio('scheme=dark&locale=en&surface=split-host',async page=>{
+    await page.setViewportSize({width:1720,height:900});
+    const main=page.locator('[data-video-studio-surface="main"]'),right=page.locator('[data-video-studio-surface="right"]');
+    await main.locator('.vs-studio[data-layout=wide]').waitFor();
+    await right.locator('.vs-studio[data-layout=narrow]').waitFor();
+    await right.locator('.vs-keyframe').first().waitFor();
+    const widths=await right.evaluate(element=>{
+      const workbench=element.querySelector('.vs-workbench')!;
+      const keyframes=element.querySelector('.vs-keyframes')!;
+      return {right:element.clientWidth,workbench:workbench.scrollWidth,keyframes:keyframes.clientWidth};
+    });
+    assert.equal(widths.right,440);
+    assert.ok(widths.workbench<=widths.right&&widths.keyframes<=widths.right);
+  });
+});
+
 test('the storyboard requests every shot thumbnail within the host batch limit at the saved preview revision',{skip:!env.browserAvailable,timeout:90_000},async()=>{
   await studio('scheme=light&shots=5&lagPreview=1',async page=>{
     const canvas=page.getByRole('radio',{name:'分镜画布'});

@@ -1,10 +1,18 @@
-import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react';
 import type { Shot } from '../shared/types.ts';
 import { t, useLocale } from './i18n.ts';
 import { Icon } from './icons.tsx';
 import type { Playhead } from './playhead-store.ts';
 
-const SHOT_MIME='application/x-dsh-video-shot';
+interface ClipDrag {
+  id:string;
+  pointerId:number;
+  startX:number;
+  startY:number;
+  x:number;
+  y:number;
+  moved:boolean;
+}
 /**
  * Proportional shot timeline. Clip widths follow duration, the playhead tracks the monitor without
  * re-rendering React, and clips reorder by drag (with an insertion marker) or Alt+←/→.
@@ -14,7 +22,8 @@ export function Timeline({shots,fps,selectedId,locked,playhead,onSelect,onReorde
   onSelect:(id:string)=>void;onReorder:(ids:string[])=>void;onAdd:()=>void;onDelete:(id:string)=>void;
 }){
   useLocale();
-  const track=useRef<HTMLDivElement>(null),ruler=useRef<HTMLDivElement>(null),head=useRef<HTMLDivElement>(null),clips=useRef<(HTMLElement|null)[]>([]);
+  const scroll=useRef<HTMLDivElement>(null),track=useRef<HTMLDivElement>(null),ruler=useRef<HTMLDivElement>(null),head=useRef<HTMLDivElement>(null),clips=useRef<(HTMLElement|null)[]>([]);
+  const drag=useRef<ClipDrag|null>(null),scrollAnimation=useRef(0),suppressClick=useRef(false);
   const [dragging,setDragging]=useState<string|null>(null),[dropIndex,setDropIndex]=useState<number|null>(null);
   const total=shots.reduce((sum,shot)=>sum+shot.durationFrames,0);
   const starts:number[]=[];shots.reduce((at,shot)=>{starts.push(at);return at+shot.durationFrames;},0);
@@ -26,6 +35,7 @@ export function Timeline({shots,fps,selectedId,locked,playhead,onSelect,onReorde
     const mins=Math.floor(sec/60),rem=Math.floor(sec%60);
     return `${String(mins).padStart(2,'0')}:${String(rem).padStart(2,'0')}`;
   });
+  useEffect(()=>()=>cancelAnimationFrame(scrollAnimation.current),[]);
   // Use the same clip geometry for the playhead and ruler, including minimum clip widths.
   useEffect(()=>{
     const position=(frame:number)=>{
@@ -70,11 +80,56 @@ export function Timeline({shots,fps,selectedId,locked,playhead,onSelect,onReorde
     const clip=clips.current[Math.min(index,shots.length-1)];if(!clip)return 0;
     return index>=shots.length?clip.offsetLeft+clip.offsetWidth+4:clip.offsetLeft-4;
   }
-  function drop(event:DragEvent){
-    const id=event.dataTransfer.getData(SHOT_MIME);setDragging(null);const index=dropIndex;setDropIndex(null);
-    if(!id||index===null||!shots.some(shot=>shot.id===id))return;event.preventDefault();
-    const ids=shots.map(shot=>shot.id),from=ids.indexOf(id);ids.splice(from,1);ids.splice(index>from?index-1:index,0,id);
-    if(ids.join()!==shots.map(shot=>shot.id).join())onReorder(ids);
+  function dropBounds(x:number,y:number):DOMRect|null{
+    const box=scroll.current?.getBoundingClientRect();
+    return box&&x>=box.left&&x<=box.right&&y>=box.top&&y<=box.bottom?box:null;
+  }
+  function scrollOnDrag():void{
+    const gesture=drag.current,scroller=scroll.current;
+    if(!gesture?.moved||!scroller)return;
+    const box=dropBounds(gesture.x,gesture.y);
+    if(box){
+      const edge=28;
+      if(gesture.x<box.left+edge)scroller.scrollLeft-=10;
+      else if(gesture.x>box.right-edge)scroller.scrollLeft+=10;
+    }
+    setDropIndex(box?insertionIndex(gesture.x):null);
+    scrollAnimation.current=requestAnimationFrame(scrollOnDrag);
+  }
+  function beginDrag(event:PointerEvent<HTMLButtonElement>,id:string):void{
+    if(event.button!==0||!event.isPrimary)return;
+    suppressClick.current=false;
+    if(locked||event.pointerType==='touch')return;
+    const {pointerId,clientX:x,clientY:y}=event;
+    drag.current={id,pointerId,startX:x,startY:y,x,y,moved:false};
+    event.currentTarget.setPointerCapture(pointerId);
+  }
+  function moveDrag(event:PointerEvent<HTMLButtonElement>):void{
+    const gesture=drag.current;
+    if(!gesture||gesture.pointerId!==event.pointerId)return;
+    gesture.x=event.clientX;
+    gesture.y=event.clientY;
+    if(locked||gesture.moved||Math.hypot(gesture.x-gesture.startX,gesture.y-gesture.startY)<5)return;
+    gesture.moved=true;
+    setDragging(gesture.id);
+    scrollOnDrag();
+  }
+  function finishDrag(event:PointerEvent<HTMLButtonElement>,commit:boolean):void{
+    const gesture=drag.current;
+    if(!gesture||gesture.pointerId!==event.pointerId)return;
+    drag.current=null;
+    if(!gesture.moved)return;
+    suppressClick.current=true;
+    cancelAnimationFrame(scrollAnimation.current);
+    setDragging(null);
+    setDropIndex(null);
+    if(!commit||locked||!dropBounds(event.clientX,event.clientY))return;
+    const ids=shots.map(shot=>shot.id),from=ids.indexOf(gesture.id);
+    const index=insertionIndex(event.clientX),target=index>from?index-1:index;
+    if(from<0||from===target)return;
+    ids.splice(from,1);
+    ids.splice(target,0,gesture.id);
+    onReorder(ids);
   }
   function keys(event:KeyboardEvent,index:number){
     const id=shots[index]!.id;
@@ -88,26 +143,29 @@ export function Timeline({shots,fps,selectedId,locked,playhead,onSelect,onReorde
   }
   return <section className="vs-timeline" aria-label={t("时间线")}>
     <div className="vs-timeline-label"><strong>{t("时间线")}</strong><small>{t("{value0} 个镜头 · {value1} 秒", {value0:shots.length, value1:(total/fps).toFixed(1)})}</small></div>
-    <div className="vs-timeline-scroll">
+    <div ref={scroll} className="vs-timeline-scroll">
       <div ref={ruler} className="vs-timeline-ruler" aria-hidden="true" onPointerDown={event=>{if(event.button===0)seekAt(event.clientX);}}>
         {shots.length>0&&rulerMarks.map((mark,index)=><span key={index}>{mark}</span>)}
       </div>
       <div ref={track} className={`vs-timeline-track ${dragging?'is-dragging':''}`} data-keyboard-owner="timeline"
-        onDragOver={event=>{if(!event.dataTransfer.types.includes(SHOT_MIME)||locked)return;event.preventDefault();event.dataTransfer.dropEffect='move';const index=insertionIndex(event.clientX);if(index!==dropIndex)setDropIndex(index);}}
-        onDragLeave={event=>{if(!track.current?.contains(event.relatedTarget as Node))setDropIndex(null);}}
-        onDrop={drop}
         onPointerDown={event=>{
           if(event.button===0&&!(event.target as Element).closest('.vs-clip,.vs-clip-add'))seekAt(event.clientX);
         }}>
         {shots.map((shot,index)=><button type="button" key={shot.id} ref={element=>{clips.current[index]=element;}}
           className={`vs-clip ${shot.id===selectedId?'is-active':''} ${dragging===shot.id?'is-dragging':''} ${shot.transition==='fade'?'has-fade':''}`}
           style={{'--vs-clip-grow':String(Math.max(1,shot.durationFrames))} as CSSProperties}
-          draggable={!locked} aria-pressed={shot.id===selectedId} aria-label={t("镜头 {value0}：{value1}，{value2} 秒", {value0:index+1, value1:shot.title, value2:(shot.durationFrames/fps).toFixed(1)})}
+          aria-pressed={shot.id===selectedId} aria-label={t("镜头 {value0}：{value1}，{value2} 秒", {value0:index+1, value1:shot.title, value2:(shot.durationFrames/fps).toFixed(1)})}
           title={t("拖动排序 · Alt ←/→ 移动 · Delete 删除")}
-          onDragStart={event=>{event.dataTransfer.setData(SHOT_MIME,shot.id);event.dataTransfer.effectAllowed='move';setDragging(shot.id);}}
-          onDragEnd={()=>{setDragging(null);setDropIndex(null);}}
+          onPointerDown={event=>beginDrag(event,shot.id)}
+          onPointerMove={moveDrag}
+          onPointerUp={event=>finishDrag(event,true)}
+          onPointerCancel={event=>finishDrag(event,false)}
+          onLostPointerCapture={event=>finishDrag(event,false)}
           onKeyDown={event=>keys(event,index)}
-          onClick={()=>{if(shot.id===selectedId)playhead.seek(starts[index]!);else onSelect(shot.id);}}>
+          onClick={event=>{
+            if(event.detail&&suppressClick.current){suppressClick.current=false;return;}
+            if(shot.id===selectedId)playhead.seek(starts[index]!);else onSelect(shot.id);
+          }}>
           <span className="vs-clip-swatch" aria-hidden="true" style={{'--vs-swatch-bg':shot.params.background,'--vs-swatch-fg':shot.params.foreground,'--vs-swatch-accent':shot.params.accent} as CSSProperties}><i/></span>
           <b>{String(index+1).padStart(2,'0')}</b>
           <span className="vs-clip-body"><strong>{shot.title}</strong><small>{t("{value0} 秒", {value0:(shot.durationFrames/fps).toFixed(1)})}{shot.transition==='fade'?` · ${t("淡入淡出")}`:''}</small></span>

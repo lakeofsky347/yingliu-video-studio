@@ -16,7 +16,8 @@ export function AssetsPanel({project,selectedId,assetUrl,pending,locked,onSelect
   const needle=query.trim().toLocaleLowerCase();
   const counts=project.assets.reduce<Record<string,number>>((all,asset)=>({...all,[asset.kind]:(all[asset.kind]||0)+1}),{});
   const kinds=(['image','text','audio','video'] as const).filter(value=>counts[value]);
-  const visible=project.assets.filter(asset=>(kind==='all'||asset.kind===kind)&&(!needle||`${asset.name} ${asset.description} ${asset.text||''}`.toLocaleLowerCase().includes(needle)));
+  const activeKind=kind==='all'||counts[kind]?kind:'all';
+  const visible=project.assets.filter(asset=>(activeKind==='all'||asset.kind===activeKind)&&(!needle||`${asset.name} ${asset.description} ${asset.text||''}`.toLocaleLowerCase().includes(needle)));
   const uses=(asset:Asset)=>project.shots.filter(shot=>shot.assetIds.includes(asset.id)||shot.referenceIds.includes(asset.id)).length;
   const label:Record<Kind,string>={all:t("全部"),image:t("图片"),text:t("文字"),audio:t("音频"),video:t("视频")};
   return <aside className={`vs-assets-panel ${dropping?'is-dropping':''}`} aria-label={t("资产库")}
@@ -33,7 +34,7 @@ export function AssetsPanel({project,selectedId,assetUrl,pending,locked,onSelect
       </div>
     </div>
     <div className="vs-search-box"><Icon name="search"/><input className="vs-search" type="search" aria-label={t("搜索资产")} placeholder={t("搜索图片、文字、音频…")} value={query} onChange={e=>setQuery(e.target.value)}/></div>
-    {kinds.length>1&&<div className="vs-chip-row" role="group" aria-label={t("按类型筛选")}>{(['all',...kinds] as Kind[]).map(value=><button type="button" key={value} aria-pressed={kind===value} className={`vs-chip ${kind===value?'is-active':''}`} onClick={()=>setKind(value)}>{label[value]}<small>{value==='all'?project.assets.length:counts[value]}</small></button>)}</div>}
+    {kinds.length>1&&<div className="vs-chip-row" role="group" aria-label={t("按类型筛选")}>{(['all',...kinds] as Kind[]).map(value=><button type="button" key={value} aria-pressed={activeKind===value} className={`vs-chip ${activeKind===value?'is-active':''}`} onClick={()=>setKind(value)}>{label[value]}<small>{value==='all'?project.assets.length:counts[value]}</small></button>)}</div>}
     <input ref={file} hidden multiple type="file" accept={ACCEPT} onChange={e=>{if(e.target.files)onImport(e.target.files);e.target.value='';}}/>
     <div className="vs-assets">
       {visible.map(asset=>{const count=uses(asset),url=asset.kind==='image'?assetUrl(asset):'';return <div key={asset.id} className={`vs-asset ${selectedId===asset.id?'is-selected':''}`}>

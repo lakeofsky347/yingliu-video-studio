@@ -6,6 +6,7 @@ interface TextDocument {path:string;text:string;origin:'file'|'zip'|'folder';gro
 
 const MAX_FILE_BYTES=32*1024*1024,MAX_TEXT_CHARS=80000,MAX_ZIP_ENTRIES=500;
 const ignoredPath=/(^|\/)(?:__MACOSX|\.git|node_modules|demo|dist|build)(\/|$)/i;
+const styleText=/\.(?:md|markdown|txt|json)$/i;
 const leaf=(path:string)=>path.split('/').filter(Boolean).at(-1)||path;
 const parent=(path:string)=>path.split('/').slice(0,-1).join('/');
 const cleanPath=(path:string)=>path.replace(/\\/g,'/').split('/').filter(part=>part&&part!=='.'&&part!=='..').join('/');
@@ -31,27 +32,30 @@ function validateZip(bytes:Uint8Array,name:string){
 
 export async function parseStyleFiles(files:File[]):Promise<VideoStyleDraft[]>{
   const documents:TextDocument[]=[];
-  for(const file of files){
-    if(file.size>MAX_FILE_BYTES)throw new Error(`${file.name} 超过 32 MB 上限`);
+  for(const [index,file] of files.entries()){
     const relative=file.webkitRelativePath?cleanPath(file.webkitRelativePath):'';
+    if(relative&&(ignoredPath.test(relative)||!(styleText.test(relative)||/\.zip$/i.test(relative))))continue;
+    if(file.size>MAX_FILE_BYTES)throw new Error(`${file.name} 超过 32 MB 上限`);
     if(/\.zip$/i.test(file.name)){
       const bytes=new Uint8Array(await file.arrayBuffer());validateZip(bytes,file.name);
-      const entries=unzipSync(bytes);
+      const entries=unzipSync(bytes,{filter:entry=>{
+        const path=cleanPath(entry.name);
+        return !/[\\/]$/.test(entry.name)&&styleText.test(path)&&!ignoredPath.test(path);
+      }});
       const keys=Object.keys(entries);
       if(keys.length>MAX_ZIP_ENTRIES)throw new Error(`${file.name} 包含过多文件`);
       let total=0;
       for(const entryPath of keys){
-        const path=cleanPath(entryPath);if(!path||path.endsWith('/')||ignoredPath.test(path))continue;
-        const extension=leaf(path).split('.').at(-1)?.toLowerCase();if(!['md','markdown','txt','json'].includes(extension||''))continue;
+        const path=cleanPath(entryPath);
         const bytes=entries[entryPath]!;total+=bytes.length;if(total>MAX_TEXT_CHARS*8)throw new Error(`${file.name} 中的文本总量超过限制`);
-        documents.push({path,text:safeText(strFromU8(bytes),path),origin:'zip',group:parent(path)||`archive:${file.name}`});
+        documents.push({path,text:safeText(strFromU8(bytes),path),origin:'zip',group:`archive:${index}:${parent(path)}`});
       }
       continue;
     }
-    const path=relative||cleanPath(file.name),extension=leaf(path).split('.').at(-1)?.toLowerCase();
-    if(!['md','markdown','txt','json'].includes(extension||''))throw new Error(`暂不支持 ${file.name}；请使用 Markdown、TXT、JSON、ZIP 或风格文件夹`);
+    const path=relative||cleanPath(file.name);
+    if(!styleText.test(path))throw new Error(`暂不支持 ${file.name}；请使用 Markdown、TXT、JSON、ZIP 或风格文件夹`);
     const text=safeText(await file.text(),file.name);
-    documents.push({path,text,origin:relative?'folder':'file',group:relative?parent(path):`file:${file.name}`});
+    documents.push({path,text,origin:relative?'folder':'file',group:relative?`folder:${parent(path)}`:`file:${index}`});
   }
 
   const groups=new Map<string,TextDocument[]>();

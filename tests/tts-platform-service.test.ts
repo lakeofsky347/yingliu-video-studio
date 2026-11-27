@@ -22,6 +22,31 @@ test('a host without key deletion reports failure instead of claiming the stored
   try{const result=await service.rpc('tts',{apiKey:''});assert.equal(result.ok,false);if(!result.ok)assert.match(result.error.message,/无法清除/);assert.equal(values.size,1);}
   finally{await service.dispose();await rm(base,{recursive:true,force:true});}
 });
+test('speech configuration across project services checks origin before reusing the stored key',async()=>{
+  const base=await mkdtemp(join(tmpdir(),'dsh-tts-origin-')),values=new Map<string,string>();
+  const first=new StudioService(context(values),{baseDirectory:base,restoreRecent:false});
+  const second=new StudioService(context(values),{baseDirectory:base,restoreRecent:false});
+  try{
+    await Promise.all([first.snapshot(),second.snapshot()]);
+    const endpoint='https://tts-old.invalid/v1';
+    assert.equal((await first.rpc('tts',{endpoint,model:'fixture',voice:'fixture',enabled:true,apiKey:'first-fixture'})).ok,true);
+    const blocked=await second.rpc('tts',{endpoint:'https://tts-new.invalid/v1'});
+    assert.equal(blocked.ok,false);
+    if(!blocked.ok)assert.match(blocked.error.message,/更换语音接口域名/);
+    assert.equal((await second.workflowVoiceSettings()).endpoint,endpoint);
+    assert.equal((await second.rpc('tts',{endpoint:'https://tts-old.invalid/v2'})).ok,true);
+    assert.equal((await first.workflowVoiceSettings()).apiKey,'first-fixture');
+
+    const replacement='https://tts-new.invalid/v1';
+    assert.equal((await first.rpc('tts',{endpoint:replacement,apiKey:'replacement-fixture'})).ok,true);
+    const settings=await second.workflowVoiceSettings();
+    assert.equal(settings.endpoint,replacement);
+    assert.equal(settings.apiKey,'replacement-fixture');
+    assert.equal((await second.rpc('tts',{apiKey:''})).ok,true);
+    assert.equal((await first.rpc('tts',{endpoint:'https://tts-other.invalid/v1'})).ok,true);
+    assert.equal((await second.workflowVoiceSettings()).apiKey,undefined);
+  }finally{await Promise.all([first.dispose(),second.dispose()]);await rm(base,{recursive:true,force:true});}
+});
 test('enabling an unavailable local service does not persist its key or configuration',{skip:process.platform==='darwin'},async()=>{
   const base=await mkdtemp(join(tmpdir(),'dsh-tts-unavailable-')),values=new Map<string,string>();
   const service=new StudioService(context(values),{baseDirectory:base,restoreRecent:false});

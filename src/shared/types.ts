@@ -78,7 +78,7 @@ export interface SceneSource { html:string; css:string; js:string; shotPatch?:Pa
 export interface TaskState {
   id:string; kind:'storyboard'|'scenes'|'modify'|'preview'|'export'|'audio';
   status:'running'|'complete'|'failed'|'cancelled'|'interrupted'; progress:number; message:string;
-  startedAt:string; finishedAt?:string; error?:string; shotId?:string; logPath?:string;
+  startedAt:string; finishedAt?:string; error?:string; shotId?:string; failedShotIds?:string[]; logPath?:string;
   revision?:number; retryOf?:string; failure?:import('./task-diagnostic.ts').TaskFailureDiagnostic;
 }
 export interface TaskRecord extends TaskState { retryable:boolean }

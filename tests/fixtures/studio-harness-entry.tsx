@@ -96,8 +96,10 @@ root.className='vs-embedded-surface';
 root.dataset.videoStudioSurface=surface;
 const stageMode=params.get('stageMode');
 if(stageMode==='canvas'||stageMode==='split')localStorage.setItem('vs-stage-mode',JSON.stringify(stageMode));
-createRoot(root).render(surface==='both'?<>
-  {['main','right'].map(target=><div key={target} className="vs-embedded-surface" data-video-studio-surface={target} style={{height:'50%',flex:'0 0 50%'}}>
+const sideBySide=surface==='split-host';
+if(sideBySide)root.style.flexDirection='row';
+createRoot(root).render(surface==='both'||sideBySide?<>
+  {['main','right'].map(target=><div key={target} className="vs-embedded-surface" data-video-studio-surface={target} style={sideBySide?{flex:target==='right'?'0 0 min(44%, 440px)':'1 1 0',height:'100%'}:{height:'50%',flex:'0 0 50%'}}>
     <Studio controller={controller} sessions={[]}/>
   </div>)}
 </>:<Studio controller={controller} sessions={[]}/>);

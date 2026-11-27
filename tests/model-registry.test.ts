@@ -44,6 +44,21 @@ test('configuration writes serialize and running work prevents deletion while al
   release();registry.setUsageGuard(id=>id==='a');await assert.rejects(registry.removeConnection('a'),/任务使用/);registry.setUsageGuard(()=>false);await registry.removeConnection('a');assert.equal(secrets.values.size,0);
 }));
 
+test('a model credential is kept only for the saved origin',()=>fixture(async registry=>{
+  const original=await registry.saveConnection({id:'a',baseUrl:'https://old.invalid/v1',apiKey:'old-fixture'});
+  const sameOrigin=await registry.saveConnection({id:'a',baseUrl:'https://old.invalid/another-route'});
+  assert.equal(await registry.credential(sameOrigin),'old-fixture');
+  await assert.rejects(registry.saveConnection({id:'a',baseUrl:'https://new.invalid/v1'}),/更换接口域名/);
+  const updating=registry.saveConnection({id:'a',baseUrl:'https://new.invalid/v1',apiKey:'new-fixture'});
+  const readingStale=assert.rejects(registry.credential(original),/连接已变更/);
+  const replacement=await updating;
+  await readingStale;
+  assert.equal(await registry.credential(replacement),'new-fixture');
+  await registry.saveConnection({id:'a',apiKey:''});
+  const keyless=await registry.saveConnection({id:'a',baseUrl:'https://elsewhere.invalid/v1',auth:'none'});
+  assert.equal(await registry.credential(keyless),undefined);
+}));
+
 test('registry rejects embedded URL credentials, sensitive model parameters and mismatched selections',()=>fixture(async registry=>{
   await assert.rejects(registry.saveConnection({name:'错误',baseUrl:'https://secret@example.invalid/v1'}),/无凭据/);
   await registry.saveConnection({id:'a',name:'接口',baseUrl:'https://example.invalid/v1'});

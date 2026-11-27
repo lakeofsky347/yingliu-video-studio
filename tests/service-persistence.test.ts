@@ -109,6 +109,49 @@ for(const failLater of [false,true])test(`simulated scene generation ${failLater
   }finally{await service.dispose();await rm(base,{recursive:true,force:true});}
 });
 
+test('scene repair only retries a verified failure in its target shot and journals actual failed shot IDs',async()=>{
+  const base=await mkdtemp(join(tmpdir(),'dsh-shot-repair-'));
+  let modelCalls=0;
+  const context={llm:{...ctx.llm,listModels:async()=>[{id:'fixture',name:'Fixture'}],async *stream(){
+    modelCalls++;
+    yield {type:'text-delta',text:JSON.stringify({html:'<main></main>',css:'',js:'export function render(ctx){}'})};
+    yield {type:'finish',reason:{kind:'stop'}};
+  }}} as unknown as HostContext;
+  let service=serviceAt(base,context);
+  try{
+    const initial=await value(service,'create',{productionMode:'code_animation',title:'镜头诊断'}) as StudioSnapshot;
+    const [target,neighbor]=initial.project!.shots;
+    async function generate(){
+      await value(service,'generate',{kind:'modify',provider:'fixture',model:'fixture',shotId:target!.id});
+      return (await finished(service)).task!;
+    }
+    service.renderer.check=async()=>({ok:false,frames:[],errors:[{message:'sandbox unavailable'}]});
+    const environmentFailure=await generate();
+    assert.equal(environmentFailure.status,'failed');
+    assert.equal(environmentFailure.failedShotIds,undefined);
+    assert.equal(modelCalls,1);
+
+    service.renderer.check=async()=>({ok:false,frames:[],errors:[{shotId:neighbor!.id,message:'neighbor render failed'}]});
+    const neighboringFailure=await generate();
+    assert.deepEqual(neighboringFailure.failedShotIds,[neighbor!.id]);
+    assert.equal(modelCalls,2);
+
+    let checks=0;
+    service.renderer.check=async()=>++checks===1?{ok:false,frames:[],errors:[{shotId:target!.id,message:'target render failed'}]}:{ok:true,frames:[],errors:[]};
+    const repaired=await generate();
+    assert.equal(repaired.status,'complete');
+    assert.equal(checks,2);
+    assert.equal(modelCalls,4);
+
+    await service.dispose();
+    service=serviceAt(base,context);
+    await value(service,'open',{path:initial.root});
+    const tasks=(await value(service,'tasks')).tasks as NonNullable<StudioSnapshot['task']>[];
+    assert.deepEqual(tasks.find(task=>task.id===neighboringFailure.id)?.failedShotIds,[neighbor!.id]);
+    assert.equal(tasks.find(task=>task.id===environmentFailure.id)?.failedShotIds,undefined);
+  }finally{await service.dispose();await rm(base,{recursive:true,force:true});}
+});
+
 test('service content undo retains export receipts and session binding before and after reopening',async()=>{
   const base=await mkdtemp(join(tmpdir(),'dsh-undo-artifacts-'));let service=serviceAt(base);
   try{const initial=await value(service,'create',{productionMode:'code_animation',title:'初稿'});await value(service,'rename',{title:'二稿'});const edited=await value(service,'rename',{title:'三稿'});
