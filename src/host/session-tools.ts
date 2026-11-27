@@ -111,7 +111,7 @@ async function startMedia(ctx:HostContext,hub:ProjectHub,request:Input,exec:Tool
         job.append(JSON.stringify(value)+'\n');
         const detail=batch?tasks.map(item=>item.id+' · '+item.message).join('\n'):task.message;
         if(controller.signal.aborted||tasks.every(item=>item.phase==='cancelled'))return {status:'killed',detail,result:JSON.stringify(value)};
-        if(tasks.some(item=>item.phase==='failed'))return {status:'failed',detail,result:JSON.stringify(value)};
+        if(tasks.some(item=>item.phase!=='ready'&&item.phase!=='complete'))return {status:'failed',detail,result:JSON.stringify(value)};
         return {status:'completed',detail,result:JSON.stringify(value)};
       }catch(error){
         rejected(error);if(controller.signal.aborted)await pauseOwned().catch(()=>{});
@@ -209,6 +209,7 @@ export function createSessionTools(ctx:HostContext,hub:ProjectHub):ToolDefinitio
     defineTool({name:'video_render',description:'检查镜头源码、创建实际代码预览，或以当前工程快照导出 MP4。默认后台任务立即返回 jobId，使用 DSH job_output 取进度/结果、job_kill 取消；不会启动新的聊天模型。foreground:true 可等待本次运行完成。',
       parameters:{projectId:projectParameter,action:{type:'string',enum:['preview','check','export'],required:true},foreground:{type:'boolean'}},output,
       async execute(args,exec){
+        if(!['preview','check','export'].includes(args.action))throw new Error('会话工具仅支持预览、检查和导出 MP4');
         const sessionId=owner(exec),located=await hub.resolveProject({...args,signal:exec.signal},sessionId),endpoint=args.action==='check'?'preview':args.action;
         if(!args.foreground)return startRender(ctx,hub,located.projectId,sessionId,endpoint,{...args,expectedRevision:located.snapshot.project!.revision},exec,located.routing);
         let ownedTaskId:string|undefined;

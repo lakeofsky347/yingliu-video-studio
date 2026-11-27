@@ -6,7 +6,7 @@
 
 Yingliu (`yingliu-video-studio`) is a video creation plugin for DSH Desktop. Give it a topic and some assets, then let a model plan the storyboard and create animations. You can also connect image, video, and speech services. Edit the visuals, arrange sound, preview, and export whenever you are ready. Projects stay on your computer so you can return to them later.
 
-Current version **1.0.0** · [Release notes](docs/RELEASE-1.0.0.md)
+Version **2.0.0** · [Release notes](docs/RELEASE-2.0.0.md)
 
 [![Yingliu studio: assets on the left, storyboard canvas in the center, shot properties on the right, and shot order and preview below](docs/images/readme/workbench-en.png)](docs/images/readme/workbench-en.png)
 
@@ -17,7 +17,7 @@ Current version **1.0.0** · [Release notes](docs/RELEASE-1.0.0.md)
 
 The studio supports English and Chinese. Switch languages in **DSH Settings → General → Language**. Controls, messages, and dates update immediately; your film text, asset names, and unsaved edits stay unchanged.
 
-1. In DSH, open **Plugin management → Add plugin** and enter `yingliu-video-studio@1.0.0`. You can also enter the absolute path to a local `yingliu-video-studio-1.0.0.tgz`. Enable the plugin after installation.
+1. In DSH, open **Plugin management → Add plugin** and enter `yingliu-video-studio@2.0.0`. You can also enter the absolute path to a local `yingliu-video-studio-2.0.0.tgz`. Enable the plugin after installation.
 2. Click the **Video Studio** tab above the conversation to open the studio. To keep chatting while you edit, click **Open Video Studio in the right sidebar** at the top right of the conversation. The film icon in the left navigation opens the full-width studio.
 3. On the home page, open **Environment settings** and check Chrome / Chromium, FFmpeg, and ffprobe. These tools process media, inspect frames, and export video. If a tool is not found automatically, enter the absolute path to its executable and click **Save and check environment**.
 4. Configure a creative model in DSH, then select it under **Creative model** at the top of a film's workspace. Set up image, video, and speech services separately when needed, or use your own existing assets.
@@ -183,6 +183,6 @@ On a different computer, configure models, keys, and conversation links again. T
 
 Earlier release notes and topic-specific documents are primarily in Chinese.
 
-[Language and localization](docs/LOCALIZATION.md) · [Release notes](docs/RELEASE-1.0.0.md) · [Models and media](docs/MULTIMODAL.md) · [Model capabilities](docs/MODEL-CAPABILITIES.md) · [Developer API](docs/API.md) · [Host compatibility](docs/COMPATIBILITY.md) · [Platform support](docs/PLATFORM-SUPPORT.md) · [Project origins](docs/ORIGIN.md)
+[Language and localization](docs/LOCALIZATION.md) · [Release notes](docs/RELEASE-2.0.0.md) · [Models and media](docs/MULTIMODAL.md) · [Model capabilities](docs/MODEL-CAPABILITIES.md) · [Developer API](docs/API.md) · [Host compatibility](docs/COMPATIBILITY.md) · [Platform support](docs/PLATFORM-SUPPORT.md) · [Project origins](docs/ORIGIN.md)
 
 This project is licensed under **GPL-3.0-only**. See the [license](LICENSE), [copyright and source notice](NOTICE), and [third-party notices](THIRD_PARTY_NOTICES.md).

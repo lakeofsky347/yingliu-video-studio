@@ -1,6 +1,6 @@
 {
   "name": "yingliu-video-studio",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "type": "module",
   "license": "GPL-3.0-only",
   "description": "Video creation studio for DSH: storyboards, editable animation and local MP4 export / 映流视频工作台",

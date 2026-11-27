@@ -108,6 +108,23 @@ test('menu entries open the drawer panel and move focus to its tab',{skip:!env.b
   });
 });
 
+test('the timeline exchange panel sends the saved revision, shows progress and opens the completed bundle',{skip:!env.browserAvailable,timeout:90_000},async()=>{
+  await studio('scheme=light',async page=>{
+    await page.getByRole('button',{name:'成片',exact:true}).click();
+    const panel=page.locator('[data-timeline-exchange]');
+    await panel.locator('summary').click();
+    await panel.getByRole('button',{name:'导出时间轴交换包',exact:true}).click();
+    await panel.getByText(/43%.*正在准备分角色音频/).waitFor();
+    await page.evaluate(()=>void (window as any).harnessCompleteTimeline());
+    await panel.getByText('OTIO · FCPXML · CMX3600 EDL').waitFor();
+    const capture=process.env.YINGLIU_CAPTURE_TIMELINE_SCREENSHOT;
+    if(capture){await fs.mkdir(path.dirname(capture),{recursive:true});await panel.screenshot({path:capture,animations:'disabled'});}
+    await panel.getByRole('button',{name:'打开交换包 ↗',exact:true}).click();
+    const revealed=await page.evaluate(()=>((window as any).harnessCalls as {endpoint:string;payload:{path?:string}}[]).find(call=>call.endpoint==='reveal')?.payload.path);
+    assert.match(revealed??'',/\/exports\/timeline-4-a1111111-b222-c333-d444-e55555555555$/);
+  });
+});
+
 test('space plays from a pointer-focused control and the timeline follows the monitor',{skip:!env.browserAvailable,timeout:90_000},async()=>{
   await studio('scheme=dark',async page=>{
     await page.locator('.vs-clip').first().click();

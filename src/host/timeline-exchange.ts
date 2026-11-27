@@ -6,7 +6,7 @@ import {assertProductionComposition} from '../core/production-policy.ts';
 import {formatAss,formatSrt,projectSubtitles} from '../core/subtitles.ts';
 import {exchangeEdlLimitation,formatExchangeEdl,formatExchangeFcpxml,formatExchangeOtio,type ExchangeTimeline} from '../media/timeline-exchange.ts';
 import {hashMediaFile} from '../media/video.ts';
-import type {EnvironmentSettings,VideoProject} from '../shared/types.ts';
+import type {EnvironmentSettings,TimelineExchangeRecord,VideoProject} from '../shared/types.ts';
 import {writeDurableFile} from '../shared/durable-file.ts';
 import {atomicRename} from './atomic-rename.ts';
 import {AudioMixer,AudioProcesses,audioExecutable,compileAudioPlan,renderExchangeAudioClip} from './audio.ts';
@@ -14,28 +14,27 @@ import {VideoRenderer} from './renderer.ts';
 import {projectPath} from './store.ts';
 
 interface ExchangeFile {path:string;bytes:number;sha256:string}
-export interface TimelineExchangeResult {
+export interface TimelineExchangeResult extends TimelineExchangeRecord {
   projectId:string;
   revision:number;
   path:string;
-  formats:('otio'|'fcpxml'|'edl')[];
   files:ExchangeFile[];
-  notes:string[];
 }
 
 const numbered=(index:number)=>String(index+1).padStart(6,'0');
 
 /** Prepare a portable editor handoff from one committed snapshot. Only a completed folder is published. */
-export async function exportTimelineExchange(root:string,input:VideoProject,settings:EnvironmentSettings,signal:AbortSignal,onProgress:(value:number,message:string)=>void=()=>{}):Promise<TimelineExchangeResult>{
+export async function exportTimelineExchange(root:string,input:VideoProject,settings:EnvironmentSettings,signal:AbortSignal,onProgress:(value:number,message:string)=>void=()=>{},bundleId:string=randomUUID()):Promise<TimelineExchangeResult>{
   signal.throwIfAborted();
   const project=structuredClone(input);
   assertProductionComposition(project,{forExport:true});
   const spec=compileSpec(project);
   if(!spec.shots.length)throw new Error('没有可交换的主链镜头');
-  const id=randomUUID(),relative=`exports/timeline-${project.revision}-${id}`;
-  const staged=`exports/.timeline-${id}`,stagePath=await projectPath(root,staged),finalPath=await projectPath(root,relative);
+  const relative=`exports/timeline-${project.revision}-${bundleId}`;
+  const staged=`exports/.timeline-${bundleId}`,stagePath=await projectPath(root,staged),finalPath=await projectPath(root,relative);
   const bundle=join(stagePath,'bundle'),media=join(bundle,'media');
   const renderer=new VideoRenderer(),mixer=new AudioMixer(),processes=new AudioProcesses();
+  let published=false;
   try{
     await fs.mkdir(media,{recursive:true});
     const splitFrames=spec.shots.slice(1).map(shot=>shot.startFrame),directory=`${staged}/render`;
@@ -84,11 +83,11 @@ export async function exportTimelineExchange(root:string,input:VideoProject,sett
       files.push({path:file,bytes:stat.size,sha256:await hashMediaFile(path,signal)});
     }
     await writeDurableFile(join(bundle,'manifest.json'),JSON.stringify({format:'yingliu-timeline-exchange',version:1,projectId:project.id,revision:project.revision,timeline,formats,files,notes},null,2)+'\n');
-    signal.throwIfAborted();await atomicRename(bundle,finalPath);
+    signal.throwIfAborted();await atomicRename(bundle,finalPath);published=true;
     onProgress(1,'可编辑时间轴交换包已保存');
-    return {projectId:project.id,revision:project.revision,path:finalPath,formats,files,notes};
+    return {projectId:project.id,revision:project.revision,path:finalPath,folder:relative,formats,files,notes};
   }finally{
     await Promise.allSettled([renderer.close(),mixer.close(),processes.close()]);
-    await fs.rm(stagePath,{recursive:true,force:true});
+    await fs.rm(stagePath,{recursive:true,force:true}).catch(error=>{if(!published)throw error;});
   }
 }

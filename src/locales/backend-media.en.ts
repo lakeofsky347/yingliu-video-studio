@@ -1,6 +1,19 @@
 // English display text for program-owned media, workflow, and validation messages.
 // Apply only to known system message fields, never to user-authored project content.
 export const backendMediaEnglish: Record<string, string> = {
+  "请在工作台导出时间轴交换包": "Export timeline packages from the workbench.",
+  "会话工具仅支持预览、检查和导出 MP4": "The session tool supports preview, validation, and MP4 export.",
+  "没有可交换的主链镜头": "There are no shots in the main sequence to exchange.",
+  "正在准备分角色音频": "Preparing separate audio clips",
+  "时间轴画面已准备": "Timeline picture clips are ready",
+  "可编辑时间轴交换包已保存": "Editable timeline package saved",
+  "每个镜头的画面和效果已渲染为可重排视频片段，字幕另附。": "Each shot and its effects are rendered as a rearrangeable video clip. Subtitles are included separately.",
+  "分轨音频包含裁剪、速度、循环、电平和淡入淡出；总混音设置保存在参考音频中。": "Separate audio preserves trims, speed, loops, levels, and fades. The reference audio includes the master mix settings.",
+  "CMX3600 EDL 仅含画面剪切与素材标识；可编辑分轨音频在 OTIO 和 FCPXML 中。": "CMX3600 EDL contains picture cuts and media identifiers. Separate, editable audio is available in OTIO and FCPXML.",
+  "CMX3600 EDL 仅输出 23.976、24、25、29.97 或 30 FPS 时间轴": "CMX3600 EDL supports 23.976, 24, 25, 29.97, and 30 fps timelines.",
+  "CMX3600 EDL 最多支持 999 个镜头": "CMX3600 EDL supports at most 999 shots.",
+  "CMX3600 EDL 时间码不能跨越 24 小时": "CMX3600 EDL timecode cannot span 24 hours.",
+  "确认期间接收服务或模型已变化，请刷新模型列表后重新确认上传": "The destination or model changed during confirmation. Refresh the model list and confirm the upload again.",
   "更换接口域名时，请输入新接口的 API Key，或先清除原连接的密钥": "Enter an API key for the new endpoint origin or clear the saved key first.",
   "更换语音接口域名时，请输入新接口的 API Key，或先清除原语音密钥": "Enter an API key for the new speech endpoint origin or clear the saved speech key first.",
   "模型连接已变更，请重新选择模型后重试": "The model connection changed. Select the model again and retry.",

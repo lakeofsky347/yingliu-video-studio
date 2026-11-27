@@ -347,7 +347,7 @@ export class ProjectHub {
     if(endpoint==='media.generate')return this.media.generate(request(data));
     if(endpoint==='media.authorize-upload'){
       if(context.callerSessionId)throw new Error('请在工作台确认要上传的素材及接收服务');
-      return this.media.authorizeUpload(request(data));
+      return this.media.authorizeUpload(request(data),data.destination);
     }
     if(endpoint==='media.batch'){
       if(!Array.isArray(data.items)||data.items.length>8)throw new Error('一批需要选择同一工程中的 1–8 个不同镜头');
@@ -515,7 +515,7 @@ export class ProjectHub {
         this.focus={...(typeof data.shotId==='string'?{shotId:data.shotId}:{}),...(typeof data.frame==='number'?{frame:Math.max(0,Math.floor(data.frame))}:{})};
         return {ok:true,value:await this.decorate(service,sessionId)};
       }
-      const result=await service.rpc(endpoint,endpoint.startsWith('review.')||endpoint==='project.pack'||endpoint==='previz.render'?{...data,signal:context.signal}:data);if(!result.ok)return result;
+      const result=await service.rpc(endpoint,endpoint.startsWith('review.')||endpoint==='project.pack'||endpoint==='previz.render'?{...data,signal:context.signal}:data,context.callerSessionId);if(!result.ok)return result;
       if(['source','inspect','thumbnails','history','tasks','jobs','quality.check','quality.last','review.frames','review.cuts','subtitles.export','project.pack'].includes(endpoint))return result;
       if(endpoint==='previz.get'||endpoint==='previz.cancel')return result;
       if(endpoint.startsWith('director.document.')||endpoint.startsWith('previz.')){await this.remember(await service.snapshot());return result;}

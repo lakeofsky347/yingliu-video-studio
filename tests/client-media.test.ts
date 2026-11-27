@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createProject, defaultSceneSource } from '../src/core/index.ts';
 import { StudioController } from '../src/client/controller.ts';
-import { mediaModels, mediaUsageLabel } from '../src/client/MediaPanel.tsx';
+import { eligibleMediaBatchShots, mediaModels, mediaUsageLabel } from '../src/client/MediaPanel.tsx';
 import type { StudioApi, StudioSnapshot } from '../src/shared/types.ts';
 import type { RegistrySnapshot } from '../src/models/contracts.ts';
 
@@ -44,6 +44,17 @@ test('image-to-video selection requires an enabled video connection and explicit
   const catalog:RegistrySnapshot={version:1,connections:[connection,{...connection,id:'disabled',enabled:false}],models:[model,{...model,id:'reference-video',inputModalities:['text','image']},{...model,id:'disabled-video',connectionId:'disabled',inputModalities:['text','image']}],roles:[]};
   assert.deepEqual(mediaModels(catalog,'image-to-video').map(value=>value.id),['reference-video']);assert.deepEqual(mediaModels(catalog,'text-to-image'),[]);
   assert.equal(mediaUsageLabel({}), '费用未知');assert.match(mediaUsageLabel({usage:{cost:0,currency:'USD'}}),/0\.0000 USD/);
+});
+
+test('reference batch eligibility follows selected asset bindings and each shot production permission',()=>{
+  const project=createProject('Reference fixture','','model_video'),[first,second]=project.shots;
+  first!.referenceIds=['shared','tail'];
+  second!.assetIds=['shared'];
+  assert.deepEqual(eligibleMediaBatchShots(project,'first-last-frame-video',{imageAssetIds:['shared','tail']}).map(shot=>shot.id),[first!.id]);
+  second!.referenceIds=['tail'];
+  assert.deepEqual(eligibleMediaBatchShots(project,'first-last-frame-video',{imageAssetIds:['shared','tail']}).map(shot=>shot.id),[first!.id,second!.id]);
+  project.productionPolicy={...project.productionPolicy!,mode:'hybrid',baseMode:'code_animation',hybridGrants:[{id:'grant',projectId:project.id,shotIds:[second!.id],operations:['video'],confirmedAt:new Date(0).toISOString()}]};
+  assert.deepEqual(eligibleMediaBatchShots(project,'first-last-frame-video',{imageAssetIds:['shared','tail']}).map(shot=>shot.id),[second!.id]);
 });
 
 

@@ -87,11 +87,17 @@ export interface VideoSpec {
   subtitles?:SubtitleCue[];
 }
 export interface SceneSource { html:string; css:string; js:string; shotPatch?:Partial<Shot> }
+export interface TimelineExchangeRecord {
+  folder:string;
+  formats:('otio'|'fcpxml'|'edl')[];
+  notes:string[];
+}
 export interface TaskState {
-  id:string; kind:'storyboard'|'scenes'|'modify'|'preview'|'export'|'audio';
+  id:string; kind:'storyboard'|'scenes'|'modify'|'preview'|'export'|'audio'|'timeline';
   status:'running'|'complete'|'failed'|'cancelled'|'interrupted'; progress:number; message:string;
   startedAt:string; finishedAt?:string; error?:string; shotId?:string; failedShotIds?:string[]; logPath?:string;
   revision?:number; retryOf?:string; failure?:import('./task-diagnostic.ts').TaskFailureDiagnostic;
+  timelineExchange?:TimelineExchangeRecord;
 }
 export interface TaskRecord extends TaskState { retryable:boolean }
 export interface ProjectHistory {

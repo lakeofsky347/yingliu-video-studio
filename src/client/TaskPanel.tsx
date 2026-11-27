@@ -4,7 +4,7 @@ import type { TaskRecord } from '../shared/types.ts';
 import type { StudioController } from './controller.ts';
 import { localTime } from './project-format.ts';
 const labels:Record<string,string>={running:'执行中',complete:'完成',failed:'失败',cancelled:'已取消',interrupted:'已中断'};
-const taskLabels:Record<string,string>={preview:'检查预览',export:'导出影片',storyboard:'构建分镜',scenes:'生成画面',modify:'修改镜头',audio:'制作音频'};
+const taskLabels:Record<string,string>={preview:'检查预览',export:'导出影片',storyboard:'构建分镜',scenes:'生成画面',modify:'修改镜头',audio:'制作音频',timeline:'导出时间轴交换包'};
 export function TaskPanel({controller}:{controller:StudioController}){
   useLocale();
   const state=useSyncExternalStore(controller.subscribe,controller.getSnapshot,controller.getSnapshot),projectId=state.snapshot?.project?.id;

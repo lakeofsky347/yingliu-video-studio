@@ -1,6 +1,6 @@
 # 媒体模型能力契约与验证边界
 
-检查日期：2026-11-06。本文描述当前适配器实现与模拟接口测试，不代表真实供应商、账号、地区或模型可用性验收；本次没有发起真实生成。
+更新日期 2026-11-27。本文记录 2.0.0 的适配器实现和模拟接口测试。真实供应商、账号、地区和生成质量需要独立验收。
 
 ## 校验入口
 
@@ -19,11 +19,14 @@ resolved 是现有 ResolvedModel，即 connection 和 model。request 包含 ope
 
 | 协议 | 当前适配器参考输入 | 未标用途的兼容行为 |
 |---|---|---|
-| images / gemini-image | 无；当前只实现文生图 | 有参考图直接拒绝 |
+| images | 文生图 | 有参考图直接拒绝 |
+| gemini-image | 文生图，已接入的 Gemini 图像型号支持按顺序传入 2–3 张图做融合 | 多图融合使用专用生成方式 |
 | video-gateway | 最多 3 张图片，reference 用途 | 沿用 v1 通用图片参考 |
-| 六个原生视频协议 | 最多 1 张图片，first_frame 用途 | 沿用原实现的单首帧语义 |
+| volc-video | 单首帧，Seedance 2.5 还支持按顺序传入 `first_frame` 和 `last_frame` | 图生视频使用单首帧语义 |
+| 其他原生视频协议 | 对具体模型校验单首帧输入 | 沿用单首帧语义 |
+| replicate-lipsync | `sync/lipsync-2` 接受 MP4 和 WAV，文件合计最多 32 MiB | 仅按专用口型同步操作提交 |
 
-last_frame、character、style、layout、多图参考、视频参考和音频参考目前均未实现，不会按首帧请求伪装支持。供应商文档有某种能力不代表本插件已经接好。对已识别的万相纯文生视频型号，连单首帧也会拒绝。
+多张图片、尾帧、视频及音频输入按具体操作校验。已识别的万相纯文生视频型号会拒绝首帧。首尾帧、多图融合和口型同步的上传授权绑定当前连接、模型、目标镜头和素材内容。
 
 requiresAudio=true 在已核查的具体 Sora 2 和 Veo 3.1 preview 型号上识别为原生音频；官方文档同时注明它们已退役，历史能力证据不等于端点仍可使用。未知型号即使在注册信息里自行勾选 audio 输出，也不会据此承诺带音频成片。其他协议当前没有实现音频开关或参考音频的可靠映射，要求原生音频会明确拒绝。requiresAudio=false 表示没有此要求，并不表示要求静音；静音/音轨保留属于后续合成策略。任务服务还须检查实际产物 hasAudio=true，否则不能成为合格候选。
 
@@ -32,14 +35,15 @@ requiresAudio=true 在已核查的具体 Sora 2 和 Veo 3.1 preview 型号上识
 | 协议 | 当前接受的生成参数 | 关键映射或限制 |
 |---|---|---|
 | images | size、quality、style、response_format、background、output_format、n | 原有 /images/generations；n 为 1–4；请求参数不能覆盖 model/prompt |
-| gemini-image | 暂无可调参数 | 使用已有 generateContent 文生图；不再接受后又忽略 size 等参数 |
+| gemini-image | 暂无可调参数 | 使用 generateContent 文生图或多图融合。融合时按输入顺序编码全部图片 |
 | video-gateway | durationSeconds、width、height、fps、aspectRatio、seed、negativePrompt | v1 字段和三图透传保持兼容；role 与 requiresAudio 不新增到网关请求体 |
 | openai-videos | durationSeconds、width、height、aspectRatio | seconds 保持整数原值；尺寸为 width x height；单独 16:9/9:16 分别映射 1280x720/720x1280；同时给尺寸和画幅必须一致 |
 | kling-video | durationSeconds、negativePrompt；文生视频还可 aspectRatio | 当前图生视频画幅控制未验证，明确拒绝；时长不再四舍五入 |
 | minimax-video | durationSeconds | 未实现画幅、fps、seed 等映射，明确拒绝 |
-| volc-video | durationSeconds、aspectRatio、seed | 直接写入 JSON 的 duration、ratio、seed；首帧明确 role=first_frame；不依赖易被忽略的提示词后缀 |
+| volc-video | durationSeconds、aspectRatio、seed | 直接写入 JSON 的 duration、ratio、seed。按操作写入首帧和尾帧角色 |
 | dashscope-video | 通用未知型号仅 durationSeconds；已识别文生视频型号另支持 width、height、seed、negativePrompt | 使用 size=width*height 和 input.negative_prompt；不发送旧实现中未经确认的 parameters.ratio |
 | gemini-video | durationSeconds、aspectRatio | 对应原有 predictLongRunning 字段；fps、seed、额外参考控制未实现 |
+| replicate-lipsync | 暂无可调参数 | 先上传视频和配音，再提交专用模型任务。使用远端任务 ID 查询或请求取消 |
 
 除网关既有协议外，当前原生视频接口都拒绝 fps；精确像素尺寸只在实现了尺寸映射的 OpenAI 和已识别万相文生视频型号中接受。拒绝表示当前插件不能可靠满足该要求，并非宣称供应商永远不支持。
 
@@ -51,13 +55,15 @@ verification.level 分为 adapter-contract 与 documentation-checked；两者 re
 |---|---|---|
 | sora-2、sora-2-2025-10-06、sora-2-2025-12-08 | 4/8/12 秒；720x1280 或 1280x720；原生音频 | API reference 与 cookbook 的范围存在差异，采用共同的保守子集；官方 API 已于 2026-09-24 退役，不宣称当前可用 |
 | sora-2-pro、sora-2-pro-2025-10-06 | 4/8/12 秒；上述尺寸加 1024x1792、1792x1024；原生音频 | 同上；参考图片尺寸与真实素材像素匹配仍需提交层/素材层验证 |
-| doubao-seedance-2-5-260628 | 4–30 整秒；官方枚举画幅；首帧生视频只能 adaptive | 文档更多多图、音频、视频和首尾帧能力尚未接入本适配器 |
+| doubao-seedance-2-5-260628 | 4–30 整秒，图生视频与首尾帧视频使用 adaptive 画幅 | 支持显式首尾帧。其他多参考输入继续按能力校验 |
 | doubao-seedance-2-0-260128、doubao-seedance-2-0-fast-260128、doubao-seedance-2-0-mini-260615 | 4–15 整秒；官方枚举画幅 | 当前仅文本或单首帧路径；不接受 -1 自动时长，避免把明确时长改为模型自选 |
 | wan2.6-t2v | 2–15 整秒；720P/1080P 文档枚举像素尺寸 | 只接受文生视频；使用旧 video-synthesis 协议 |
 | wan2.5-t2v-preview | 5/10 秒；480P/720P/1080P 文档枚举像素尺寸 | 同上 |
 | wan2.2-t2v-plus | 5 秒；480P/1080P 文档枚举像素尺寸 | 同上 |
 | wanx2.1-t2v-turbo / wanx2.1-t2v-plus | 5 秒；分别 480P/720P 与 720P 枚举像素尺寸 | 同上 |
 | veo-3.1-generate-preview、veo-3.1-fast-generate-preview、veo-3.1-lite-generate-preview | 4/6/8 秒、16:9/9:16；文档描述原生音频 | Google 页面注明这些 preview ID 已于 2026-10-22 停用；不自动迁移至另一模型或协议 |
+| gemini-2.5-flash-image、gemini-3-pro-image-preview、gemini-3.1-flash-image | 多图融合最多 3 张图片 | 适配器以明确的图片输入和输出配置为前提 |
+| sync/lipsync-2 | MP4 + WAV，候选视频必须有实际音轨 | 适配器使用模型专用的 Replicate 接口 |
 
 官方来源（2026-11-06 核查）：
 
@@ -66,6 +72,7 @@ verification.level 分为 adapter-contract 与 documentation-checked；两者 re
 - [火山方舟视频生成教程](https://docs.volcengine.com/docs/ark/video-generation-tutorial?lang=en&redirect=1) 与 [Seedance 2.5 教程](https://docs.volcengine.com/docs/ark/seedance-2-5?lang=en)：明确 JSON 参数、型号、画幅及首帧限制。
 - [阿里云万相 2.1–2.6 文生视频 API](https://help.aliyun.com/en/model-studio/legacy-wan-text-to-video-api-reference)：具体型号的时长和尺寸、负向提示、seed 及旧协议边界。
 - [Google Veo 文档](https://ai.google.dev/gemini-api/docs/veo)：时长、画幅、音频与 preview 退役说明。此来源不会用来假定其他 Gemini 模型继续支持相同接口。
+- 2.0.0 多图融合和口型同步接口。 [Gemini 图像生成文档](https://ai.google.dev/gemini-api/docs/image-generation) · [Replicate sync/lipsync-2](https://replicate.com/sync/lipsync-2)
 
 ## 提交可靠性
 

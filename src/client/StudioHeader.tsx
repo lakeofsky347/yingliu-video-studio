@@ -11,7 +11,7 @@ export type StepState='done'|'current'|'todo'|'running'|'stale'|'warning';
 export interface StepInfo { id:StageId; label:string; state:StepState; hint:string }
 export interface MenuItem { id:string; label:string; icon:string; onSelect:()=>void; disabled?:boolean; danger?:boolean; separatorBefore?:boolean; hint?:string }
 
-export function taskLabel(kind:string):string{return ({storyboard:t("生成分镜"),scenes:t("生成画面"),modify:t("修改镜头"),preview:t("准备预览"),export:t("导出视频"),audio:t("合成声音")} as Record<string,string>)[kind]||t("正在处理");}
+export function taskLabel(kind:string):string{return ({storyboard:t("生成分镜"),scenes:t("生成画面"),modify:t("修改镜头"),preview:t("准备预览"),export:t("导出视频"),audio:t("合成声音"),timeline:t("导出时间轴交换包")} as Record<string,string>)[kind]||t("正在处理");}
 
 /** Single-row studio header: identity, save state, honest progress stepper, model and primary actions. */
 export function StudioHeader({project,state,providers,steps,task,busy,graphOk,canExport,onHome,onRename,onStep,onGenerate,onExport,onCancel,onHistory,onRoute,menu}:{

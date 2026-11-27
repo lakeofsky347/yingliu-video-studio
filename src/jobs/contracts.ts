@@ -8,6 +8,9 @@ export function mediaOutput(operation:MediaOperation):'image'|'video'{
 export function hasImageInputs(operation:MediaOperation):boolean{
   return operation==='image-to-video'||operation==='image-compose'||operation==='first-last-frame-video';
 }
+export function mediaUploadDestination({connection,model}:ResolvedModel){
+  return {connectionId:connection.id,connectionRevision:connection.revision,baseUrl:connection.baseUrl,modelId:model.id,model:model.model};
+}
 export type RemoteStatus='queued'|'running'|'succeeded'|'failed'|'cancelled';
 export type MediaPhase='pending'|'submitting'|'queued'|'running'|'downloading'|'validating'|'ready'|'applying'|'complete'|'failed'|'cancelled'|'unknown';
 export interface MediaUsage { inputTokens?:number;outputTokens?:number;cost?:number;currency?:string;[key:string]:unknown }

@@ -3,7 +3,7 @@ import { Studio } from '../../src/client/Studio.tsx';
 import { StudioController } from '../../src/client/controller.ts';
 import { addShot, createProject } from '../../src/core/index.ts';
 import { setLocale } from '../../src/client/i18n.ts';
-import type { StudioApi, StudioSnapshot, VideoProject } from '../../src/shared/types.ts';
+import type { StudioApi, StudioSnapshot, TaskState, VideoProject } from '../../src/shared/types.ts';
 
 const params=new URLSearchParams(location.search);
 const scheme=(params.get('scheme')==='dark'?'dark':'light') as 'light'|'dark';
@@ -45,6 +45,7 @@ const origin=location.origin;
 let project=demoProject();
 let previewRevision:number|null=project.revision;
 let previzApprovedAt:string|undefined;
+let exchangeTask:TaskState|undefined;
 function samplePreviz(shotId:string){
   const scope={shotId,documentHash:'a'.repeat(64),documentVersion:2};
   const record={...scope,id:'fixture-previz',projectId:project.id,imageAssetId:'street',mediaHashes:[],
@@ -62,7 +63,7 @@ const calls:{endpoint:string;payload:unknown}[]=[];
 function snapshot():StudioSnapshot{
   return structuredClone({
     project,root:'/Users/demo/影片/城市漫步',
-    task:params.get('task')==='running'?{id:'t2',kind:'scenes',status:'running',progress:.46,message:'正在生成镜头 2 / 3 的画面',startedAt:new Date().toISOString()}:{id:'t1',kind:'scenes',status:'complete',progress:1,message:'已完成',startedAt:new Date(Date.now()-60e3).toISOString(),finishedAt:new Date().toISOString()},
+    task:exchangeTask??(params.get('task')==='running'?{id:'t2',kind:'scenes',status:'running',progress:.46,message:'正在生成镜头 2 / 3 的画面',startedAt:new Date().toISOString()}:{id:'t1',kind:'scenes',status:'complete',progress:1,message:'已完成',startedAt:new Date(Date.now()-60e3).toISOString(),finishedAt:new Date().toISOString()}),
     previewUrl:origin+'/frame/',previewRevision,assetBaseUrl:origin+'/',audioUrl:null,
     providers:[{id:'deepseek',name:'DeepSeek',models:[{id:'deepseek-v4-flash',name:'DeepSeek-V4.1-Flash'},{id:'deepseek-v4',name:'DeepSeek-V4.1'}]}],
     environment:{browserPath:'',ffmpegPath:'',ffprobePath:'',browserAvailable:true,ffmpegAvailable:true,ffprobeAvailable:true,blenderAvailable:hasPreviz},
@@ -83,6 +84,13 @@ const api:StudioApi={async call<T>(endpoint:string,payload:any={}):Promise<T>{
     case 'list':return {projects,bindings:{}} as T;
     case 'styles.list':return {styles:[]} as T;
     case 'quality.last':return null as T;
+    case 'tasks':return {tasks:exchangeTask?[exchangeTask]:[]} as T;
+    case 'timeline.exchange':{
+      if(payload.expectedRevision!==project.revision||payload.projectId!==project.id)throw new Error('Timeline exchange must pin saved project revision');
+      exchangeTask={id:'a1111111-b222-c333-d444-e55555555555',kind:'timeline',status:'running',progress:.43,message:'正在准备分角色音频',startedAt:new Date().toISOString(),revision:project.revision};
+      return snapshot() as T;
+    }
+    case 'reveal':return snapshot() as T;
     case 'media.list':return {tasks:[]} as T;
     case 'models.list':return {version:1,connections:[],models:[],roles:[]} as T;
     case 'previz.get':return (hasPreviz?samplePreviz(payload.shotId):{scope:null,record:null,rendering:false}) as T;
@@ -103,6 +111,12 @@ const api:StudioApi={async call<T>(endpoint:string,payload:any={}):Promise<T>{
     default:return {} as T;
   }
 }};
+(window as any).harnessCompleteTimeline=()=>{
+  if(!exchangeTask)return;
+  exchangeTask={...exchangeTask,status:'complete',progress:1,message:'已完成',finishedAt:new Date().toISOString(),timelineExchange:{
+    folder:`exports/timeline-${exchangeTask.revision}-${exchangeTask.id}`,formats:['otio','fcpxml','edl'],notes:['每个镜头的画面和效果已渲染为可重排视频片段，字幕另附。'],
+  }};
+};
 const controller=new StudioController(api);
 controller.setScheme(scheme);
 (window as any).harnessController=controller;

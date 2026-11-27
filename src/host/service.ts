@@ -5,10 +5,11 @@ import {resolve,join,relative,isAbsolute} from 'node:path';
 import {homedir} from 'node:os';
 import {createProject,compileSpec,defaultSceneSource,updateShot,updateTarget,validateProject,reorderShots} from '../core/index.ts';
 import {formatAss,formatSrt,projectSubtitles} from '../core/subtitles.ts';
-import type {VideoProject,StudioSnapshot,TaskState,EnvironmentSettings,ProviderGroup,RpcResult,SceneSource,Shot,ModelRoute,TtsSettings,AudioClip,VideoClip} from '../shared/types.ts';
+import type {VideoProject,StudioSnapshot,TaskState,TimelineExchangeRecord,EnvironmentSettings,ProviderGroup,RpcResult,SceneSource,Shot,ModelRoute,TtsSettings,AudioClip,VideoClip} from '../shared/types.ts';
 import type {HostContext} from './platform.ts';
 import {ProjectStore,projectPath,validateStoredProject,validateSources} from './store.ts';
 import {exportProjectArchive,importProjectArchive} from './project-archive.ts';
+import {exportTimelineExchange} from './timeline-exchange.ts';
 import {VideoRenderer,detectEnvironment,renderCheckError} from './renderer.ts';
 import {DshSceneGenerator,parseSceneSource,normalizeStoryboard} from './generator.ts';
 import {SpeechSynthesizer,extractVideoAudio} from './audio.ts';
@@ -33,8 +34,20 @@ import {syncDirectory} from './directory-sync.ts';
 import {hashMediaFile} from '../media/video.ts';
 import {freezeImport,freezeLocalVideo,importDigest,retryLocalAppend} from './local-import.ts';
 
-interface TaskRequest { endpoint:'preview'|'export'|'generate'; payload:Record<string,string> }
+interface TaskRequest { endpoint:'preview'|'export'|'generate'|'timeline.exchange'; payload:Record<string,string> }
 interface RecordedTask extends TaskState { recordVersion?:1; revision?:number; request?:TaskRequest; retryOf?:string }
+function timelineExchangeRecord(input:unknown,revision:number|undefined):TimelineExchangeRecord|undefined{
+  if(!input||typeof input!=='object')return;
+  const value=input as Partial<TimelineExchangeRecord>;
+  if(typeof value.folder!=='string'||!/^exports\/timeline-\d+-[a-f0-9-]{36}$/.test(value.folder)||!value.folder.startsWith(`exports/timeline-${revision}-`))return;
+  const formats=(['otio','fcpxml','edl'] as const).filter(format=>Array.isArray(value.formats)&&value.formats.includes(format));
+  if(formats.length<2||!formats.includes('otio')||!formats.includes('fcpxml'))return;
+  const notes=Array.isArray(value.notes)?value.notes.filter(note=>typeof note==='string').slice(0,8).map(note=>note.slice(0,400)):[];
+  return {folder:value.folder,formats,notes};
+}
+function assertTimelineWorkbench(callerSessionId?:string):void{
+  if(callerSessionId)throw Object.assign(new Error('请在工作台导出时间轴交换包'),{code:'TIMELINE_EXPORT_REQUIRES_WORKBENCH'});
+}
 const legacySpeechKey='DSH_VIDEO_STUDIO_TTS_API_KEY';
 function speechOrigin(endpoint:string):string|undefined {
   try{const url=new URL(endpoint);return ['http:','https:'].includes(url.protocol)?url.origin:undefined;}
@@ -466,7 +479,7 @@ export class StudioService {
   }
   private recordedRequest(endpoint:string,data:any):TaskRequest|undefined{
     if(!data||typeof data!=='object'||Array.isArray(data))return;
-    if(!['preview','export','generate'].includes(endpoint))return;
+    if(!['preview','export','generate','timeline.exchange'].includes(endpoint))return;
     const payload:Record<string,string>={};
     if(endpoint==='generate'){
       if(!['storyboard','scenes','modify'].includes(data.kind)||typeof data.provider!=='string'||typeof data.model!=='string')return;
@@ -480,11 +493,13 @@ export class StudioService {
     const tasks:RecordedTask[]=[];
     for(const name of names.filter(name=>/^[a-zA-Z0-9_-]+\.json$/.test(name))){
       try{const value=JSON.parse(await readFile(await projectPath(root,'.studio/tasks/'+name),'utf8')) as RecordedTask;
-        if(!value||typeof value!=='object'||value.id+'.json'!==name||typeof value.startedAt!=='string'||!['storyboard','scenes','modify','preview','export','audio'].includes(value.kind)||!['running','complete','failed','cancelled','interrupted'].includes(value.status))continue;
+        if(!value||typeof value!=='object'||value.id+'.json'!==name||typeof value.startedAt!=='string'||!['storyboard','scenes','modify','preview','export','audio','timeline'].includes(value.kind)||!['running','complete','failed','cancelled','interrupted'].includes(value.status))continue;
         const task:RecordedTask={id:value.id,kind:value.kind,status:value.status,startedAt:value.startedAt,progress:Number.isFinite(value.progress)?value.progress:0,message:await this.redact(String(value.message??'')),logPath:await projectPath(root,'.studio/tasks/'+name),finishedAt:typeof value.finishedAt==='string'?value.finishedAt:undefined,error:typeof value.error==='string'?await this.redact(value.error):undefined,shotId:typeof value.shotId==='string'?value.shotId:undefined,recordVersion:value.recordVersion===1?1:undefined,revision:Number.isSafeInteger(value.revision)?value.revision:undefined,failure:sanitizeTaskFailure(value.failure),retryOf:typeof value.retryOf==='string'?value.retryOf:undefined};
         if(task.status==='failed')task.failedShotIds=failedShotIds(value.failedShotIds);
+        if(task.kind==='timeline'&&task.status==='complete')task.timelineExchange=timelineExchangeRecord(value.timelineExchange,task.revision);
         const request=value.recordVersion===1&&value.request?this.recordedRequest(value.request.endpoint,value.request.payload):undefined;
-        if(request&&((request.endpoint==='preview'||request.endpoint==='export')?request.endpoint===value.kind:request.payload.kind===value.kind)){
+        const kind=request?.endpoint==='generate'?request.payload.kind:request?.endpoint==='timeline.exchange'?'timeline':request?.endpoint;
+        if(request&&kind===value.kind){
           for(const key of Object.keys(request.payload))request.payload[key]=await this.redact(request.payload[key]!);task.request=request;
         }
         if(this.task?.id===task.id&&this.task.status==='running'){task.progress=this.task.progress;task.message=await this.redact(this.task.message);}
@@ -496,18 +511,35 @@ export class StudioService {
   private async recoverTask():Promise<void>{
     if(!this.root)return;const records=await this.taskRecords();
     for(const task of records)if(task.status==='running'){
-      task.status='interrupted';task.message='上次任务已中断 · 请读取当前工程后明确重试';task.error='TASK_INTERRUPTED: 插件退出前任务未完成；配音任务请明确重新生成';task.finishedAt=new Date().toISOString();await this.writeTaskJournal(this.root,task);
+      const timeline=await this.recoverTimelineExchange(task);
+      if(timeline){
+        task.status='complete';task.progress=1;task.message='已完成';task.timelineExchange=timeline;delete task.error;
+      }else{
+        task.status='interrupted';task.message='上次任务已中断 · 请读取当前工程后明确重试';task.error='TASK_INTERRUPTED: 插件退出前任务未完成；配音任务请明确重新生成';
+      }
+      task.finishedAt=new Date().toISOString();await this.writeTaskJournal(this.root,task);
     }
     this.task=records[0]??null;
   }
-  private async start(kind:TaskState['kind'],work:(signal:AbortSignal)=>Promise<void>,shotId?:string,request?:TaskRequest,retryOf?:string):Promise<void>{
+  private async recoverTimelineExchange(task:RecordedTask):Promise<TimelineExchangeRecord|undefined>{
+    if(task.kind!=='timeline'||task.revision===undefined||!/^[a-f0-9-]{36}$/.test(task.id))return;
+    const {root,project}=this.required(),folder=`exports/timeline-${task.revision}-${task.id}`;
+    try{
+      const manifest=JSON.parse(await readFile(await projectPath(root,`${folder}/manifest.json`),'utf8'));
+      if(manifest?.format!=='yingliu-timeline-exchange'||manifest.version!==1||manifest.projectId!==project.id||manifest.revision!==task.revision)return;
+      return timelineExchangeRecord({folder,formats:manifest.formats,notes:manifest.notes},task.revision);
+    }catch(error){
+      if((error as NodeJS.ErrnoException).code!=='ENOENT'&&!(error instanceof SyntaxError))throw error;
+    }
+  }
+  private async start(kind:TaskState['kind'],work:(signal:AbortSignal,task:RecordedTask)=>Promise<void>,shotId?:string,request?:TaskRequest,retryOf?:string):Promise<void>{
     this.assertIdle();const root=this.required().root;
     const task:RecordedTask={id:randomUUID(),kind,status:'running',progress:0,message:'准备中',startedAt:new Date().toISOString(),shotId,recordVersion:1,revision:this.required().project.revision,request,retryOf};
     const controller=new AbortController();this.controller=controller;this.task=task;
     try{await this.writeTaskJournal(root,task);}catch(error){task.status='failed';task.failure=taskFailure(error,'task_journal_start');task.error='任务记录保存失败：'+String(error);task.message=task.error;throw error;}
     this.job=(async()=>{
       let status:TaskState['status']='complete',error:string|undefined;
-      try{await work(controller.signal);controller.signal.throwIfAborted();}
+      try{await work(controller.signal,task);if(!task.timelineExchange)controller.signal.throwIfAborted();}
       catch(failure){
         task.failure=taskFailure(failure,'task_work');status=controller.signal.aborted?'cancelled':'failed';error=failure instanceof Error?failure.message:String(failure);
         if(status==='failed'&&failure instanceof Error&&'failedShotIds' in failure)task.failedShotIds=failedShotIds(failure.failedShotIds);
@@ -624,9 +656,13 @@ export class StudioService {
     });
     try{return await job.result;}finally{if(this.previzRun===job)this.previzRun=undefined;}
   }
-  async rpc(endpoint:string,payload:unknown):Promise<RpcResult>{
+  async rpc(endpoint:string,payload:unknown,callerSessionId?:string):Promise<RpcResult>{
     await this.initialized;
-    if(endpoint==='cancel'){this.controller?.abort(new Error('用户已取消'));return {ok:true,value:await this.snapshot()};}
+    if(endpoint==='cancel'){
+      const requested=(payload as {taskId?:unknown}|null)?.taskId;
+      if(requested===undefined||requested===this.task?.id)this.controller?.abort(new Error('用户已取消'));
+      return {ok:true,value:await this.snapshot()};
+    }
     if(endpoint==='previz.cancel'){
       const {projectId,shotId}=(payload??{}) as {projectId?:string;shotId?:string};
       const run=this.previzRun;
@@ -637,12 +673,13 @@ export class StudioService {
       try{return {ok:true,value:await this.runPreviz((payload??{}) as Parameters<StudioService['runPreviz']>[0])};}
       catch(error){return {ok:false,error:{code:error instanceof Error&&'code' in error?String(error.code):'PREVIZ_FAILED',message:error instanceof Error?error.message:String(error)}};}
     }
-    return this.enqueue(()=>this.performRpc(endpoint,payload));
+    return this.enqueue(()=>this.performRpc(endpoint,payload,callerSessionId));
   }
-  private async performRpc(endpoint:string,payload:unknown):Promise<RpcResult>{
+  private async performRpc(endpoint:string,payload:unknown,callerSessionId?:string):Promise<RpcResult>{
     try{
       await this.initialized;if(this.disposed)throw new Error('插件服务已停止');const data=(payload??{}) as any;
-      if(['save','apply','saveSource','restoreSource','undo','redo','rename','retry','job.retry','import','audio','audio.sfx','generate','duplicate','director.document.save','director.document.approve'].includes(endpoint))this.assertRevision(data,true);
+      if(endpoint==='timeline.exchange')assertTimelineWorkbench(callerSessionId);
+      if(['save','apply','saveSource','restoreSource','undo','redo','rename','retry','job.retry','import','audio','audio.sfx','generate','duplicate','director.document.save','director.document.approve','timeline.exchange'].includes(endpoint))this.assertRevision(data,true);
       else if(['export','preview','quality.check'].includes(endpoint)&&data.expectedRevision!==undefined)this.assertRevision(data);
       if(endpoint.startsWith('video.clip.'))this.assertRevision(data,true);
       switch(endpoint){
@@ -803,6 +840,16 @@ export class StudioService {
           },data.shotId,this.recordedRequest('generate',data),data._retryOf);break;
         }
         case 'export':{const {root,project}=this.required();assertProductionComposition(project,{forExport:true});compileSpec(project);const snapshot=structuredClone(project);await this.start('export',async signal=>{this.progress(.01,'导出前本地质检');const quality=await this.checkLocalQuality(snapshot,signal);if(quality.decision==='fail')throw Object.assign(new Error('本地质检发现硬失败：'+quality.checks.filter(check=>check.severity==='hard'&&check.status==='fail').map(check=>check.message).join('；')),{code:'LOCAL_QUALITY_FAILED'});signal.throwIfAborted();const result=await this.renderer.export(root,snapshot,this.settings,signal,(p,m)=>this.progress(p,m));result.localQuality=quality;await writeDurableFile(await projectPath(root,`.studio/quality/exports/${result.id}.json`),JSON.stringify(quality,null,2)+'\n');signal.throwIfAborted();await this.enqueue(async()=>{signal.throwIfAborted();const current=structuredClone(this.required().project);current.outputs.push(result);await this.persist(current,{},'导出成片记录');if(!result.url)result.url=new URL(relative(root,result.path).replaceAll('\\','/').split('/').map(encodeURIComponent).join('/'),this.assetBaseUrl??await this.renderer.assetBaseUrl(root)).href;});},undefined,this.recordedRequest('export',data),data._retryOf);break;}
+        case 'timeline.exchange':{
+          const {root,project}=this.required();assertProductionComposition(project,{forExport:true});
+          if(!compileSpec(project).shots.length)throw new Error('没有可交换的主链镜头');
+          const snapshot=structuredClone(project),settings=structuredClone(this.settings);
+          await this.start('timeline',async(signal,task)=>{
+            const result=await exportTimelineExchange(root,snapshot,settings,signal,(progress,message)=>this.progress(progress,message),task.id);
+            task.timelineExchange={folder:result.folder,formats:result.formats,notes:result.notes};
+          },undefined,this.recordedRequest(endpoint,data),data._retryOf);
+          break;
+        }
         case 'history':return {ok:true,value:await this.store.history(this.required().root)};
         case 'undo':case 'redo':{this.assertIdle();this.project=await this.store.moveHistory(this.required().root,endpoint,data.expectedRevision??this.required().project.revision);await this.refreshAfterCommit();break;}
         case 'rename':{this.assertIdle();if(typeof data.title!=='string'||!data.title.trim())throw new Error('工程名称不能为空');const next=structuredClone(this.required().project);next.title=data.title.trim();await this.persist(next,{},'重命名工程');break;}
@@ -811,7 +858,7 @@ export class StudioService {
         case 'retry':case 'job.retry':{
           this.assertIdle();const task=(await this.taskRecords()).find(task=>task.id===data.taskId);
           if(!task||!task.request||task.status==='running')throw new Error('此任务没有可重试的插件请求记录；配音请明确重新生成');
-          return this.performRpc(task.request.endpoint,{...task.request.payload,expectedRevision:data.expectedRevision,_retryOf:task.id});
+          return this.performRpc(task.request.endpoint,{...task.request.payload,expectedRevision:data.expectedRevision,_retryOf:task.id},callerSessionId);
         }
         case 'cancel':this.controller?.abort(new Error('用户已取消'));break;
         case 'environment':{

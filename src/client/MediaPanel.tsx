@@ -1,7 +1,8 @@
 import {t, useLocale, systemMessage, formatDate} from './i18n.ts';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { Asset, Shot, VideoClip, VideoProject } from '../shared/types.ts';
-import {hasImageInputs,mediaOutput,type MediaOperation,type MediaTask} from '../jobs/contracts.ts';
+import {hasImageInputs,mediaOutput,mediaUploadDestination,type MediaOperation,type MediaRequest,type MediaTask} from '../jobs/contracts.ts';
+import {assertProductionOperation} from '../core/production-policy.ts';
 import {getMediaCapabilities} from '../models/capabilities.ts';
 import type { ModelDefinition, RegistrySnapshot } from '../models/contracts.ts';
 import { StudioController } from './controller.ts';
@@ -17,6 +18,23 @@ export function mediaModels(catalog:RegistrySnapshot,operation:MediaOperation):M
     protocolKind(connection.protocol)===mediaOutput(operation)&&getMediaCapabilities({connection,model}).operations.includes(operation)));
 }
 export function mediaUsageLabel(task:Pick<MediaTask,'usage'>):string{return typeof task.usage?.cost==='number'?`${task.usage.cost.toFixed(4)} ${task.usage.currency||t("（币种未提供）")}`:t("费用未知");}
+function hasShotAsset(project:VideoProject,shot:Shot,assetId:string,kind:Asset['kind']):boolean{
+  if(shot.assetIds.includes(assetId)||shot.referenceIds.includes(assetId))return true;
+  if(kind==='video')return project.videoClips?.some(clip=>clip.shotId===shot.id&&clip.assetId===assetId)??false;
+  if(kind==='audio')return project.audioClips?.some(clip=>(!clip.shotId||clip.shotId===shot.id)&&clip.assetId===assetId)??false;
+  return false;
+}
+export function eligibleMediaBatchShots(project:VideoProject,operation:MediaOperation,references:Pick<MediaRequest,'imageAssetIds'|'videoAssetId'|'audioAssetId'>):Shot[]{
+  const {imageAssetIds=[],videoAssetId,audioAssetId}=references;
+  const output=mediaOutput(operation);
+  return project.shots.filter(shot=>{
+    if(hasImageInputs(operation)&&(!imageAssetIds.length||imageAssetIds.some(id=>!hasShotAsset(project,shot,id,'image'))))return false;
+    if(operation==='lip-sync-video'&&(!videoAssetId||!audioAssetId||!hasShotAsset(project,shot,videoAssetId,'video')||!hasShotAsset(project,shot,audioAssetId,'audio')))return false;
+    try{assertProductionOperation(project,output,[shot.id]);return true;}catch{return false;}
+  });
+}
+
+type MediaConsent={uploadConsentId:string;expectedRevision:number;expiresAt:number};
 export function MediaPanel({controller,project,selectedShot,mediaOnly=false}:{controller:StudioController;project:VideoProject;selectedShot?:Shot;mediaOnly?:boolean}){
   useLocale();
   const confirmAction=useConfirmAction();
@@ -28,16 +46,18 @@ export function MediaPanel({controller,project,selectedShot,mediaOnly=false}:{co
   const [first,setFirst]=useState(''),[last,setLast]=useState(''),[videoId,setVideoId]=useState(''),[audioId,setAudioId]=useState('');
   const [batchShots,setBatchShots]=useState<string[]>([]),batchRequest=useRef<{signature:string;id:string}>();
   const [configOpen,setConfigOpen]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
+  const [dshRequest,setDshRequest]=useState<{text:string;expiresAt:number;manualCopy?:boolean}>();
   const models=mediaModels(catalog,operation),selectedModel=models.find(model=>model.id===modelId);
   const targetShot=project.shots.find(shot=>shot.id===shotId),images=project.assets.filter(asset=>asset.kind==='image'&&(!targetShot||targetShot.assetIds.includes(asset.id)||targetShot.referenceIds.includes(asset.id)));
   const output=mediaOutput(operation),lip=operation==='lip-sync-video',bookends=operation==='first-last-frame-video',compose=operation==='image-compose';
-  const needsUpload=bookends||compose||lip;
+  const needsUpload=bookends||compose||lip,hasReferences=hasImageInputs(operation)||lip;
   const selectedConnection=catalog.connections.find(connection=>connection.id===selectedModel?.connectionId);
-  const matchesShot=(asset:Asset)=>!targetShot||targetShot.assetIds.includes(asset.id)||targetShot.referenceIds.includes(asset.id)||
-    project.videoClips?.some(clip=>clip.shotId===targetShot.id&&clip.assetId===asset.id)||
-    project.audioClips?.some(clip=>(!clip.shotId||clip.shotId===targetShot.id)&&clip.assetId===asset.id);
+  const matchesShot=(asset:Asset)=>!targetShot||hasShotAsset(project,targetShot,asset.id,asset.kind);
   const videos=project.assets.filter(asset=>asset.kind==='video'&&matchesShot(asset)),audio=project.assets.filter(asset=>asset.kind==='audio'&&matchesShot(asset));
   const readyInputs=lip?!!videoId&&!!audioId:bookends?!!first&&!!last&&first!==last:compose?imageIds.length>=2&&imageIds.length<=3:operation==='image-to-video'?allowUpload&&!!imageIds.length:true;
+  const imageAssetIds=bookends?[first,last]:imageIds;
+  const eligibleIds=new Set(readyInputs?eligibleMediaBatchShots(project,operation,{imageAssetIds,videoAssetId:videoId,audioAssetId:audioId}).map(shot=>shot.id):[]);
+  const invalidBatch=batchShots.some(id=>!eligibleIds.has(id));
   const disabled=busy||state.pending,seen=useRef(new Map<string,number>());
   useEffect(()=>{setShotId(selectedShot?.id||'');setImageIds([]);setAllowUpload(false);},[project.id,selectedShot?.id]);
   async function refreshCatalog(){setCatalog(await controller.api.call<RegistrySnapshot>('models.list'));}
@@ -45,35 +65,72 @@ export function MediaPanel({controller,project,selectedShot,mediaOnly=false}:{co
   useEffect(()=>{let active=true,polling=false;setTasks([]);seen.current.clear();setError('');const poll=async()=>{if(polling)return;polling=true;try{const value=await controller.api.call<{tasks:MediaTask[]}>('media.list',{projectId:project.id});if(active){setTasks(value.tasks);for(const task of value.tasks){if(task.applied&&seen.current.get(task.id)!==task.applied.revision&&await controller.refreshMediaProject())seen.current.set(task.id,task.applied.revision);}}}catch(cause){if(active)setError(errorMessage(cause));}finally{polling=false;}};void poll();void controller.api.call<RegistrySnapshot>('models.list').then(value=>{if(active)setCatalog(value);}).catch(cause=>{if(active)setError(errorMessage(cause));});const timer=setInterval(()=>void poll(),2000);return()=>{active=false;clearInterval(timer);};},[controller,project.id]);
   useEffect(()=>{if(models.some(model=>model.id===modelId))return;const role=mediaOutput(operation),preferred=catalog.roles.find(binding=>binding.role===role)?.modelId;setModelId(models.find(model=>model.id===preferred)?.id||models[0]?.id||'');},[catalog,operation,modelId]);
   useEffect(()=>{setImageIds([]);setAllowUpload(false);setFirst('');setLast('');setVideoId('');setAudioId('');},[shotId,operation,modelId]);
-  useEffect(()=>{setBatchShots([]);batchRequest.current=undefined;},[project.id,operation]);
+  useEffect(()=>{setBatchShots([]);batchRequest.current=undefined;setDshRequest(undefined);},[project.id,operation]);
+  useEffect(()=>{
+    if(!dshRequest)return;
+    const expiry=setTimeout(()=>setDshRequest(undefined),Math.max(0,dshRequest.expiresAt-Date.now()));
+    return ()=>clearTimeout(expiry);
+  },[dshRequest]);
   useEffect(()=>{setSize('');setDurationSeconds('');setWidth('');setHeight('');setParameters('{}');},[operation,modelId]);
   async function run(work:()=>Promise<void|boolean>,message:string){setBusy(true);setError('');setNotice('');try{if(await work()===false)return;await refreshTasks();setNotice(message);}catch(cause){setError(errorMessage(cause));}finally{setBusy(false);}}
-  async function generate(){await run(async()=>{
+  async function generate(forDsh=false){await run(async()=>{
     const value=JSON.parse(parameters||'{}');
     if(!value||typeof value!=='object'||Array.isArray(value))throw new Error("生成参数须为 JSON 对象");
     if(!readyInputs)throw new Error("请选择所需参考素材");
-    const imageAssetIds=bookends?[first,last]:imageIds;
-    if(needsUpload){
+    if(invalidBatch)throw new Error("批次包含未关联全部参考素材或未获制作许可的镜头");
+    if(forDsh&&(!hasReferences||batchShots.length))return false;
+    const scoped=needsUpload||hasReferences&&(batchShots.length>0||forDsh);
+    const destination=scoped&&selectedConnection&&selectedModel?mediaUploadDestination({connection:selectedConnection,model:selectedModel}):undefined;
+    if(scoped){
       const names=(lip?[videoId,audioId]:imageAssetIds).map(id=>project.assets.find(asset=>asset.id===id)?.name??id);
-      if(!selectedConnection||!await confirmAction({title:t("确认上传参考素材？"),body:t("将上传 {assets} 到 {destination} 用于本次生成。",{assets:names.join(' · '),destination:selectedConnection.baseUrl}),confirmLabel:t("确认上传并生成")}))return false;
+      if(!destination)return false;
+      const confirmation={assets:names.join(' · '),destination:destination.baseUrl+' · '+destination.model};
+      const body=forDsh?t("授权 DSH 将 {assets} 上传到 {destination}。请求只可使用一次，有效期为 5 分钟，请仅发到预期的 DSH 会话。",confirmation)
+        :batchShots.length?t("为 {shots} 提交生成，每个镜头都会将 {assets} 上传到 {destination}。",{...confirmation,shots:batchShots.map(id=>project.shots.find(shot=>shot.id===id)?.title??id).join(' · ')})
+          :t("将上传 {assets} 到 {destination} 用于本次生成。",confirmation);
+      if(!await confirmAction({title:forDsh?t("确认授权 DSH 请求？"):t("确认上传参考素材？"),body,confirmLabel:forDsh?t("授权并准备请求"):t("确认上传并生成")}))return false;
     }
     if(controller.getSnapshot().snapshot?.project?.id!==project.id)return false;
-    const request={operation,prompt:lip?t("驱动口型同步"):prompt.trim(),modelId,shotId:shotId||undefined,
+    const request={operation,prompt:lip?t("驱动口型同步"):prompt.trim(),modelId,shotId:shotId||undefined,...(destination?{connectionId:destination.connectionId}:{}),
       parameters:{...value,...(output==='image'?(size?{size}:{}):{...(durationSeconds?{durationSeconds:Number(durationSeconds)}:{}),...(width?{width:Number(width)}:{}),...(height?{height:Number(height)}:{})})},
       ...(hasImageInputs(operation)?{imageAssetIds,allowImageUpload:allowUpload}:{}),
       ...(bookends?{referenceRoles:['first_frame','last_frame']}:{}),
       ...(lip?{videoAssetId:videoId,audioAssetId:audioId}:{}),
     };
+    if(forDsh&&destination){
+      const exact={...request,clientRequestId:crypto.randomUUID()};
+      const grant=await controller.mediaCommand<MediaConsent>('media.authorize-upload',{...exact,destination});
+      if(controller.getSnapshot().snapshot?.project?.id!==project.id)return false;
+      const args={action:'generate',projectId:project.id,...exact,uploadConsentId:grant.uploadConsentId,expectedRevision:grant.expectedRevision};
+      setDshRequest({text:t("请用下方 JSON 原样调用 video_media。不要改写参数、重新申请授权或另发生成任务。\n{request}",{request:JSON.stringify(args,null,2)}),expiresAt:grant.expiresAt});
+      return false;
+    }
     if(batchShots.length){
       const signature=JSON.stringify([request,batchShots]);
       if(batchRequest.current?.signature!==signature)batchRequest.current={signature,id:crypto.randomUUID()};
-      await controller.mediaCommand('media.batch',{batchId:batchRequest.current.id,items:batchShots.map(shotId=>({...request,shotId}))});
+      const batchId=batchRequest.current.id;
+      const items=[];
+      for(const shotId of batchShots){
+        const item={...request,shotId};
+        const grant=destination?await controller.mediaCommand<MediaConsent>('media.authorize-upload',{...item,destination}):undefined;
+        if(controller.getSnapshot().snapshot?.project?.id!==project.id)return false;
+        items.push({...item,...(grant?{uploadConsentId:grant.uploadConsentId}:{})});
+      }
+      await controller.mediaCommand('media.batch',{batchId,items});
       batchRequest.current=undefined;
     }else{
-      const grant=needsUpload?await controller.mediaCommand<{uploadConsentId:string}>('media.authorize-upload',request):{};
-      await controller.mediaCommand('media.generate',{...request,...grant});
+      const grant=destination?await controller.mediaCommand<MediaConsent>('media.authorize-upload',{...request,destination}):undefined;
+      if(controller.getSnapshot().snapshot?.project?.id!==project.id)return false;
+      await controller.mediaCommand('media.generate',{...request,...(grant?{uploadConsentId:grant.uploadConsentId}:{})});
     }
   },"生成任务已保存，可以继续编辑影片。完成后请采用结果。");}
+
+  async function copyDshRequest(){
+    if(!dshRequest||Date.now()>=dshRequest.expiresAt){setDshRequest(undefined);return;}
+    try{await navigator.clipboard.writeText(dshRequest.text);setNotice("请求已复制。仅粘贴到预期的 DSH 会话。");}
+    catch{setDshRequest(current=>current===dshRequest?{...dshRequest,manualCopy:true}:current);}
+  }
+  const canGenerate=!!selectedModel&&(lip||!!prompt.trim())&&readyInputs&&!invalidBatch;
 
   return <section className="vs-media-panel" aria-label={t("素材生成")}>
     <div className="vs-media-heading"><div><h3>{t("模型与素材生成")}</h3><p>{t("生成图片或视频，再将检查通过的结果加入当前工程。")}</p></div><button disabled={disabled} onClick={()=>setConfigOpen(value=>!value)}>{configOpen?t("收起模型中心"):t("配置模型连接")}</button></div>
@@ -94,12 +151,17 @@ export function MediaPanel({controller,project,selectedShot,mediaOnly=false}:{co
         <label className="vs-field"><span>{t("源视频 MP4")}</span><select disabled={disabled} value={videoId} onChange={event=>setVideoId(event.target.value)}><option value="">{t("选择素材")}</option>{videos.map(asset=><option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
         <label className="vs-field"><span>{t("配音 WAV")}</span><select disabled={disabled} value={audioId} onChange={event=>setAudioId(event.target.value)}><option value="">{t("选择素材")}</option>{audio.map(asset=><option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
       </div>}
-      {!hasImageInputs(operation)&&!lip&&project.shots.length>1&&<details className="vs-media-advanced"><summary>{t("批量生成镜头")}</summary>
-        <fieldset className="vs-media-images" disabled={disabled}>{project.shots.map(shot=><label key={shot.id}><input type="checkbox" checked={batchShots.includes(shot.id)} disabled={batchShots.length>=8&&!batchShots.includes(shot.id)} onChange={event=>setBatchShots(value=>event.target.checked?[...value,shot.id]:value.filter(id=>id!==shot.id))}/>{shot.title}</label>)}</fieldset>
+      {project.shots.length>1&&<details className="vs-media-advanced"><summary>{t("批量生成镜头")}</summary>
+        {hasReferences&&<p className="vs-media-help">{t("批次使用同一组参考素材。选择已关联全部参考素材且获制作许可的镜头，每批最多 8 镜。")} </p>}
+        <fieldset className="vs-media-images" disabled={disabled}>{project.shots.map(shot=>{const checked=batchShots.includes(shot.id);return <label key={shot.id}><input type="checkbox" checked={checked} disabled={!checked&&(!eligibleIds.has(shot.id)||batchShots.length>=8)} onChange={event=>setBatchShots(value=>event.target.checked?[...value,shot.id]:value.filter(id=>id!==shot.id))}/>{shot.title}</label>;})}</fieldset>
+        {invalidBatch&&<p className="vs-inline-error">{t("批次包含未关联全部参考素材或未获制作许可的镜头")}</p>}
       </details>}
       {lip?null:output==='image'?<label className="vs-field"><span>{t("图片尺寸（可留空使用默认值）")}</span><input aria-label={t("生成图片尺寸")} placeholder={String(selectedModel?.parameters.size||t("例如 1024x1024"))} value={size} disabled={disabled} onChange={event=>setSize(event.target.value)}/></label>:<><label className="vs-field"><span>{t("生成时长（秒，可留空）")}</span><input aria-label={t("生成视频时长")} type="number" min="0.1" max={Number(selectedModel?.parameters.maxDurationSeconds||120)} step="0.1" value={durationSeconds} disabled={disabled} onChange={event=>setDurationSeconds(event.target.value)} placeholder={String(selectedModel?.parameters.durationSeconds||t("服务默认"))}/></label><div className="vs-field-pair"><label className="vs-field"><span>{t("视频宽度（可留空）")}</span><input aria-label={t("生成视频宽度")} type="number" min="1" max={Number(selectedModel?.parameters.maxWidth||8192)} value={width} disabled={disabled} onChange={event=>setWidth(event.target.value)}/></label><label className="vs-field"><span>{t("视频高度（可留空）")}</span><input aria-label={t("生成视频高度")} type="number" min="1" max={Number(selectedModel?.parameters.maxHeight||8192)} value={height} disabled={disabled} onChange={event=>setHeight(event.target.value)}/></label></div></>}
       <details className="vs-media-advanced"><summary>{t("本次生成参数")}</summary><label className="vs-field"><span>{t("覆盖模型默认参数（JSON 对象）")}</span><textarea aria-label={t("本次素材生成参数")} rows={4} spellCheck={false} value={parameters} disabled={disabled} onChange={event=>setParameters(event.target.value)}/><small>{selectedModel?t("当前默认参数：{value}", {value: JSON.stringify(selectedModel.parameters)}):t("先选择模型。")} {t(" 参数由适配器校验。")}</small></label></details>
-      <button className="vs-primary" disabled={disabled||!selectedModel||!lip&&!prompt.trim()||!readyInputs} onClick={()=>void generate()}>{busy?t("正在提交…"):t("开始生成素材")}</button>
+      <div className="vs-media-actions"><button className="vs-primary" disabled={disabled||!canGenerate} onClick={()=>void generate()}>{busy?t("正在提交…"):t("开始生成素材")}</button>
+        {hasReferences&&!batchShots.length&&<button type="button" disabled={disabled||!canGenerate} onClick={()=>void generate(true)}>{t("为 DSH 准备请求")}</button>}
+      </div>
+      {dshRequest&&<div className="vs-media-advanced"><p className="vs-media-help">{t("授权请求有效期为 5 分钟，只可使用一次。请仅分享给预期的 DSH 会话。")} </p><div className="vs-media-actions"><button type="button" onClick={()=>void copyDshRequest()}>{t("复制已授权请求")}</button><button type="button" onClick={()=>setDshRequest(undefined)}>{t("关闭")}</button></div>{dshRequest.manualCopy&&<textarea aria-label={t("复制已授权请求")} readOnly rows={5} value={dshRequest.text} onFocus={event=>event.target.select()}/>}</div>}
     </div><div className="vs-media-task-list"><div className="vs-media-heading"><h4>{t("生成任务")}</h4><button disabled={disabled} onClick={()=>void run(refreshTasks,"任务状态已刷新。")}>{t("刷新")}</button></div>{!tasks.length?<p className="vs-media-help">{t("此工程还没有素材生成任务。")}</p>:tasks.map(task=>{const ended=['complete','cancelled'].includes(task.phase),inProgress=['pending','submitting','queued','running','downloading','validating','applying'].includes(task.phase);return <article className="vs-media-task" key={task.id} data-media-task-id={task.id}>
       <div className="vs-media-task-title"><strong>{t(operationNames[task.operation])} · {t(phaseNames[task.phase])}</strong><span>{task.observation==='paused'?t("已停止等待"):`${Math.round(Math.max(0,Math.min(1,task.progress))*100)}%`}</span></div>
       <p>{task.prompt}</p><small>{task.model.name} · {formatDate(task.createdAt)} · {mediaUsageLabel(task)}</small><p>{systemMessage(task.message)}</p>{task.error&&<p className="vs-inline-error">{systemMessage(task.error)}</p>}

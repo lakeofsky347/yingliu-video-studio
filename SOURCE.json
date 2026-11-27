@@ -1,16 +1,17 @@
 {
   "repository": "https://github.com/lakeofsky347/yingliu-video-studio",
   "package": "yingliu-video-studio",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "releaseChanges": [
-    "Redesign the workbench around a film monitor, shot timeline, properties inspector and expandable work panels",
-    "Add storyboard canvas navigation, shot thumbnails, and a minimap",
-    "Add asset search and filtering, a plain-language edit popover, and clearer action feedback",
-    "Retry transient Windows Chromium screenshot failures during local rendering"
+    "Refine the DSH workbench across wide and embedded panels, including timeline drag, preview recovery, and style file imports",
+    "Extend director plans and add local Blender previsualization with shot-scoped review",
+    "Add local picture and audio review, subtitle editing and export, and master-mix controls",
+    "Add portable project packages and provider-gated media operations with shot-scoped batch generation",
+    "Export portable OTIO, FCPXML, and CMX3600 EDL timeline bundles"
   ],
   "compatibility": "Uses the DSH locale service for Chinese and English UI. Project schema remains v3 and reads v1/v2; existing film content is preserved. Legacy production mode needs explicit confirmation. Public mutations require expectedRevision. The left navigation entry remains available when optional conversation or right-sidebar APIs are absent.",
-  "baseReleaseCommit": "c481896a23700037a103f98f77d85a9a90f2b072",
-  "previousRelease": "0.8.3",
+  "baseReleaseCommit": "83f4d3100228e9aeea80283413bf4661d1db5082",
+  "previousRelease": "1.0.0",
   "selectiveMigration": {
     "date": "2026-11-11",
     "donorRepository": "https://github.com/lakeofsky347/yingliu-agent",
@@ -36,7 +37,7 @@
     },
     "releaseVersion": "0.8.0"
   },
-  "releaseDocumentation": "docs/RELEASE-1.0.0.md",
+  "releaseDocumentation": "docs/RELEASE-2.0.0.md",
   "internationalization": {
     "codeCommit": "3886393974d176c4a5d24690bc4211611e6faee7",
     "locales": [

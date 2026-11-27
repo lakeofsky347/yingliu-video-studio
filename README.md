@@ -4,19 +4,19 @@
 
 **在对话里构思影片，在工作台里精修镜头，最后在本地导出 MP4。**
 
-`yingliu-video-studio`（当前版本 **1.0.0**）是映流系列的**基座仓库**，以插件形态运行在 **DSH Desktop** 中。你只需提供主题、文案或素材，就能让模型编排分镜、生成代码动画或调用生图／生视频／配音服务；所有工程、素材、历史与成片均保存在本机，随时可继续编辑。
+`yingliu-video-studio`（**2.0.0**）是映流系列的**基座仓库**，以插件形态运行在 **DSH Desktop** 中。你只需提供主题、文案或素材，就能让模型编排分镜、生成代码动画或调用生图／生视频／配音服务；所有工程、素材、历史与成片均保存在本机，随时可继续编辑。
 
 > **映流三仓库对照（选哪个？）**
 >
 > | 仓库 | 形态 | 适合场景 |
 > | --- | --- | --- |
-> | **`yingliu-video-studio`（本仓库）** | DSH Desktop 插件（v1.0.0） | 已在使用 DSH，希望在会话旁直接打开视频工作台并联动子代理／团队任务 |
+> | **`yingliu-video-studio`（本仓库）** | DSH Desktop 插件（v2.0.0） | 已在使用 DSH，希望在会话旁直接打开视频工作台并联动子代理／团队任务 |
 > | `yingliu-studio` | 独立 Electron 桌面应用（v0.5.0） | 不依赖 DSH，希望开箱即用的本地桌面工作台与多模型制作流程 |
 > | `yingliu-agent` | 智能体版独立应用 + CLI（v1.1.0） | 希望导演智能体自主规划、执行与质检，或通过无头 `yingliu` CLI 自动化出片 |
 
 [![映流工作台：左侧素材、中间分镜画布、右侧镜头属性，下方为镜头顺序和影片预览](docs/images/readme/workbench.png)](docs/images/readme/workbench.png)
 
-*工作台界面示意（点击查看大图，[配图来源](docs/images/readme/SOURCES.md) · [1.0.0 更新说明](docs/RELEASE-1.0.0.md)）*
+*工作台界面示意（点击查看大图，[配图来源](docs/images/readme/SOURCES.md) · [2.0.0 更新说明](docs/RELEASE-2.0.0.md)）*
 
 ---
 
@@ -24,7 +24,7 @@
 
 ### 1. 安装插件
 
-1. 打开 DSH Desktop：**插件管理 → 添加插件**，输入 `yingliu-video-studio@1.0.0`（或填写本地 `yingliu-video-studio-1.0.0.tgz` 的绝对路径），安装并启用。
+1. 在 DSH Desktop 的 **插件管理 → 添加插件** 中输入 `yingliu-video-studio@2.0.0`，或填写本地 `yingliu-video-studio-2.0.0.tgz` 的绝对路径。安装后启用插件。
 2. 打开工作台有三种入口：
    - **会话顶部「映流」标签**：在当前会话内直接切换；
    - **会话右上角「在右侧打开映流」**：边聊天边微调镜头；
@@ -40,7 +40,7 @@
 
 ## 核心功能一览
 
-### 1.0.0 新版工作台
+### 视频工作台
 - **多视图舞台**：自由切换 **监视器**、**分镜画布** 与 **分栏** 视图。监视器支持帧号跳转、逐帧步进、空格播放与导出当前帧 PNG；画布提供镜头缩略图卡片、连线端口、缩放控件与小地图。
 - **时间线与防误操作**：时间线按镜头时长等比呈现，支持拖拽与 `Alt + ← / →` 调整顺序。重新生成已有分镜前会弹出确认，删除镜头提供即时撤销 Toast，删除资产会提示被多少镜头引用。
 - **1.2 秒防抖后台自动预览**：修改参数保存后约 1.2 秒在后台重建预览，不锁定输入框，也不打断连续编辑。
@@ -118,6 +118,6 @@ npm run verify:compat
 
 ## 文档索引与许可
 
-- **版本与架构**：[1.0.0 发布说明](docs/RELEASE-1.0.0.md) · [工作台设计说明](docs/FRONTEND-REDESIGN.md) · [多模型与多模态](docs/MULTIMODAL.md) · [会话与代理制作](docs/SESSION-WORKFLOW.md)
+- **版本与架构**：[2.0.0 发布说明](docs/RELEASE-2.0.0.md) · [工作台设计说明](docs/FRONTEND-REDESIGN.md) · [多模型与多模态](docs/MULTIMODAL.md) · [会话与代理制作](docs/SESSION-WORKFLOW.md)
 - **兼容与参考**：[语言与本地化](docs/LOCALIZATION.md) · [模型能力说明](docs/MODEL-CAPABILITIES.md) · [开发接口](docs/API.md) · [宿主兼容](docs/COMPATIBILITY.md) · [平台支持](docs/PLATFORM-SUPPORT.md) · [项目来源](docs/ORIGIN.md)
 - **许可证**：本项目采用 **GPL-3.0-only**，详见 [LICENSE](LICENSE)、[NOTICE](NOTICE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

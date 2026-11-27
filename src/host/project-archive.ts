@@ -45,7 +45,7 @@ async function writeArchive(file:string,entries:{name:string;bytes?:Uint8Array;p
   };
   try{
     for(const entry of entries)await add(entry);
-    await add({name:'manifest.json',bytes:json({format:'yingliu-project',schemaVersion:2,projectSchemaVersion:project.schemaVersion,appVersion:'1.0.0',createdAt:new Date().toISOString(),files:records})},false);
+    await add({name:'manifest.json',bytes:json({format:'yingliu-project',schemaVersion:2,projectSchemaVersion:project.schemaVersion,appVersion:'2.0.0',createdAt:new Date().toISOString(),files:records})},false);
     archive.end();await flush();if(!final)throw new Error('工程包未完成写入');await handle.sync();return outputSize;
   }finally{archive.terminate();await handle.close();}
 }

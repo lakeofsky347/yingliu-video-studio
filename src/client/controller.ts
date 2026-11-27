@@ -195,9 +195,9 @@ export class StudioController {
     if(this.state.pending)return false;this.actionEpoch++;this.update({pending:true,error:this.state.conflict?this.state.error:'',notice:''});
     try{
       await this.flush();if(this.dirty)throw new Error(this.state.error||'工程尚未保存，请重试保存。');
-      if(this.state.sourceDraft&&['preview','export','generate','retry','undo','redo'].includes(endpoint))throw new Error('本工程有源码草稿。请在源码面板保存或丢弃草稿后再执行此操作；切换页面会保留草稿。');
+      if(this.state.sourceDraft&&['preview','export','timeline.exchange','generate','retry','undo','redo'].includes(endpoint))throw new Error('本工程有源码草稿。请在源码面板保存或丢弃草稿后再执行此操作；切换页面会保留草稿。');
       const targetId=(payload as {projectId?:string})?.projectId??this.state.snapshot?.project?.id;
-      const mutations=['save','saveSource','restoreSource','apply','rename','duplicate','undo','redo','retry','job.retry','import','audio','audio.sfx','generate','preview','production.set','video.clip.save','video.clip.remove','video.clip.extract'];
+      const mutations=['save','saveSource','restoreSource','apply','rename','duplicate','undo','redo','retry','job.retry','import','audio','audio.sfx','generate','preview','production.set','video.clip.save','video.clip.remove','video.clip.extract','timeline.exchange'];
       let revision=(payload as {expectedRevision?:number})?.expectedRevision;
       if(mutations.includes(endpoint)&&revision===undefined){
         if(targetId===this.serverProjectId)revision=this.serverRevision??undefined;

@@ -1,4 +1,11 @@
 export const clientMediaEnglish:Record<string,string> = {
+  "时间轴交换": "Timeline exchange",
+  "保存剪辑时间轴和配套素材。OTIO、FCPXML 支持分轨音频，CMX3600 EDL 在支持的帧率下提供画面剪切表。": "Save an editorial timeline and its media. OTIO and FCPXML retain separate audio tracks. CMX3600 EDL exports picture cuts at supported frame rates.",
+  "请一起移动整个包。剪辑器提示素材离线时，重联到包内的 media 文件夹。": "Move the package as a whole. If your editor reports offline media, relink to the media folder inside the package.",
+  "导出时间轴交换包": "Export timeline package",
+  "时间轴交换已取消": "Timeline exchange cancelled",
+  "时间轴交换包 · v{revision}": "Timeline package · v{revision}",
+  "打开交换包 ↗": "Open package ↗",
   "总混音设置": "Master mix",
   "对白出现时压低背景音乐": "Lower music during dialogue",
   "背景音乐压低强度": "Music ducking strength",

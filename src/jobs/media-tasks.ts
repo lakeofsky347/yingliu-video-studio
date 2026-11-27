@@ -8,9 +8,10 @@ import { protocolKind } from '../models/protocols.ts';
 import { validateMediaRequest } from '../models/capabilities.ts';
 import {downloadArtifact,mediaSignature} from './download.ts';
 import {writeDurableFile} from '../shared/durable-file.ts';
-import {MEDIA_OPERATIONS,hasImageInputs,mediaOutput,type MediaTask,type MediaRequest,type MediaRegistryPort,type MediaProjectPort,type MediaTaskOptions,type RemoteJob} from './contracts.ts';
+import {MEDIA_OPERATIONS,hasImageInputs,mediaOutput,mediaUploadDestination,type MediaTask,type MediaRequest,type MediaRegistryPort,type MediaProjectPort,type MediaTaskOptions,type RemoteJob} from './contracts.ts';
 
 const needsConsent=(operation:MediaRequest['operation'])=>['first-last-frame-video','image-compose','lip-sync-video'].includes(operation);
+const canAuthorizeUpload=(operation:MediaRequest['operation'])=>hasImageInputs(operation)||operation==='lip-sync-video';
 const terminal=new Set(['complete','failed','cancelled']);
 const safeId=/^[a-zA-Z0-9_-]{1,100}$/;
 function errorText(error:unknown){return error instanceof Error?error.message:String(error);}
@@ -23,7 +24,7 @@ function imageDimensions(bytes:Uint8Array):{width:number;height:number}|undefine
 }
 /** Independent durable jobs. Remote generation and local observation have separate lifetimes. */
 export class MediaTaskService {
-  private readonly uploadConsents=new Map<string,{fingerprint:string;expires:number}>();
+  private readonly uploadConsents=new Map<string,{fingerprint:string;expires:number;clientRequestId?:string}>();
   private readonly directory:string;private tasks=new Map<string,MediaTask>();private running=new Map<string,{controller:AbortController;promise:Promise<void>}>();
   private journal=Promise.resolve();private submissions:Promise<unknown>=Promise.resolve();private initialized?:Promise<void>;private stopped=false;private applying=new Set<string>();private adoptions=new Set<Promise<MediaTask>>();
   constructor(dataDirectory:string,private registry:MediaRegistryPort,private projects:MediaProjectPort,private options:MediaTaskOptions={}){
@@ -71,7 +72,7 @@ export class MediaTaskService {
       const pending:MediaTask[]=[];
       const batchKey=createHash('sha256').update(JSON.stringify([captured[0]!.projectId,captured[0]!.ownerSessionId??'',batchId])).digest('hex');
       for(const [index,item] of captured.entries()){
-        pending.push(await this.prepareTask({...item,clientRequestId:`batch.${batchKey}.${index}`}));
+        pending.push(await this.prepareTask({...item,clientRequestId:`batch.${batchKey}.${index}`},{requireScopedConsent:canAuthorizeUpload(item.operation)}));
       }
       const fresh=pending.filter(task=>!this.tasks.has(task.id));
       if(fresh.length){
@@ -95,29 +96,29 @@ export class MediaTaskService {
     if(uploadConsentId)this.uploadConsents.delete(uploadConsentId);
   }
   private consentFingerprint(task:MediaTask):string{
-    return createHash('sha256').update(JSON.stringify([task.projectId,task.shotId,task.operation,task.connection.id,task.connection.baseUrl,
-      task.connection.revision,task.model.id,task.model.model,task.inputHashes,task.referenceRoles,task.prompt,task.parameters])).digest('hex');
+    return createHash('sha256').update(JSON.stringify([task.projectId,task.startRevision,task.productionPolicyFingerprint,task.shotId,task.operation,task.connection.id,task.connection.baseUrl,
+      task.connection.revision,task.model.id,task.model.model,task.inputHashes,task.referenceRoles,task.prompt,task.parameters,task.requiresAudio])).digest('hex');
   }
   /** Called by the trusted workbench after the user confirms the actual inputs and destination. */
-  async authorizeUpload(input:MediaRequest):Promise<{uploadConsentId:string}>{
-    const captured=structuredClone(input);
+  async authorizeUpload(input:MediaRequest,shownDestination:unknown):Promise<{uploadConsentId:string;expectedRevision:number;expiresAt:number}>{
+    const captured=structuredClone(input),confirmed=structuredClone(shownDestination);
     return this.submit(async()=>{
-      if(!needsConsent(captured.operation))throw new Error('此生成方式无需额外上传确认');
-      const task=await this.prepareTask({...captured,clientRequestId:undefined},true);
+      if(!canAuthorizeUpload(captured.operation))throw new Error('此生成方式无需额外上传确认');
+      const task=await this.prepareTask(captured,{confirmation:{destination:confirmed}});
       const now=Date.now();
       for(const [id,grant] of this.uploadConsents)if(grant.expires<=now)this.uploadConsents.delete(id);
       if(this.uploadConsents.size>=128)this.uploadConsents.delete(this.uploadConsents.keys().next().value!);
-      const uploadConsentId=randomUUID();
-      this.uploadConsents.set(uploadConsentId,{fingerprint:this.consentFingerprint(task),expires:now+300_000});
-      return {uploadConsentId};
+      const uploadConsentId=randomUUID(),expiresAt=now+300_000;
+      this.uploadConsents.set(uploadConsentId,{fingerprint:this.consentFingerprint(task),expires:expiresAt,clientRequestId:captured.clientRequestId});
+      return {uploadConsentId,expectedRevision:task.startRevision,expiresAt};
     });
   }
-  private async prepareTask(input:MediaRequest,authorizing=false):Promise<MediaTask>{
+  private async prepareTask(input:MediaRequest,options:{confirmation?:{destination:unknown};requireScopedConsent?:boolean}={}):Promise<MediaTask>{
     await this.initialize();if(this.stopped)throw new Error('媒体任务服务正在关闭');
     if(!input||!MEDIA_OPERATIONS.includes(input.operation)||typeof input.projectId!=='string'||typeof input.prompt!=='string'||!input.prompt.trim()||input.prompt.length>20000)throw new Error('请填写有效的工程、生成类型和提示词');
     if(input.clientRequestId!==undefined){
       if(typeof input.clientRequestId!=='string'||!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,199}$/.test(input.clientRequestId))throw new Error('稳定生成请求 ID 无效');
-      const existing=[...this.tasks.values()].find(task=>task.clientRequestId===input.clientRequestId);
+      const existing=options.confirmation?undefined:[...this.tasks.values()].find(task=>task.clientRequestId===input.clientRequestId);
       if(existing){const changed=existing.projectId!==input.projectId||existing.shotId!==input.shotId||existing.operation!==input.operation||existing.prompt!==input.prompt.trim()||input.modelId!==undefined&&existing.model.id!==input.modelId||input.connectionId!==undefined&&existing.connection.id!==input.connectionId||JSON.stringify(existing.imageAssetIds)!==JSON.stringify(input.imageAssetIds??[])||Object.entries(input.parameters??{}).some(([key,value])=>existing.parameters[key]!==value)||input.ownerSessionId!==undefined&&existing.ownerSessionId!==input.ownerSessionId||JSON.stringify(existing.referenceRoles??[])!==JSON.stringify(input.referenceRoles??[])||existing.requiresAudio!==input.requiresAudio||existing.videoAssetId!==input.videoAssetId||existing.audioAssetId!==input.audioAssetId;
         if(changed)throw new Error('稳定请求 ID 已用于不同的生成内容或工程');return existing;
       }
@@ -126,6 +127,12 @@ export class MediaTaskService {
     if(input.shotId&&!project.shotIds.includes(input.shotId))throw new Error('生成目标镜头不存在');
     const productionPolicyFingerprint=await this.projects.authorizeOperation?.(input.projectId,input.operation,input.shotId);
     const resolved=await this.registry.resolve({role:mediaOutput(input.operation),...(input.modelId?{modelId:input.modelId}:{}),...(input.connectionId?{connectionId:input.connectionId}:{})});
+    if(options.confirmation){
+      const shown=options.confirmation.destination;
+      if(!shown||typeof shown!=='object'||Object.entries(mediaUploadDestination(resolved)).some(([key,value])=>(shown as Record<string,unknown>)[key]!==value)){
+        throw Object.assign(new Error('确认期间接收服务或模型已变化，请刷新模型列表后重新确认上传'),{code:'MEDIA_DESTINATION_CHANGED'});
+      }
+    }
     const release=this.registry.acquire?.(resolved.connection.id,resolved.model.id);try {
     const output=mediaOutput(input.operation);if(protocolKind(resolved.connection.protocol)!==output||!resolved.model.outputModalities.includes(output))throw new Error('所选模型不支持此生成操作');
     if(input.operation!=='lip-sync-video'&&!resolved.model.inputModalities.includes('text'))throw new Error('所选模型不支持文字提示输入');
@@ -149,9 +156,9 @@ export class MediaTaskService {
     if(input.referenceRoles)task.referenceRoles=[...input.referenceRoles];if(input.requiresAudio!==undefined)task.requiresAudio=input.requiresAudio;
     task.videoAssetId=input.videoAssetId;task.audioAssetId=input.audioAssetId;
     await this.inputs(task,false);
-    if(needsConsent(task.operation)&&!authorizing){
+    if((needsConsent(task.operation)||options.requireScopedConsent||input.uploadConsentId!==undefined)&&!options.confirmation){
       const grant=this.uploadConsents.get(input.uploadConsentId??'');
-      if(!grant||grant.expires<=Date.now()||grant.fingerprint!==this.consentFingerprint(task))throw new Error('所选素材或接收服务已变化，请重新确认上传');
+      if(!grant||grant.expires<=Date.now()||grant.clientRequestId!==undefined&&grant.clientRequestId!==task.clientRequestId||grant.fingerprint!==this.consentFingerprint(task))throw new Error('所选素材或接收服务已变化，请重新确认上传');
     }
     return task;
     }finally{release?.();}
