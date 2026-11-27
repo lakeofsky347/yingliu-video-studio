@@ -8,8 +8,11 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { chromium, type Browser, type CDPSession, type Page } from 'playwright-core';
 import type { Asset, EnvironmentInfo, EnvironmentSettings, ExportResult, SceneSource, VideoProject, VideoSpec } from '../shared/types.js';
 import { compileSpec } from '../core/index.js';
+import { sliceSubtitles } from '../core/subtitles.ts';
 import {assertProductionComposition,productionPolicyFingerprint,usesCodeVisual,usesVideoVisual} from '../core/production-policy.js';
 import {hashMediaFile} from '../media/video.js';
+import {analyzeAudioAcoustics} from '../media/deconstruct.js';
+import type {LocalQualityAudioEvidence} from '../workflows/local-quality.js';
 import { ProjectStore, projectPath } from './store.js';
 import { browserRuntime, runtimeHtml } from '../runtime/browser.js';
 import {AudioMixer, type AudioMix} from './audio.js';
@@ -154,6 +157,16 @@ export class VideoRenderer {
     const relative=path.relative(root,mix.path).split(path.sep).map(encodeURIComponent).join('/');
     return (await this.server(root,'assets')).origin+'/'+relative+'?revision='+project.revision;
   }
+  async analyzeAudio(root:string,project:VideoProject,settings:EnvironmentSettings,signal?:AbortSignal):Promise<LocalQualityAudioEvidence>{
+    try{
+      const mix=await this.audioMixer.mix(root,this.activeMedia(project),settings,signal);
+      return mix?{status:'measured',report:await analyzeAudioAcoustics(mix.path,settings,signal)}:{status:'empty'};
+    }catch(error){
+      signal?.throwIfAborted();
+      const reason=error instanceof Error?error.message:String(error);
+      return {status:'unchecked',reason:reason.slice(0,300)};
+    }
+  }
   private activeMedia(project:VideoProject):VideoProject{return {...project,videoClips:project.videoClips?.filter(clip=>project.shotOrder.includes(clip.shotId)&&project.shots.some(shot=>shot.id===clip.shotId&&usesVideoVisual(shot))) };}
   private async server(root:string,role:ServerRole='render'):Promise<ProjectServer> {
     const key=path.resolve(root)+'::'+role,existing=this.servers.get(key);if(existing)return existing;
@@ -193,7 +206,7 @@ export class VideoRenderer {
       const server=await this.server(root),codeOrigins:Record<string,string>={};
       for(const shot of spec.shots.filter(usesCodeVisual)){
         const source=sources.find(source=>source.id===shot.id)!;
-        const codeSpec={...spec,shots:[{...shot,hasVideo:!!shot.videoClip,videoClip:undefined,assets:shot.assets.filter(asset=>asset.kind==='image'||asset.kind==='text')}]};
+        const codeSpec={...spec,subtitles:undefined,shots:[{...shot,hasVideo:!!shot.videoClip,videoClip:undefined,assets:shot.assets.filter(asset=>asset.kind==='image'||asset.kind==='text')}]};
         const manifest=json({spec:codeSpec,sources:[source],role:'code'}),contentHash=hash(manifest),specPath='runtime/code-spec-'+contentHash+'.json';
         const document=runtimeHtml(spec.target.width,spec.target.height,{runtimeUrl:'/'+runtimePath,specUrl:'/'+specPath,role:'code'}),documentPath='runtime/code-'+hash(document)+'.html';
         operation='runtime_code_spec_publish';await writeImmutableRuntime(await projectPath(root,specPath),manifest);
@@ -298,6 +311,14 @@ export class VideoRenderer {
     if(!pending){pending=this.makeThumbnails(root,project,spec,settings,frames,key,signal);this.pendingThumbnails.set(pendingKey,pending);}
     try{return await pending;}finally{if(this.pendingThumbnails.get(pendingKey)===pending)this.pendingThumbnails.delete(pendingKey);}
   }
+  async reviewFrames(root:string,project:VideoProject,settings:EnvironmentSettings,shotId:string,signal?:AbortSignal){
+    aborted(signal);assertProductionComposition(project);
+    const spec=compileSpec(project),shot=spec.shots.find(item=>item.id===shotId);
+    if(!shot)throw new Error('镜头已不存在');
+    const frames=[...new Set(Array.from({length:5},(_,index)=>shot.startFrame+Math.round((shot.durationFrames-1)*index/4)))];
+    const key=hash(JSON.stringify({runtime:browserRuntime,revision:project.revision,spec,frames,settings}));
+    return this.makeThumbnails(root,project,spec,settings,frames,key,signal);
+  }
   private async makeThumbnails(root:string,project:VideoProject,spec:VideoSpec,settings:EnvironmentSettings,frames:number[],key:string,signal?:AbortSignal):Promise<(FrameCapture&{url:string})[]>{
     const server=await this.server(root),assetServer=await this.server(root,'assets'),captures=[];
     for(const frame of frames){
@@ -397,6 +418,7 @@ export class VideoRenderer {
         // This preserves global music offsets, loops, voice anchors and native video audio.
         const mix=await renderer.audioMixer.mix(entry.root,renderer.activeMedia(snapshot),settings,active);check();
         renderedProject=selectedProject;renderedProject.videoClips=renderedProject.videoClips?.map(clip=>({...clip,audio:'mute'}));
+        renderedProject.subtitles=sliceSubtitles(originalSpec.subtitles,selected,originalSpec.target);
         if(mix){
           const relative='assets/review-mix-'+randomUUID()+'.wav',destination=await projectPath(entry.root,relative);await fs.mkdir(path.dirname(destination),{recursive:true});await fs.copyFile(mix.path,destination);
           const assetId='review_mix_'+randomUUID().replaceAll('-','');renderedProject.assets.push({id:assetId,kind:'audio',name:'候选审看音轨',description:'候选原始时间线混音的精确选段',path:relative,duration:mix.duration,sampleRate:48000,channels:2,mime:'audio/wav',provenance:{origin:'unknown',usage:'production'}});

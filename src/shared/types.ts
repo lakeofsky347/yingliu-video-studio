@@ -41,6 +41,15 @@ export interface GraphLayout {
   groups:{id:string;title:string;bounds:[number,number,number,number]}[];
 }
 export interface VideoTarget { width:number; height:number; fps:{num:number;den:number}; audioMode:'none'|'mixed'; quality?:'standard'|'high'|'small' }
+export interface SubtitleCue {
+  id:string; startSeconds:number; endSeconds:number; text:string; speaker?:string; shotId?:string;
+}
+export interface AudioMixSettings {
+  autoDucking?:boolean;
+  duckingDb?:number;
+  targetLufs?:number;
+  voiceReverb?:'none'|'room'|'hall'|'phone';
+}
 export interface AudioClip {
   id:string;assetId:string;role:'voice'|'music'|'sfx';shotId?:string;
   startSeconds:number;trimStart:number;trimEnd?:number;volume:number;fadeIn:number;fadeOut:number;loop?:boolean;
@@ -66,13 +75,16 @@ export interface VideoProject {
   assets:Asset[]; shots:Shot[]; shotOrder:string[]; graph:GraphLayout;
   outputs:ExportResult[]; extensions:Record<string,unknown>;
   sessionIds?:string[];audioClips?:AudioClip[];videoClips?:VideoClip[];videoStyle?:VideoStyle;
+  audioMix?:AudioMixSettings;
   productionPolicy?:ProductionPolicy;
+  subtitles?:SubtitleCue[];
 }
 export interface SpecShot extends Shot { startFrame:number; endFrame:number; assets:Asset[]; videoClip?:VideoClip }
 export interface VideoSpec {
   projectId:string; title:string; topic:string; target:VideoTarget;
   durationFrames:number; durationSeconds:number; shots:SpecShot[];
   productionPolicy?:ProductionPolicy;
+  subtitles?:SubtitleCue[];
 }
 export interface SceneSource { html:string; css:string; js:string; shotPatch?:Partial<Shot> }
 export interface TaskState {

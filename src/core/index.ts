@@ -2,6 +2,7 @@ import type { Asset, ProductionMode, Shot, VideoProject, VideoSpec, VideoTarget 
 import {inspectProjectPaths,safeRelativeProjectPath as safeRelativePath} from './project-paths.js';
 import {defaultProductionPolicy, productionMode, usesVideoVisual, validateProductionPolicy} from './production-policy.js';
 import {formatMessage,type StudioLocale} from '../shared/localization.ts';
+import {projectSubtitles,validateSubtitles} from './subtitles.ts';
 export { defaultSceneSource } from './default-source.js';
 export * from './production-policy.js';
 
@@ -139,6 +140,16 @@ export function validateProject(project:VideoProject,options:{portablePaths?:boo
   else for(const [node,position] of Object.entries(project.graph.positions))
     if(!Array.isArray(position)||position.length!==2||!position.every(Number.isFinite))errors.push(`节点 ${node} 的画布位置无效`);
   if(!plainObject(project.extensions))errors.push('扩展数据须为对象');
+  if(project.audioMix!==undefined){
+    const mix=project.audioMix;
+    if(!plainObject(mix))errors.push('混音母带参数须为对象');
+    else {
+      if(mix.autoDucking!==undefined&&typeof mix.autoDucking!=='boolean')errors.push('对白压低背景音乐须为开关');
+      if(mix.duckingDb!==undefined&&(typeof mix.duckingDb!=='number'||!Number.isFinite(mix.duckingDb)||mix.duckingDb<0||mix.duckingDb>30))errors.push('背景音乐压低强度须在 0–30 之间');
+      if(mix.targetLufs!==undefined&&(typeof mix.targetLufs!=='number'||!Number.isFinite(mix.targetLufs)||mix.targetLufs< -36||mix.targetLufs> -8))errors.push('目标响度须在 -36 至 -8 LUFS 之间');
+      if(mix.voiceReverb!==undefined&&(typeof mix.voiceReverb!=='string'||!['none','room','hall','phone'].includes(mix.voiceReverb)))errors.push('人声效果预设无效');
+    }
+  }
   for(const clip of project.audioClips??[]){
     if(!clip||typeof clip.id!=='string'||!project.assets.some(a=>a.id===clip.assetId&&a.kind==='audio')){errors.push('音频片段引用无效');continue;}
     if(clip.shotId&&!shotIds.has(clip.shotId))errors.push(`音频片段 ${clip.id} 引用的镜头不存在`);
@@ -161,6 +172,7 @@ export function validateProject(project:VideoProject,options:{portablePaths?:boo
       if(!['mute','keep','extract'].includes(clip.audio))errors.push('视频原声策略无效');
     }
   }
+  errors.push(...validateSubtitles(project.subtitles,shotIds));
   const graph=validateGraph(project);warnings.push(...graph.errors.map(e=>`主链草稿：${e}`));
   (options.portablePaths?errors:warnings).push(...inspectProjectPaths(project).map(issue=>issue.message));
   return {ok:errors.length===0,errors,warnings};
@@ -220,7 +232,8 @@ export function compileSpec(project:VideoProject):VideoSpec {
   });
   if(frame>1000000)throw new Error('全片超过 1,000,000 帧限制');
   return {projectId:project.id,title:project.title,topic:project.topic,target:copy(project.target),productionPolicy:copy(project.productionPolicy),
-    durationFrames:frame,durationSeconds:frame*project.target.fps.den/project.target.fps.num,shots};
+    durationFrames:frame,durationSeconds:frame*project.target.fps.den/project.target.fps.num,shots,
+    ...(project.subtitles?.length?{subtitles:projectSubtitles(project)}:{})};
 }
 
 /** Allocate an exact integer frame budget, preserving relative duration weights. */
@@ -311,6 +324,7 @@ export function addShot(project:VideoProject,shot?:Shot,afterId?:string,locale:S
 }
 export function deleteShot(project:VideoProject,shotId:string):VideoProject {
   shotOf(project,shotId);const next=changed(project);next.shots=next.shots.filter(s=>s.id!==shotId);next.shotOrder=next.shotOrder.filter(s=>s!==shotId);
+  if(next.subtitles)next.subtitles=next.subtitles.filter(cue=>cue.shotId!==shotId);
   delete next.graph.positions[shotId];next.audioClips=next.audioClips?.filter(c=>c.shotId!==shotId);next.videoClips=next.videoClips?.filter(c=>c.shotId!==shotId);syncEdges(next);return next;
 }
 export function duplicateShot(project:VideoProject,shotId:string,locale:StudioLocale='zh'):VideoProject {

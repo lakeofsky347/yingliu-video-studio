@@ -4,6 +4,7 @@ import {readFile,writeFile,mkdir,readdir,rename,open,rm} from 'node:fs/promises'
 import {resolve,join,relative} from 'node:path';
 import {homedir} from 'node:os';
 import {createProject,compileSpec,defaultSceneSource,updateShot,updateTarget,validateProject,reorderShots} from '../core/index.ts';
+import {formatAss,formatSrt,projectSubtitles} from '../core/subtitles.ts';
 import type {VideoProject,StudioSnapshot,TaskState,EnvironmentSettings,ProviderGroup,RpcResult,SceneSource,Shot,ModelRoute,TtsSettings,AudioClip,VideoClip} from '../shared/types.ts';
 import type {HostContext} from './platform.ts';
 import {ProjectStore,projectPath,validateStoredProject,validateSources} from './store.ts';
@@ -14,6 +15,7 @@ import {ProjectFileOpener} from './file-opener.ts';
 import type {MediaProjectPort} from '../jobs/contracts.ts';
 import type {MediaTask,GeneratedFile} from '../jobs/contracts.ts';
 import {inspectGeneratedMedia,readProjectImage} from '../media/inspect.ts';
+import {deconstructReferenceVideo} from '../media/deconstruct.ts';
 import {applyProductionPolicy,assertProductionOperation,assertProductionComposition,productionPolicyFingerprint,productionMode,defaultProductionPolicy,assetOrigin,usesVideoVisual,usesCodeVisual} from '../core/production-policy.ts';
 import type {ProductionPolicy} from '../shared/types.ts';
 import type {MediaOperation} from '../jobs/contracts.ts';
@@ -30,8 +32,8 @@ interface TaskRequest { endpoint:'preview'|'export'|'generate'; payload:Record<s
 interface RecordedTask extends TaskState { recordVersion?:1; revision?:number; request?:TaskRequest; retryOf?:string }
 const legacySpeechKey='DSH_VIDEO_STUDIO_TTS_API_KEY';
 function speechOrigin(endpoint:string):string|undefined {
-  const url=URL.parse(endpoint);
-  return url&&['http:','https:'].includes(url.protocol)?url.origin:undefined;
+  try{const url=new URL(endpoint);return ['http:','https:'].includes(url.protocol)?url.origin:undefined;}
+  catch{return undefined;}
 }
 function failedShotIds(value:unknown):string[]|undefined {
   if(!Array.isArray(value))return;
@@ -225,6 +227,10 @@ export class StudioService {
     if(metadata.sessionIds)project.sessionIds=[...new Set<string>(metadata.sessionIds)];
     if(metadata.productionPolicy!==undefined||metadata.schemaVersion!==undefined)throw new Error('制作模式只能由用户在制作要求中确认，普通更新不能修改');
     if(metadata.videoClips!==undefined)project.videoClips=structuredClone(metadata.videoClips);
+    if(metadata.storyboard||metadata.shots){
+      const shotIds=new Set(project.shots.map(shot=>shot.id));
+      if(project.subtitles)project.subtitles=project.subtitles.filter(cue=>!cue.shotId||shotIds.has(cue.shotId));
+    }
     if(metadata.extensions)project.extensions={...project.extensions,...metadata.extensions};
     this.assertPublicProjectUpdate(current,project);
     this.fitAudio(project);
@@ -334,7 +340,8 @@ export class StudioService {
       signal?.throwIfAborted();try{const captured=await this.renderer.captureCandidate(root,project,sources,this.settings,frame.frame,signal);samples.push({...frame,bytes:captured.bytes});}
       catch(error){signal?.throwIfAborted();samples.push({...frame,error:taskFailure(error,'render_frame').category});}
     }
-    const report=localExportQuality(project,sources,samples);
+    const audio=!missing.length&&structural.decision!=='fail'?await this.renderer.analyzeAudio(root,project,this.settings,signal):undefined;
+    const report=localExportQuality(project,sources,samples,{audio});
     for(const [i,message]of missing.entries())report.checks.push({id:'file:'+i,category:'structure',severity:'hard',status:'fail',message,evidence:[{kind:'structural'}]});
     if(missing.length)report.decision='fail';
     if(report.candidateHash!==localQualityHash(project,sources))throw new Error('质检内容身份不一致');
@@ -592,6 +599,32 @@ export class StudioService {
           if(data.frame!==undefined)frame=await this.renderer.capture(root,project,this.settings,Number(data.frame),data.signal instanceof AbortSignal?data.signal:undefined);
           return {ok:true,value:{projectId:project.id,revision:project.revision,spec,source,frame}};
         }
+        case 'review.frames':{
+          this.assertRevision(data,true);
+          const {root,project}=this.required();
+          const frames=await this.renderer.reviewFrames(root,project,this.settings,String(data.shotId??''),data.signal);
+          return {ok:true,value:{projectId:project.id,revision:project.revision,frames:frames.map(({frame,shotId,url})=>({frame,shotId,url}))}};
+        }
+        case 'review.cuts':{
+          this.assertRevision(data,true);
+          const {root,project}=this.required(),asset=project.assets.find(item=>item.id===data.assetId&&item.kind==='video');
+          if(!asset?.path)throw new Error('请选择工程中的参考视频');
+          const analysis=await deconstructReferenceVideo(await projectPath(root,asset.originalPath??asset.path),this.settings,{signal:data.signal});
+          const cuts=analysis.shots.filter(shot=>shot.cutScore!==undefined).map(shot=>({seconds:shot.endSeconds,score:shot.cutScore}));
+          return {ok:true,value:{projectId:project.id,revision:project.revision,shotCount:analysis.shotCount,cuts}};
+        }
+        case 'subtitles.export':{
+          this.assertRevision(data,true);
+          const {root,project}=this.required(),format=data.format;
+          if(format!=='srt'&&format!=='ass')throw new Error('请选择 SRT 或 ASS 字幕格式');
+          compileSpec(project);
+          const cues=projectSubtitles(project);
+          if(!cues.length)throw new Error('工程没有可导出的字幕');
+          const folder=await projectPath(root,'exports/subtitles-'+project.revision+'-'+randomUUID());
+          const file=join(folder,'subtitles.'+format);
+          await writeDurableFile(file,format==='srt'?formatSrt(cues):formatAss(cues,project.target));
+          return {ok:true,value:{revision:project.revision,path:file}};
+        }
         case 'thumbnails':{this.assertRevision(data,true);const {root,project}=this.required();const frames=await this.renderer.thumbnails(root,project,this.settings,data.frames);return {ok:true,value:{projectId:project.id,revision:project.revision,frames}};}
         case 'source':{const {root,project}=this.required();const shot=project.shots.find(s=>s.id===data.shotId);if(!shot)throw new Error('镜头已不存在');return {ok:true,value:await this.store.readSource(root,shot)};}
         case 'saveSource':{this.assertIdle();const {root,project}=this.required();const shot=project.shots.find(s=>s.id===data.shotId);if(!shot)throw new Error('镜头已不存在');const source=parseSceneSource(JSON.stringify(data.source));await this.persist(project,{[shot.id]:source},'保存镜头源码');if(data.check!==false)await this.start('preview',async signal=>{const checked=await this.renderer.check(root,this.required().project,this.settings,signal);if(!checked.ok)throw renderCheckError(checked);await this.store.markSourceGood(root,shot);},shot.id,this.recordedRequest('preview',data));break;}
@@ -608,6 +641,7 @@ export class StudioService {
             if(kind==='storyboard'){
               const shots=await this.generator(root).storyboard(structuredClone(project),route,signal);signal.throwIfAborted();await this.enqueue(async()=>{signal.throwIfAborted();this.assertRevision({expectedRevision:project.revision});const current=structuredClone(this.required().project);
               current.shots=shots;for(const shot of shots)shot.visual={kind:productionMode(current)==='code_animation'?'code':productionMode(current)==='model_video'?'model_video':'unresolved'};current.shotOrder=shots.map(s=>s.id);delete current.extensions.graphEdges;current.revision++;
+              if(current.subtitles)current.subtitles=current.subtitles.filter(cue=>!cue.shotId||current.shotOrder.includes(cue.shotId));
               for(let i=0;i<shots.length;i++)current.graph.positions[shots[i]!.id]=[420+i*340,160];current.graph.positions['film-output']=[420+shots.length*340,160];await this.persist(current,productionMode(current)==='code_animation'?Object.fromEntries(shots.map(s=>[s.id,defaultSceneSource()])):{},'模型生成分镜',this.task?.id);});
             }else{
               compileSpec(this.required().project);const ids=data.shotId?[String(data.shotId)]:[...this.required().project.shotOrder];

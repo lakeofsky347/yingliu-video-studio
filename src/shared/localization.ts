@@ -24,6 +24,7 @@ export function formatMessage(locale:StudioLocale,message:string,values:MessageV
 // UI labels, generated names, document prose and arbitrary vendor text are not patterns.
 // Add new dynamic system messages here when adding their source-language emission.
 const systemTemplateSources=[
+  '字幕第 {0} 条的内容、时间、镜头引用或 ID 无效',
   'shotPatch.{0} 须为资产 ID 数组','第 {0} 个镜头须为对象',
   '旁白超出镜头时长 {0} 秒，请调整裁剪、旁白或解除时长锁定',
   '工程版本冲突：期望 v{0}，当前 v{1}；请读取最新工程后合并修改',

@@ -176,8 +176,22 @@ async function draw(input) {
         codeFrame.contentWindow.postMessage({type:'video-studio/render',frame,videoInfo},codeOrigin);
       });}else if(codeFrame)codeFrame.style.display='none';
     }
-    // The business transition belongs to the runtime, independently of AI scene motion.
     const fps=data.spec.target.fps.num/data.spec.target.fps.den;
+    if(!isCodePage&&data.spec.subtitles?.length){
+      const time=frame*data.spec.target.fps.den/data.spec.target.fps.num;
+      const captions=data.spec.subtitles.filter(cue=>time>=cue.startSeconds&&time<cue.endSeconds);
+      if(captions.length){
+        const overlay=document.createElement('div');overlay.className='video-captions';
+        overlay.style.fontSize=Math.max(12,Math.round(Math.min(data.spec.target.width,data.spec.target.height)*.045))+'px';
+        for(const cue of captions){
+          const line=document.createElement('div');
+          line.textContent=cue.speaker?cue.speaker+'：'+cue.text:cue.text;
+          overlay.append(line);
+        }
+        stage.append(overlay);
+      }
+    }
+    // The business transition belongs to the runtime, independently of AI scene motion.
     const fadeFrames=Math.min(Math.max(1,Math.round(.25*fps)),Math.floor(shot.durationFrames/2));
     const next=data.spec.shots[data.spec.shots.indexOf(shot)+1];let opacity=1;
     if(fadeFrames>0){
@@ -222,5 +236,7 @@ export function runtimeHtml(width:number,height:number,options:{runtimeUrl?:stri
   :root{color-scheme:dark}*{box-sizing:border-box;caret-color:transparent!important}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000}
   body{position:relative}#stage{position:absolute;top:50%;left:50%;width:${width}px;height:${height}px;overflow:hidden;background:#101016;isolation:isolate;transform:translate(-50%,-50%)}
   .video-background,.video-canvas,.scene-root{position:absolute;inset:0;width:100%;height:100%}.scene-root{overflow:hidden}canvas{display:block}
+  .video-captions{position:absolute;z-index:5;bottom:7%;inset-inline:7%;display:grid;justify-items:center;gap:.18em;color:white;font:600 1rem/1.3 system-ui,sans-serif;text-align:center;white-space:pre-wrap;overflow-wrap:anywhere;pointer-events:none}
+  .video-captions>div{background:#000b;border-radius:.2em;padding:.14em .38em;max-width:100%}
   </style><style id="scene-style"></style></head><body><main id="stage"></main><script type="module" src="${attribute(options.runtimeUrl??'./runtime/frame.mjs')}"></script></body></html>`;
 }

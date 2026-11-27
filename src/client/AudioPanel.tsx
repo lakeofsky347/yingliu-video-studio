@@ -1,9 +1,10 @@
 import {t, useLocale, systemMessage} from './i18n.ts';
 import {defaultTtsSettings,ttsCapability} from '../shared/tts-capability.ts';
 import { useEffect, useState, type ReactNode } from 'react';
-import type { Asset, AudioClip, Shot, StudioSnapshot, TtsSettings, VideoProject } from '../shared/types.ts';
+import type { Asset, AudioClip, AudioMixSettings, Shot, StudioSnapshot, TtsSettings, VideoProject } from '../shared/types.ts';
 import type { StudioController } from './controller.ts';
 import {LocalSfxPanel} from './LocalSfxPanel.tsx';
+import {NumberField} from './NumberField.tsx';
 function Field({label,children}:{label:string;children:ReactNode}){
   useLocale();return <label className="vs-field"><span>{label}</span>{children}</label>;}
 function numeric(value:string):number{return Number(value)||0;}
@@ -15,6 +16,7 @@ export function AudioPanel({project,snapshot,controller,assetUrl,selectedShot,bu
   useEffect(()=>{if(!assets.some(a=>a.id===assetId))setAssetId(assets[0]?.id||'');},[assets.map(a=>a.id).join(','),assetId]);
   function edit(next:AudioClip[]){controller.edit({...project,audioClips:next,target:{...project.target,audioMode:next.length?'mixed':'none'},revision:project.revision+1,updatedAt:new Date().toISOString()});}
   function patch(id:string,value:Partial<AudioClip>){edit(clips.map(c=>c.id===id?{...c,...value}:c));}
+  function editMix(patch:Partial<AudioMixSettings>){controller.edit({...project,audioMix:{...project.audioMix,...patch},revision:project.revision+1,updatedAt:new Date().toISOString()});}
   function add(){if(!assetId)return;const clip:AudioClip={id:`audio-${crypto.randomUUID()}`,assetId,role,startSeconds:0,trimStart:0,volume:role==='music'?.25:1,fadeIn:role==='music'?.5:0,fadeOut:role==='music'?.5:0,...(shotId?{shotId}:{}),...(role==='music'?{loop:true}:{})};void controller.audio({operation:'add',...clip,fitDuration:project.extensions.lockDuration!==true});}
   const tts=snapshot.tts,capability=ttsCapability(tts,snapshot.environment);
   return <div className="vs-audio-panel">
@@ -32,6 +34,17 @@ export function AudioPanel({project,snapshot,controller,assetUrl,selectedShot,bu
       <div className="vs-audio-clip-foot"><label><input type="checkbox" checked={!!c.loop} onChange={e=>patch(c.id,{loop:e.target.checked})}/>{t("循环播放到绑定范围结束")}</label><small>{c.shotId?t("片段起点相对镜头首帧"):t("片段起点相对全片首帧")} {t(" · 裁出留空使用源文件结尾")}</small></div>
     </article>;})}</div>
     <label className="vs-audio-enabled"><input type="checkbox" checked={project.target.audioMode==='mixed'} onChange={e=>controller.edit({...project,target:{...project.target,audioMode:e.target.checked?'mixed':'none'},revision:project.revision+1,updatedAt:new Date().toISOString()})}/>{t("预览和导出包含声音")}</label>
+    <details className="vs-media-advanced" data-audio-master><summary>{t("总混音设置")}</summary>
+      <label className="vs-audio-enabled"><input type="checkbox" disabled={busy} checked={project.audioMix?.autoDucking===true} onChange={event=>editMix({autoDucking:event.target.checked})}/>{t("对白出现时压低背景音乐")}</label>
+      <div className="vs-field-pair">
+        {project.audioMix?.autoDucking&&<Field label={t("背景音乐压低强度")}><NumberField value={project.audioMix.duckingDb??8} min={0} max={30} step={1} disabled={busy} onCommit={duckingDb=>editMix({duckingDb})}/></Field>}
+        <Field label={t("人声效果")}><select value={project.audioMix?.voiceReverb??'none'} disabled={busy} onChange={event=>editMix({voiceReverb:event.target.value as AudioMixSettings['voiceReverb']})}>
+          <option value="none">{t("原声")}</option><option value="room">{t("室内混响")}</option><option value="hall">{t("大厅混响")}</option><option value="phone">{t("电话音质")}</option>
+        </select></Field>
+      </div>
+      <label className="vs-audio-enabled"><input type="checkbox" disabled={busy} checked={project.audioMix?.targetLufs!==undefined} onChange={event=>editMix({targetLufs:event.target.checked?-14:undefined})}/>{t("统一总混音响度")}</label>
+      {project.audioMix?.targetLufs!==undefined&&<Field label={t("目标响度（LUFS）")}><NumberField value={project.audioMix.targetLufs} min={-36} max={-8} step={0.5} disabled={busy} onCommit={targetLufs=>editMix({targetLufs})}/></Field>}
+    </details>
   </div>;
 }
 export function TtsConfig({snapshot,controller,busy}:{snapshot:StudioSnapshot;controller:StudioController;busy:boolean}){

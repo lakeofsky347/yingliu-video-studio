@@ -6,14 +6,14 @@ import {pipeline} from 'node:stream/promises';
 import type {ReadableStream as NodeReadableStream} from 'node:stream/web';
 import {spawn, type ChildProcess} from 'node:child_process';
 import {createHash, randomUUID} from 'node:crypto';
-import type {Asset, AudioClip, EnvironmentSettings, TtsSettings, VideoProject, VideoClip} from '../shared/types.js';
+import type {Asset, AudioClip, AudioMixSettings, EnvironmentSettings, TtsSettings, VideoProject, VideoClip} from '../shared/types.js';
 import {compileSpec} from '../core/index.js';
 import {ProjectStore, projectPath} from './store.js';
 import {findToolExecutable, isExecutableFile, type ToolEnvironmentOptions} from './tool-environment.js';
 
 export interface AudioMetadata {duration:number;sampleRate:number;channels:number;mime:string;extension:string}
 export interface PlannedAudioClip extends AudioClip {path:string;start:number;duration:number;trimEnd:number;speed?:number;sourceVideoClipId?:string}
-export interface AudioPlan {duration:number;sampleRate:48000;channels:2;clips:PlannedAudioClip[]}
+export interface AudioPlan {duration:number;sampleRate:48000;channels:2;clips:PlannedAudioClip[];audioMix?:AudioMixSettings}
 export interface AudioMix {path:string;duration:number;plan:AudioPlan}
 
 function aborted(signal?:AbortSignal):void {signal?.throwIfAborted();}
@@ -33,12 +33,12 @@ function stop(child:ChildProcess):void {
 /** Owns only the subprocesses started by this audio operation. */
 export class AudioProcesses {
   private children=new Set<ChildProcess>();
-  run(executable:string,args:string[],signal?:AbortSignal):Promise<string>{
+  run(executable:string,args:string[],signal?:AbortSignal,onStderr?:(text:string)=>void):Promise<string>{
     aborted(signal);return new Promise((resolve,reject)=>{
       const child=spawn(executable,args,{stdio:['ignore','pipe','pipe']});this.children.add(child);
       let output='',error='';const cancel=()=>stop(child);signal?.addEventListener('abort',cancel,{once:true});
       child.stdout?.on('data',bytes=>{output+=String(bytes);});
-      child.stderr?.on('data',bytes=>{error=(error+String(bytes)).slice(-6000);});
+      child.stderr?.on('data',bytes=>{const text=String(bytes);error=(error+text).slice(-6000);onStderr?.(text);});
       const finish=()=>{this.children.delete(child);signal?.removeEventListener('abort',cancel);};
       child.once('error',cause=>{finish();reject(cause);});
       child.once('close',code=>{finish();code===0&&!signal?.aborted?resolve(output):reject(new Error(signal?.aborted?'Task cancelled':'音频处理失败（'+code+'）：'+error.slice(-1400)));});
@@ -67,6 +67,7 @@ export async function probeAudio(file:string,settings:Partial<EnvironmentSetting
 export function compileAudioPlan(project:VideoProject):AudioPlan {
   const spec=compileSpec(project),plan:AudioPlan={duration:spec.durationSeconds,sampleRate:48000,channels:2,clips:[]};
   if(project.target.audioMode==='none')return plan;
+  if(project.audioMix)plan.audioMix=structuredClone(project.audioMix);
   for(const clip of project.audioClips??[]){
     const asset=project.assets.find(item=>item.id===clip.assetId);
     if(!asset||asset.kind!=='audio'||!asset.path||!(Number(asset.duration)>0))throw new Error('音频片段 '+clip.id+' 缺少可读取的音频资产');
@@ -110,6 +111,25 @@ function tempoFilters(speed:number):string[]{
   if(remaining!==1)filters.push('atempo='+remaining);
   return filters;
 }
+function audioClipFilters(clip:PlannedAudioClip):string[]{
+  const length=clip.trimEnd-clip.trimStart,fadeIn=Math.min(clip.fadeIn,clip.duration),fadeOut=Math.min(clip.fadeOut,clip.duration);
+  const parts=[`atrim=start=${clip.trimStart}:end=${clip.trimEnd}`,'asetpts=PTS-STARTPTS','aresample=48000','aformat=sample_fmts=fltp:channel_layouts=stereo',...tempoFilters(clip.speed??1)];
+  if(clip.loop)parts.push('aloop=loop=-1:size='+Math.max(1,Math.round(length*48000)));
+  parts.push('atrim=duration='+clip.duration,'volume='+clip.volume);
+  if(fadeIn)parts.push('afade=t=in:st=0:d='+fadeIn);
+  if(fadeOut)parts.push('afade=t=out:st='+Math.max(0,clip.duration-fadeOut)+':d='+fadeOut);
+  return parts;
+}
+
+/** Exchange media carries the clip edit independently of its placement and of master-bus effects. */
+export async function renderExchangeAudioClip(root:string,clip:PlannedAudioClip,destination:string,settings:Partial<EnvironmentSettings>,signal:AbortSignal):Promise<number>{
+  const processes=new AudioProcesses(),source=await projectPath(root,clip.path),samples=Math.max(1,Math.round(clip.duration*48000));
+  const filters=[...audioClipFilters(clip),`apad=whole_len=${samples}`,`atrim=end_sample=${samples}`,'asetpts=N/SR/TB'];
+  try{
+    await processes.run(audioExecutable('ffmpeg',settings.ffmpegPath),['-hide_banner','-loglevel','error','-y','-i',source,'-map','0:a:0','-vn','-af',filters.join(','),'-ar','48000','-ac','2','-c:a','pcm_f32le',destination],signal);
+    return samples;
+  }finally{await processes.close();}
+}
 async function fileHash(file:string,signal?:AbortSignal):Promise<string>{
   const hash=createHash('sha256');for await(const bytes of createReadStream(file,{signal}))hash.update(bytes);return hash.digest('hex');
 }
@@ -142,18 +162,32 @@ export class AudioMixer {
   }
   private async render(destination:string,plan:AudioPlan,files:string[],settings:Partial<EnvironmentSettings>,signal?:AbortSignal):Promise<AudioMix>{
     await fs.mkdir(path.dirname(destination),{recursive:true});const temporary=destination+'.tmp-'+randomUUID()+'.wav';
+    const mix=plan.audioMix,voice=plan.clips.flatMap((clip,index)=>clip.role==='voice'?[index]:[]),music=plan.clips.flatMap((clip,index)=>clip.role==='music'?[index]:[]);
+    const duckStrength=mix?.duckingDb??8,duck=mix?.autoDucking&&duckStrength>0&&voice.length>0&&music.length>0;
+    const effect={none:'',room:'aecho=0.8:0.75:28:0.18',hall:'aecho=0.8:0.85:65:0.25',phone:'highpass=f=380,lowpass=f=3200'}[mix?.voiceReverb??'none'];
+    const padded=['apad=whole_dur='+plan.duration,'atrim=duration='+plan.duration];
     const filters=plan.clips.map((clip,index)=>{
-      const length=clip.trimEnd-clip.trimStart,fadeIn=Math.min(clip.fadeIn,clip.duration),fadeOut=Math.min(clip.fadeOut,clip.duration);
-      const parts=[`[${index}:a]atrim=start=${clip.trimStart}:end=${clip.trimEnd}`,'asetpts=PTS-STARTPTS','aresample=48000','aformat=sample_fmts=fltp:channel_layouts=stereo',...tempoFilters(clip.speed??1)];
-      if(clip.loop)parts.push('aloop=loop=-1:size='+Math.max(1,Math.round(length*48000)));
-      parts.push('atrim=duration='+clip.duration,'volume='+clip.volume);
-      if(fadeIn)parts.push('afade=t=in:st=0:d='+fadeIn);
-      if(fadeOut)parts.push('afade=t=out:st='+Math.max(0,clip.duration-fadeOut)+':d='+fadeOut);
-      parts.push('adelay='+Math.round(clip.start*48000)+'S:all=1');return parts.join(',')+'[clip'+index+']';
+      const parts=audioClipFilters(clip);
+      if(clip.role==='voice'&&effect)parts.push(effect);
+      parts.push('adelay='+Math.round(clip.start*48000)+'S:all=1');
+      if(duck&&(clip.role==='voice'||clip.role==='music'))parts.push(...padded);
+      return `[${index}:a]`+parts.join(',')+'[clip'+index+']';
     });
     // amix can emit NOPTS once an earlier input ends. Rebuild timestamps from the
     // output sample count so the limiter and final padding retain the whole timeline.
-    filters.push(plan.clips.map((_,index)=>'[clip'+index+']').join('')+'amix=inputs='+plan.clips.length+':duration=longest:dropout_transition=0:normalize=0,asetpts=N/SR/TB,alimiter=limit=0.95:level=0:latency=1,apad=whole_dur='+plan.duration+',atrim=duration='+plan.duration+'[mix]');
+    const mixClips=(labels:string[])=>labels.join('')+'amix=inputs='+labels.length+':duration=longest:dropout_transition=0:normalize=0,asetpts=N/SR/TB';
+    const label=(index:number)=>`[clip${index}]`;
+    let buses=plan.clips.map((_,index)=>label(index));
+    if(duck){
+      filters.push(mixClips(voice.map(label))+',asplit=2[voice][sidechain]',mixClips(music.map(label))+'[music]');
+      const ratio=Math.min(20,1+duckStrength*.8);
+      filters.push(`[music][sidechain]sidechaincompress=threshold=0.025:ratio=${ratio}:attack=35:release=380[ducked]`);
+      buses=['[voice]','[ducked]',...plan.clips.flatMap((clip,index)=>clip.role==='sfx'?[label(index)]:[])];
+    }
+    const master=[mixClips(buses)];
+    if(mix?.targetLufs!==undefined)master.push(`loudnorm=I=${mix.targetLufs}:TP=-1.5:LRA=11`,'aresample=48000');
+    master.push('alimiter=limit=0.95:level=0:latency=1',...padded);
+    filters.push(master.join(',')+'[mix]');
     try{
       await this.processes.run(audioExecutable('ffmpeg',settings.ffmpegPath),['-hide_banner','-loglevel','error','-y',...files.flatMap(file=>['-i',file]),'-filter_complex',filters.join(';'),'-map','[mix]','-ar','48000','-ac','2','-c:a','pcm_s16le',temporary],signal);
       aborted(signal);await fs.rename(temporary,destination);return {path:destination,duration:plan.duration,plan};

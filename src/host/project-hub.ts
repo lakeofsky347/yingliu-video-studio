@@ -478,7 +478,7 @@ export class ProjectHub {
         return {ok:true,value:await this.decorate(await this.service(),this.selectedSession)};
       }
       const service=await this.service(id);
-      if(endpoint.startsWith('director.document.')||endpoint.startsWith('quality.')||endpoint==='audio.sfx'){
+      if(endpoint.startsWith('director.document.')||endpoint.startsWith('quality.')||endpoint.startsWith('review.')||endpoint==='subtitles.export'||endpoint==='audio.sfx'){
         const projectId=(await service.snapshot()).project?.id;if(!projectId)throw new Error('请先选择工程');await this.assertMediaAccess(projectId,context.callerSessionId);
         if(endpoint==='director.document.approve'&&context.callerSessionId)throw Object.assign(new Error('工程导演计划须由用户在工作台审阅后批准，智能体不能代签'),{code:'DIRECTOR_APPROVAL_REQUIRED'});
       }
@@ -496,8 +496,6 @@ export class ProjectHub {
         this.focus={...(typeof data.shotId==='string'?{shotId:data.shotId}:{}),...(typeof data.frame==='number'?{frame:Math.max(0,Math.floor(data.frame))}:{})};
         return {ok:true,value:await this.decorate(service,sessionId)};
       }
-      const result=await service.rpc(endpoint,data);if(!result.ok)return result;
-      if(['source','inspect','thumbnails','history','tasks','jobs','quality.check','quality.last'].includes(endpoint))return result;
       if(endpoint.startsWith('director.document.')){await this.remember(await service.snapshot());return result;}
       if(endpoint==='catalog')this.providers=(result.value as StudioSnapshot).providers;
       if(endpoint==='tts'){const snapshot=result.value as StudioSnapshot;this.tts=snapshot.tts;this.ttsConfigured=snapshot.ttsConfigured;}
