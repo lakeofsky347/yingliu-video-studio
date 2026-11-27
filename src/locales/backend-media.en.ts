@@ -564,5 +564,15 @@ export const backendMediaEnglish: Record<string, string> = {
   "导演计划引用的参考资产不存在：{0}": "A reference asset used by the director plan does not exist: {0}",
   "{0} 未就绪，请在环境设置中配置": "{0} is not ready. Configure it in Environment settings.",
   "视频处理失败：{0}": "Video processing failed: {0}",
-  "视频文件超出本机大小限制（{0} 字节）": "The video file exceeds the local size limit ({0} bytes)."
+  "视频文件超出本机大小限制（{0} 字节）": "The video file exceeds the local size limit ({0} bytes).",
+  "未检测到 Blender，请在运行环境中配置可执行路径": "Blender was not detected. Set its executable path in Environment settings.",
+  "Blender 路径须为空或使用绝对路径": "Leave the Blender path empty or use an absolute path.",
+  "预演视频需要 FFmpeg 与 ffprobe；也可以仅渲染关键帧": "Preview video needs FFmpeg and ffprobe. You can also render a keyframe only.",
+  "预演视频超过 360 帧或画面预算；请降低尺寸、帧率或时长": "The preview exceeds 360 frames or the pixel budget. Reduce its dimensions, frame rate, or duration.",
+  "Blender 预演已取消": "Blender previsualization cancelled.",
+  "Blender 预演超时": "Blender previsualization timed out.",
+  "预演工程不匹配": "The previsualization belongs to a different project.",
+  "本工程已有白模预演正在渲染": "This project already has a previsualization rendering.",
+  "预演产物已变化，请重新审阅": "The rendered assets have changed. Review them again.",
+  "导演计划已变化，请重新选择镜头": "The director plan has changed. Select the shot again."
 };

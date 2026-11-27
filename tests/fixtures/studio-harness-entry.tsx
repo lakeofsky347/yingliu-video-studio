@@ -10,6 +10,7 @@ const scheme=(params.get('scheme')==='dark'?'dark':'light') as 'light'|'dark';
 const view=params.get('view')||'studio';
 const surface=params.get('surface')||'main';
 const lagPreview=params.get('lagPreview')==='1';
+const hasPreviz=params.get('previz')==='1';
 setLocale(params.get('locale')||'zh');
 
 function demoProject():VideoProject{
@@ -43,6 +44,13 @@ function demoProject():VideoProject{
 const origin=location.origin;
 let project=demoProject();
 let previewRevision:number|null=project.revision;
+let previzApprovedAt:string|undefined;
+function samplePreviz(shotId:string){
+  const scope={shotId,documentHash:'a'.repeat(64),documentVersion:2};
+  const record={...scope,id:'fixture-previz',projectId:project.id,imageAssetId:'street',mediaHashes:[],
+    width:640,height:360,fps:12,frameCount:1,renderedAt:'2026-11-27T04:00:00Z',approvedAt:previzApprovedAt};
+  return {scope,record,rendering:false};
+}
 const history={canUndo:true,canRedo:false,cursor:3,entries:[
   {id:'h1',label:'创建工程',createdAt:new Date(Date.now()-3600e3).toISOString(),revision:1},
   {id:'h2',label:'生成分镜',createdAt:new Date(Date.now()-1800e3).toISOString(),revision:2},
@@ -57,7 +65,7 @@ function snapshot():StudioSnapshot{
     task:params.get('task')==='running'?{id:'t2',kind:'scenes',status:'running',progress:.46,message:'正在生成镜头 2 / 3 的画面',startedAt:new Date().toISOString()}:{id:'t1',kind:'scenes',status:'complete',progress:1,message:'已完成',startedAt:new Date(Date.now()-60e3).toISOString(),finishedAt:new Date().toISOString()},
     previewUrl:origin+'/frame/',previewRevision,assetBaseUrl:origin+'/',audioUrl:null,
     providers:[{id:'deepseek',name:'DeepSeek',models:[{id:'deepseek-v4-flash',name:'DeepSeek-V4.1-Flash'},{id:'deepseek-v4',name:'DeepSeek-V4.1'}]}],
-    environment:{browserPath:'',ffmpegPath:'',ffprobePath:'',browserAvailable:true,ffmpegAvailable:true,ffprobeAvailable:true},
+    environment:{browserPath:'',ffmpegPath:'',ffprobePath:'',browserAvailable:true,ffmpegAvailable:true,ffprobeAvailable:true,blenderAvailable:hasPreviz},
     recent:[],history,
   } as StudioSnapshot);
 }
@@ -74,6 +82,16 @@ const api:StudioApi={async call<T>(endpoint:string,payload:any={}):Promise<T>{
     case 'history':return structuredClone(history) as T;
     case 'list':return {projects,bindings:{}} as T;
     case 'styles.list':return {styles:[]} as T;
+    case 'quality.last':return null as T;
+    case 'media.list':return {tasks:[]} as T;
+    case 'models.list':return {version:1,connections:[],models:[],roles:[]} as T;
+    case 'previz.get':return (hasPreviz?samplePreviz(payload.shotId):{scope:null,record:null,rendering:false}) as T;
+    case 'previz.approve':{
+      previzApprovedAt='2026-11-27T04:00:01Z';
+      project={...project,revision:project.revision+1};previewRevision=project.revision;
+      return samplePreviz(payload.shotId).record as T;
+    }
+    case 'review.frames':return {revision:project.revision,frames:[0,24,48,72,95].map(frame=>({frame,shotId:project.shotOrder[0],url:`${origin}/thumb/${frame}.svg`}))} as T;
     case 'save':project={...payload.project,revision:project.revision+1};if(!lagPreview&&!(window as any).harnessLagPreview)previewRevision=project.revision;return snapshot() as T;
     case 'preview':previewRevision=project.revision;return snapshot() as T;
     case 'undo':case 'redo':case 'export':case 'generate':return snapshot() as T;

@@ -21,6 +21,52 @@ function harness(value:ResolvedModel,response:unknown={id:'task',status:'queued'
 }
 const safelyRejected=(error:unknown)=>error instanceof MediaCapabilityError&&error.code==='UNSUPPORTED_MEDIA_CAPABILITY'&&error.submissionUncertain===false;
 
+test('Seedance encodes ordered first and last frames and gateway v1 rejects the new operation',async()=>{
+  const value=resolved('volc-video','doubao-seedance-2-5-260628'),h=harness(value);
+  const input=request(value,{operation:'first-last-frame-video',inputs:[image,{...image,dataUrl:'data:image/png;base64,ZGVm'}],referenceRoles:['first_frame','last_frame']});
+  await assert.rejects(submitGeneration(h.context,{...input,referenceRoles:['last_frame','first_frame']}),safelyRejected);
+  await submitGeneration(h.context,input);
+  assert.deepEqual(h.body().content.slice(1).map((part:{role:string})=>part.role),['first_frame','last_frame']);
+  const gateway=resolved('video-gateway'),legacy=harness(gateway);
+  await assert.rejects(submitGeneration(legacy.context,{...input,model:gateway.model}),safelyRejected);
+  assert.equal(legacy.calls.length,0);
+});
+
+test('Gemini image composition sends all images as ordered inline parts',async()=>{
+  const value=resolved('gemini-image','gemini-3.1-flash-image'),h=harness(value,{candidates:[{content:{parts:[{inlineData:{data:'YWJj',mimeType:'image/png'}}]}}]});
+  const output=await submitGeneration(h.context,request(value,{operation:'image-compose',inputs:[image,{...image,dataUrl:'data:image/png;base64,ZGVm'}]}));
+  assert.equal(output.status,'succeeded');
+  assert.deepEqual(h.body().contents[0].parts.slice(1).map((part:{inlineData:{data:string}})=>part.inlineData.data),['YWJj','ZGVm']);
+});
+
+test('Replicate lip sync accepts one MP4 and one WAV and creates a pollable prediction',async()=>{
+  const value=resolved('replicate-lipsync','sync/lipsync-2');
+  value.model.inputModalities=['video','audio'];
+  const uploads:string[]=[];
+  const context:AdapterContext={connection:value.connection,signal:new AbortController().signal,
+    fetch:async(raw,init)=>{
+      const url=new URL(String(raw));
+      if(url.pathname.endsWith('/files')){
+        const file=(init?.body as FormData).get('content') as File;
+        uploads.push(file.type);
+        return Response.json({urls:{get:'https://files.fixture.invalid/'+file.name}});
+      }
+      if(url.pathname.endsWith('/models/sync/lipsync-2/predictions')){
+        assert.deepEqual(JSON.parse(String(init?.body)),{input:{video:'https://files.fixture.invalid/video.mp4',audio:'https://files.fixture.invalid/voice.wav'}});
+        return Response.json({id:'clip',status:'starting'});
+      }
+      assert.equal(url.pathname,'/v1/predictions/clip');
+      return Response.json({id:'clip',status:'succeeded',output:'https://files.fixture.invalid/final.mp4'});
+    }};
+  const inputs=[{type:'video',dataUrl:'data:video/mp4;base64,YWJj'},{type:'audio',dataUrl:'data:audio/wav;base64,YWJj'}] as AdapterInput['inputs'];
+  await assert.rejects(submitGeneration(context,request(value,{operation:'lip-sync-video',inputs:[inputs[0]!]})),safelyRejected);
+  assert.equal(uploads.length,0);
+  const queued=await submitGeneration(context,request(value,{operation:'lip-sync-video',inputs}));
+  assert.equal(queued.status,'queued');
+  assert.deepEqual(uploads,['video/mp4','audio/wav']);
+  assert.equal((await pollGeneration(context,value.connection.protocol,'lip-sync-video',queued.jobId,'request'))?.artifacts?.[0]?.mimeType,'video/mp4');
+});
+
 for(const protocol of native)test(protocol+' rejects multiple references before HTTP rather than taking the first',async()=>{
   const value=resolved(protocol),h=harness(value);
   await assert.rejects(submitGeneration(h.context,request(value,{operation:'image-to-video',inputs:[image,image]})),safelyRejected);

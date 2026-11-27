@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {compileSpec,createProject,deleteShot} from '../src/core/index.ts';
 import {formatAss,formatSrt,projectSubtitles,sliceSubtitles} from '../src/core/subtitles.ts';
 import {StudioService} from '../src/host/service.ts';
+import {detectEnvironment,VideoRenderer} from '../src/host/renderer.ts';
 import type {HostContext} from '../src/host/platform.ts';
 import type {SubtitleCue} from '../src/shared/types.ts';
 
@@ -45,4 +46,30 @@ test('subtitle export uses the saved revision and writes a separate sidecar',asy
     if(result.ok)assert.match(await readFile((result.value as {path:string}).path,'utf8'),/这是一行字幕/);
     assert.equal((await service.rpc('subtitles.export',{format:'ass',expectedRevision:project.revision})).ok,false);
   }finally{await service.dispose();await rm(root,{recursive:true,force:true});}
+});
+
+const environment=detectEnvironment();
+test('Chromium review captures five frames from the saved shot and renders its explicit subtitle',{skip:!environment.browserAvailable},async()=>{
+  const root=await mkdtemp(join(tmpdir(),'yingliu-subtitle-review-test-'));
+  const context={llm:{listProviders:()=>[]}} as unknown as HostContext;
+  const service=new StudioService(context,{baseDirectory:root,restoreRecent:false}),renderer=new VideoRenderer();
+  try{
+    assert.equal((await service.rpc('create',{title:'审片测试',productionMode:'code_animation'})).ok,true);
+    const {project,root:projectRoot}=await service.snapshot();
+    assert.ok(project&&projectRoot);
+    project.shots[0]!.durationFrames=9;
+    project.target={width:320,height:180,fps:{num:24000,den:1001},audioMode:'none'};
+    const raw=await service.rpc('save',{project,expectedRevision:project.revision});
+    assert.equal(raw.ok,true,JSON.stringify(raw));
+    const before=(await service.snapshot()).project!;
+    const clear=await renderer.capture(projectRoot,before,environment,1);
+    const subtitled={...before,subtitles:[{id:'cue',startSeconds:0,endSeconds:.37,text:'审片字幕'}]};
+    assert.equal((await service.rpc('save',{project:subtitled,expectedRevision:before.revision})).ok,true);
+    const after=(await service.snapshot()).project!;
+    const withSubtitle=await renderer.capture(projectRoot,after,environment,1);
+    assert.notEqual(clear.sha256,withSubtitle.sha256);
+    const review=await service.rpc('review.frames',{shotId:after.shotOrder[0],expectedRevision:after.revision});
+    assert.equal(review.ok,true,JSON.stringify(review));
+    if(review.ok)assert.deepEqual((review.value as {frames:{frame:number}[]}).frames.map(item=>item.frame),[0,2,4,6,8]);
+  }finally{await renderer.close();await service.dispose();await rm(root,{recursive:true,force:true});}
 });

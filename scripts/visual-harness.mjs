@@ -71,6 +71,13 @@ matrix.push({name:'state-confirm-light',width:1440,height:900,query:'scheme=ligh
 matrix.push({name:'state-delete-toast-dark',width:1440,height:900,query:'scheme=dark',steps:[click('.vs-clip >> nth=2'),async page=>{await page.getByRole('button',{name:'删除',exact:true}).click();await page.waitForTimeout(700);}]});
 matrix.push({name:'state-menu-light',width:1440,height:900,query:'scheme=light',steps:[async page=>{await page.getByRole('button',{name:'更多操作',exact:true}).click();await page.waitForTimeout(400);}]});
 matrix.push({name:'state-create-light',width:1440,height:900,query:'view=home&scheme=light',steps:[async page=>{await page.locator('.vs-home-hero .vs-primary').click();await page.waitForTimeout(500);}]});
+const tab=name=>async page=>{await page.getByRole('tab',{name,exact:true}).first().click();await page.waitForTimeout(450);};
+matrix.push({name:'state-review-light',width:1440,height:900,query:'scheme=light',steps:[tab('历史成片'),role('生成五帧宫格')]});
+matrix.push({name:'state-audio-dark',width:1440,height:900,query:'scheme=dark',steps:[tab('声音与配音')]});
+matrix.push({name:'state-previz-light',width:1440,height:900,query:'scheme=light&previz=1',steps:[tab('白模预演')]});
+matrix.push({name:'state-previz-right-en',width:440,height:900,query:'scheme=dark&surface=right&locale=en&previz=1',steps:[tab('Work panels'),tab('Whitebox previsualization'),async page=>{await page.locator('.vs-previz-result').scrollIntoViewIfNeeded();}]});
+matrix.push({name:'state-media-dark',width:1440,height:900,query:'scheme=dark',steps:[tab('模型与素材生成'),async page=>{await page.getByLabel('媒体生成方式').selectOption('first-last-frame-video');}]});
+matrix.push({name:'state-import-light',width:1440,height:900,query:'view=home&scheme=light',steps:[role('导入工程包')]});
 const errors=[];
 try{
   for(const item of matrix){

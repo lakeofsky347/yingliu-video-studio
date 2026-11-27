@@ -265,6 +265,22 @@ test('a narrow host right pane shows keyframes alongside the wide workbench',{sk
   });
 });
 
+test('previsualization confirmation sends the exact result displayed in the drawer',{skip:!env.browserAvailable,timeout:90_000},async()=>{
+  await studio('scheme=light&previz=1',async page=>{
+    await page.getByRole('tab',{name:'白模预演',exact:true}).click();
+    const panel=page.getByRole('region',{name:'Blender 白模预演'});
+    await panel.getByRole('img',{name:'白模关键帧'}).waitFor();
+    await panel.getByRole('button',{name:'确认预演',exact:true}).click();
+    await page.getByRole('dialog',{name:'确认本次镜头预演？'}).getByRole('button',{name:'确认预演',exact:true}).click();
+    await panel.getByText('预演已确认',{exact:true}).waitFor();
+    const approval=await page.evaluate(()=>((window as any).harnessCalls as {endpoint:string;payload:any}[]).find(call=>call.endpoint==='previz.approve')?.payload);
+    assert.equal(approval.renderId,'fixture-previz');
+    assert.equal(approval.documentHash,'a'.repeat(64));
+    assert.equal(approval.documentVersion,2);
+    assert.deepEqual(approval.assetIds,['street']);
+  });
+});
+
 test('the storyboard requests every shot thumbnail within the host batch limit at the saved preview revision',{skip:!env.browserAvailable,timeout:90_000},async()=>{
   await studio('scheme=light&shots=5&lagPreview=1',async page=>{
     const canvas=page.getByRole('radio',{name:'分镜画布'});

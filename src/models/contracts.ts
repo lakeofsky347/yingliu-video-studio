@@ -1,5 +1,5 @@
 /** Portable model contracts; credentials and running jobs never belong in projects. */
-export const MODEL_PROTOCOLS = ['chat-completions','images','gemini-image','video-gateway','openai-videos','kling-video','minimax-video','volc-video','dashscope-video','gemini-video','speech'] as const;
+export const MODEL_PROTOCOLS = ['chat-completions','images','gemini-image','video-gateway','openai-videos','kling-video','minimax-video','volc-video','dashscope-video','gemini-video','replicate-lipsync','speech'] as const;
 export type ModelProtocol = typeof MODEL_PROTOCOLS[number];
 export type ModelRole = 'director' | 'scene' | 'vision' | 'image' | 'video' | 'speech';
 export type Modality = 'text' | 'image' | 'video' | 'audio';

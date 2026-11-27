@@ -1,6 +1,13 @@
 import type { ModelSelection, ProviderConnection, ModelDefinition, ResolvedModel } from '../models/contracts.ts';
 
-export type MediaOperation='text-to-image'|'text-to-video'|'image-to-video';
+export const MEDIA_OPERATIONS=['text-to-image','text-to-video','image-to-video','first-last-frame-video','image-compose','lip-sync-video'] as const;
+export type MediaOperation=typeof MEDIA_OPERATIONS[number];
+export function mediaOutput(operation:MediaOperation):'image'|'video'{
+  return operation==='text-to-image'||operation==='image-compose'?'image':'video';
+}
+export function hasImageInputs(operation:MediaOperation):boolean{
+  return operation==='image-to-video'||operation==='image-compose'||operation==='first-last-frame-video';
+}
 export type RemoteStatus='queued'|'running'|'succeeded'|'failed'|'cancelled';
 export type MediaPhase='pending'|'submitting'|'queued'|'running'|'downloading'|'validating'|'ready'|'applying'|'complete'|'failed'|'cancelled'|'unknown';
 export interface MediaUsage { inputTokens?:number;outputTokens?:number;cost?:number;currency?:string;[key:string]:unknown }
@@ -14,6 +21,7 @@ export interface MediaRequest {
   modelId?:string;connectionId?:string;imageAssetIds?:string[];allowImageUpload?:boolean;
   parameters?:Record<string,string|number|boolean>;ownerSessionId?:string;
   referenceRoles?:string[];requiresAudio?:boolean;
+  videoAssetId?:string;audioAssetId?:string;uploadConsentId?:string;
 }
 export interface MediaTask {
   version:1;id:string;clientRequestId:string;projectId:string;shotId?:string;startRevision:number;
@@ -25,6 +33,7 @@ export interface MediaTask {
   cancelRequested?:boolean;resumeOnStart?:boolean;
   /** Captured by the host, never supplied by the model/client. */
   productionPolicyFingerprint?:string;referenceRoles?:string[];requiresAudio?:boolean;
+  videoAssetId?:string;audioAssetId?:string;
   metrics?:{submittedAt?:string;remoteCompletedAt?:string;readyAt?:string;appliedAt?:string;generationMs?:number;downloadMs?:number;downloadBytes?:number};
 }
 export interface MediaRegistryPort {
@@ -40,6 +49,7 @@ export interface MediaProjectPort {
   submitAuthorized?<T>(projectId:string,operation:MediaOperation,shotId:string|undefined,expectedFingerprint:string|undefined,submit:()=>Promise<T>):Promise<T>;
   /** Must enforce current project/shot asset membership and filesystem boundaries. */
   readImage(projectId:string,assetId:string,shotId?:string):Promise<{bytes:Uint8Array;mime:string}>;
+  readLipSyncAsset?(projectId:string,assetId:string,kind:'video'|'audio',shotId?:string):Promise<{bytes:Uint8Array;mime:string}>;
   /** Must inspect actual media, not merely trust extension or provider content type. */
   validateArtifact(path:string,mimeType:string,projectId:string,signal?:AbortSignal):Promise<Record<string,unknown>>;
   /** One CAS transaction; idempotent for provenance.taskId in case response is lost. */

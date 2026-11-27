@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 import type { ModelDiscoveryResult, ProviderConnection, ProviderModelOption } from '../contracts.ts';
-import type { MediaArtifact, MediaOperation, RemoteJob, RemoteStatus } from '../../jobs/contracts.ts';
+import {mediaOutput,type MediaArtifact,type MediaOperation,type RemoteJob,type RemoteStatus} from '../../jobs/contracts.ts';
 import { cancelVideo, generateImage, getVideo, lookupVideo, submitVideo, type AdapterContext, type AdapterInput } from './media.ts';
 import { validateMediaRequest } from '../capabilities.ts';
 import { protocolInfo } from '../protocols.ts';
@@ -170,10 +170,10 @@ function job(jobId: string, status: RemoteStatus, extra: Partial<RemoteJob> = {}
 }
 const videoStatus = (value: string): RemoteStatus => {
   const status = value.toLowerCase();
-  if (['queued', 'submitted', 'pending', 'preparing', 'queueing'].includes(status)) return 'queued';
+  if (['queued', 'submitted', 'pending', 'preparing', 'queueing', 'starting'].includes(status)) return 'queued';
   if (['running', 'processing', 'in_progress'].includes(status)) return 'running';
   if (['succeeded', 'succeed', 'success', 'completed'].includes(status)) return 'succeeded';
-  if (['cancelled', 'canceled'].includes(status)) return 'cancelled';
+  if (['cancelled', 'canceled', 'aborted'].includes(status)) return 'cancelled';
   if (['failed', 'fail', 'error'].includes(status)) return 'failed';
   throw new Error('媒体接口返回了无法识别的任务状态');
 };
@@ -187,9 +187,12 @@ function stringParam(input: AdapterInput, key: string): string | undefined {
 }
 
 async function geminiImage(context: AdapterContext, input: AdapterInput): Promise<RemoteJob> {
-  if (input.operation !== 'text-to-image') throw new Error('Gemini 图像协议当前只支持文生图');
+  const images=input.inputs.map(image=>{
+    const {mime,base64}=dataImage(image.dataUrl);
+    return {inlineData:{mimeType:mime,data:base64}};
+  });
   const data = record(await call(context, '/models/' + encodeURIComponent(input.model.model) + ':generateContent', {
-    contents: [{ role: 'user', parts: [{ text: input.prompt }] }],
+    contents: [{ role: 'user', parts: [{ text: input.prompt },...images] }],
     generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
   }), 'Gemini 图像接口返回无效对象');
   const candidates = Array.isArray(data.candidates) ? data.candidates : [];
@@ -305,6 +308,7 @@ async function volcSubmit(context: AdapterContext, input: AdapterInput): Promise
   const image = firstImage(input);
   const content: Json[] = [{ type: 'text', text: input.prompt }];
   if (image) content.push({ type: 'image_url', image_url: { url: image.dataUrl },role:'first_frame' });
+  if(input.operation==='first-last-frame-video')content.push({type:'image_url',image_url:{url:input.inputs[1]!.dataUrl},role:'last_frame'});
   const duration=numberParam(input,'durationSeconds'),ratio=stringParam(input,'aspectRatio'),seed=numberParam(input,'seed');
   const body = record(await call(context, '/contents/generations/tasks', { model: input.model.model, content,...(duration!==undefined?{duration}:{}),...(ratio!==undefined?{ratio}:{}),...(seed!==undefined?{seed}:{}) }), '火山方舟接口返回无效对象');
   return job(text(body.id), 'queued');
@@ -364,6 +368,33 @@ async function geminiVideoPoll(context: AdapterContext, jobId: string): Promise<
   return job(text(body.name) || jobId, 'succeeded', { artifacts });
 }
 
+function replicateJob(context:AdapterContext,value:unknown):RemoteJob{
+  const data=record(value,'Replicate 返回无效任务'),status=videoStatus(text(data.status));
+  const url=text(data.output);
+  if(status==='succeeded'&&!url)throw new Error('Replicate 已完成任务缺少视频地址');
+  return job(text(data.id),status,url?{artifacts:[artifact(context.connection,url,'video/mp4')]}:{});
+}
+async function replicateUpload(context:AdapterContext,dataUrl:string,filename:string){
+  const separator=dataUrl.indexOf(',');
+  const form=new FormData();
+  form.set('content',new Blob([Buffer.from(dataUrl.slice(separator+1),'base64')],{type:dataUrl.slice(5,separator).split(';')[0]}),filename);
+  const response=await (context.fetch??fetch)(endpoint(context.connection,'/files'),{method:'POST',redirect:'error',headers:headers(context.connection,context.key),body:form,
+    signal:AbortSignal.any([context.signal,AbortSignal.timeout(context.connection.requestTimeoutMs)])});
+  const data=record(await readJson(response,'Replicate 文件上传',1),'Replicate 文件接口返回无效对象');
+  const url=new URL(text(record(data.urls,'Replicate 文件接口未返回地址').get));
+  if(url.protocol!=='https:'||url.username||url.password)throw new Error('Replicate 文件接口返回不安全的地址');
+  return url.href;
+}
+async function replicateSubmit(context:AdapterContext,input:AdapterInput){
+  let video:string,audio:string;
+  try{
+    video=await replicateUpload(context,input.inputs[0]!.dataUrl,'video.mp4');
+    audio=await replicateUpload(context,input.inputs[1]!.dataUrl,'voice.wav');
+    context.signal.throwIfAborted();
+  }catch(error){throw Object.assign(error instanceof Error?error:new Error(String(error)),{submissionUncertain:false});}
+  return replicateJob(context,await call(context,'/models/sync/lipsync-2/predictions',{input:{video,audio}}));
+}
+
 export async function submitGeneration(context: AdapterContext, input: AdapterInput): Promise<RemoteJob> {
   validateMediaRequest({connection:context.connection,model:input.model},input);
   switch (context.connection.protocol) {
@@ -376,6 +407,7 @@ export async function submitGeneration(context: AdapterContext, input: AdapterIn
     case 'volc-video': return volcSubmit(context, input);
     case 'dashscope-video': return dashscopeSubmit(context, input);
     case 'gemini-video': return geminiVideoSubmit(context, input);
+    case 'replicate-lipsync': return replicateSubmit(context,input);
     default: throw new Error('此协议不能发起素材生成');
   }
 }
@@ -389,11 +421,13 @@ export async function pollGeneration(context: AdapterContext, protocol: Provider
     case 'volc-video': return volcPoll(context, jobId);
     case 'dashscope-video': return dashscopePoll(context, jobId);
     case 'gemini-video': return geminiVideoPoll(context, jobId);
-    default: throw new Error(operation === 'text-to-image' ? '图像协议不支持任务查询' : '此协议不支持任务查询');
+    case 'replicate-lipsync': return replicateJob(context,await call(context,'/predictions/'+encodeURIComponent(jobId)));
+    default: throw new Error(mediaOutput(operation)==='image' ? '图像协议不支持任务查询' : '此协议不支持任务查询');
   }
 }
 export async function cancelGeneration(context: AdapterContext, protocol: ProviderConnection['protocol'], jobId: string): Promise<RemoteJob> {
   if (protocol === 'video-gateway') return cancelVideo(context, jobId);
+  if(protocol==='replicate-lipsync')return replicateJob(context,await call(context,'/predictions/'+encodeURIComponent(jobId)+'/cancel',{}));
   if (protocol === 'openai-videos') {
     const body = record(await call(context, '/videos/' + encodeURIComponent(jobId) + '/cancel', {}), 'OpenAI Videos 取消返回无效对象');
     return job(text(body.id) || jobId, videoStatus(text(body.status) || 'cancelled'));

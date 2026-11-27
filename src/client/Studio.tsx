@@ -12,6 +12,7 @@ import { SessionPicker } from './SessionPicker.tsx';
 import { Dialog } from './Dialog.tsx';
 import { projectSessions, type SessionDirectoryProps } from './session-directory.ts';
 import { ExportPanel } from './ExportPanel.tsx';
+import { PrevizPanel } from './PrevizPanel.tsx';
 import { MediaPanel } from './MediaPanel.tsx';
 import { WorkflowPanel } from './WorkflowPanel.tsx';
 import { ModelCenter } from './ModelCenter.tsx';
@@ -32,7 +33,7 @@ import { EnvironmentPanel, Field } from './EnvironmentPanel.tsx';
 import { CreateFilmDialog } from './CreateFilmDialog.tsx';
 import { StudioHeader, taskLabel, type MenuItem, type StageId, type StepInfo } from './StudioHeader.tsx';
 
-type PanelTab='media'|'audio'|'source'|'workflow'|'spec'|'history'|'tasks'|'exports'|'environment';
+type PanelTab='media'|'audio'|'source'|'workflow'|'spec'|'history'|'tasks'|'exports'|'environment'|'previz';
 type Pane='properties'|'assets'|'panels';
 export interface StudioProps extends SessionDirectoryProps { controller:StudioController }
 
@@ -239,6 +240,7 @@ function StudioContent({controller,currentSessionId,onOpenSession,sessions=[],se
     {id:'associate',label:relatedSessions.length?t("{value0} 个关联会话",{value0:relatedSessions.length})+' · '+t("关联会话"):t("关联会话"),icon:'link',disabled:state.relationPending,onSelect:()=>setSessionDialog({project,mode:'associate'})},
     {id:'reveal',label:t("打开项目文件夹 "),icon:'folder',disabled:!snapshot?.root,onSelect:()=>{if(snapshot?.root)void controller.action('reveal',{path:snapshot.root});}},
     {id:'media',label:t("媒体模型"),icon:'spark',separatorBefore:true,onSelect:()=>openPanel('media')},
+    {id:'previz',label:t('Blender 白模预演'),icon:'camera',onSelect:()=>openPanel('previz')},
     {id:'environment',label:t("运行环境"),icon:'settings',onSelect:()=>openPanel('environment')},
     {id:'keys',label:t("快捷键"),icon:'keyboard',hint:'?',onSelect:()=>setKeysOpen(true)},
     {id:'new',label:t("新建影片"),icon:'plus',separatorBefore:true,disabled:busy,onSelect:()=>setNewOpen(true)},
@@ -246,7 +248,7 @@ function StudioContent({controller,currentSessionId,onOpenSession,sessions=[],se
   ]:[];
   const drawerTabs:DrawerTab<PanelTab>[]=[
     {id:'audio',label:t("声音与配音"),icon:'music'},{id:'media',label:t("模型与素材生成"),icon:'spark'},{id:'source',label:t("前端源码"),icon:'code'},
-    {id:'workflow',label:t("协作制作"),icon:'users'},{id:'spec',label:t("制作要求"),icon:'doc'},{id:'history',label:t("修改历史"),icon:'history'},
+    {id:'workflow',label:t("协作制作"),icon:'users'},{id:'previz',label:t('白模预演'),icon:'camera'},{id:'spec',label:t("制作要求"),icon:'doc'},{id:'history',label:t("修改历史"),icon:'history'},
     {id:'tasks',label:t("任务记录"),icon:'tasks',badge:task?.status==='failed'||task?.status==='interrupted'?<i className="vs-tab-dot is-danger"/>:task?.status==='running'?<i className="vs-tab-dot is-busy"/>:undefined},
     {id:'exports',label:t("历史成片"),icon:'film',badge:project?.outputs.length?<small className="vs-tab-count">{project.outputs.length}</small>:undefined},
     {id:'environment',label:t("运行环境"),icon:'settings'},
@@ -292,7 +294,7 @@ function StudioContent({controller,currentSessionId,onOpenSession,sessions=[],se
           onDuplicateShot={shot=>commit(duplicateShot(project,shot.id,getLocale()))}/>
         <BottomDrawer tabs={drawerTabs} active={panel} open={effectiveDrawerOpen} height={drawerHeight} flash={flash}
           onSelect={tab=>{setPanel(tab);store.set('vs-drawer-tab',tab);setDrawerOpen(true);}} onToggle={()=>setDrawerOpen(open=>!open)} onResize={height=>{setDrawerHeight(height);store.set('vs-drawer-height',height);}}>
-          {panel==='workflow'?<WorkflowPanel key={project.id} controller={controller} project={project} selectedShot={selectedShot} plugin/>:panel==='media'?<MediaPanel controller={controller} project={project} selectedShot={selectedShot} mediaOnly/>:panel==='history'?<HistoryPanel controller={controller}/>:panel==='tasks'?<TaskPanel controller={controller}/>:panel==='exports'?<ExportPanel project={project} controller={controller}/>:panel==='audio'?<AudioPanel project={project} snapshot={snapshot!} controller={controller} assetUrl={assetUrl} selectedShot={selectedShot} busy={busy}/>:panel==='spec'?<div className="vs-spec-view"><ProductionPolicySettings project={project} controller={controller}/>{spec?<><div className="vs-spec-meta"><span>{t("{value0} 个镜头", {value0: spec.shots.length})}</span><span>{t("{value0} 秒", {value0: spec.durationSeconds.toFixed(1)})}</span><Button size="sm" icon="copy" onClick={()=>void navigator.clipboard.writeText(specMarkdown(spec,getLocale())).then(()=>controller.notify('制作要求已复制。')).catch(()=>controller.notify('复制失败，可以在下方选择文本。'))}>{t("复制")}</Button><Button size="sm" icon="download" onClick={()=>downloadText(t("{value0}-制作要求.md", {value0: project.title}),specMarkdown(spec,getLocale()),'text/markdown;charset=utf-8')}>{t("导出 Markdown")}</Button><Button size="sm" icon="download" onClick={()=>downloadText(t("{value0}-制作要求.json", {value0: project.title}),JSON.stringify(spec,null,2),'application/json;charset=utf-8')}>{t("导出 JSON")}</Button></div><pre>{specMarkdown(spec,getLocale())}</pre></>:<div className="vs-dock-empty"><Icon name="grid"/><p>{t("把镜头连接成一条主链，制作要求会自动整理。")}</p><small>{graphCheck?.errors.map(systemMessage).join(t('；'))}</small></div>}</div>:panel==='source'?<SourceEditor controller={controller} selectedShot={selectedShot} busy={busy} version={`${project.revision}:${task?.status==='complete'?task.id:''}`}/>:<EnvironmentPanel controller={controller} snapshot={snapshot!}/>}
+          {panel==='previz'?<PrevizPanel key={project.id} project={project} selectedShot={selectedShot} controller={controller} environment={snapshot!.environment} busy={busy} assetUrl={assetUrl} onDirector={()=>openPanel('workflow')} onEnvironment={()=>openPanel('environment')}/>:panel==='workflow'?<WorkflowPanel key={project.id} controller={controller} project={project} selectedShot={selectedShot} plugin/>:panel==='media'?<MediaPanel controller={controller} project={project} selectedShot={selectedShot} mediaOnly/>:panel==='history'?<HistoryPanel controller={controller}/>:panel==='tasks'?<TaskPanel controller={controller}/>:panel==='exports'?<ExportPanel project={project} controller={controller}/>:panel==='audio'?<AudioPanel project={project} snapshot={snapshot!} controller={controller} assetUrl={assetUrl} selectedShot={selectedShot} busy={busy}/>:panel==='spec'?<div className="vs-spec-view"><ProductionPolicySettings project={project} controller={controller}/>{spec?<><div className="vs-spec-meta"><span>{t("{value0} 个镜头", {value0: spec.shots.length})}</span><span>{t("{value0} 秒", {value0: spec.durationSeconds.toFixed(1)})}</span><Button size="sm" icon="copy" onClick={()=>void navigator.clipboard.writeText(specMarkdown(spec,getLocale())).then(()=>controller.notify('制作要求已复制。')).catch(()=>controller.notify('复制失败，可以在下方选择文本。'))}>{t("复制")}</Button><Button size="sm" icon="download" onClick={()=>downloadText(t("{value0}-制作要求.md", {value0: project.title}),specMarkdown(spec,getLocale()),'text/markdown;charset=utf-8')}>{t("导出 Markdown")}</Button><Button size="sm" icon="download" onClick={()=>downloadText(t("{value0}-制作要求.json", {value0: project.title}),JSON.stringify(spec,null,2),'application/json;charset=utf-8')}>{t("导出 JSON")}</Button></div><pre>{specMarkdown(spec,getLocale())}</pre></>:<div className="vs-dock-empty"><Icon name="grid"/><p>{t("把镜头连接成一条主链，制作要求会自动整理。")}</p><small>{graphCheck?.errors.map(systemMessage).join(t('；'))}</small></div>}</div>:panel==='source'?<SourceEditor controller={controller} selectedShot={selectedShot} busy={busy} version={`${project.revision}:${task?.status==='complete'?task.id:''}`}/>:<EnvironmentPanel controller={controller} snapshot={snapshot!}/>}
         </BottomDrawer>
       </div>
     </>}

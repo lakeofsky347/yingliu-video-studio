@@ -4,7 +4,7 @@ import type { FileAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-att
 import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import type { JobOutcome } from '@deepseek-ai/dsh-jobs';
 import type { StudioSnapshot } from '../shared/types.ts';
-import type { MediaTask } from '../jobs/contracts.ts';
+import {MEDIA_OPERATIONS,type MediaTask} from '../jobs/contracts.ts';
 import type { DirectorDocument } from '../director/contracts.ts';
 import type { HostContext } from './platform.ts';
 import { ProjectHub, type ProjectRouting } from './project-hub.ts';
@@ -88,23 +88,31 @@ function startRender(ctx:HostContext,hub:ProjectHub,projectId:string,sessionId:s
 /** The host preflights a session-owned Job before any paid provider submission can start. */
 async function startMedia(ctx:HostContext,hub:ProjectHub,request:Input,exec:ToolRunContext){
   if(!ctx.jobs)throw new Error('DSH 后台任务服务尚未加载');exec.signal.throwIfAborted();
-  const sessionId=owner(exec),context={callerSessionId:sessionId},controller=new AbortController();let taskId:string|undefined;
-  let acquired!:(task:MediaTask)=>void,rejected!:(error:unknown)=>void;
-  const acquisition=new Promise<MediaTask>((resolve,reject)=>{acquired=resolve;rejected=reject;});
-  const pauseOwned=async()=>{if(taskId)await hub.call('media.pause',{taskId},context);};
+  const sessionId=owner(exec),context={callerSessionId:sessionId},controller=new AbortController();
+  const batch=Array.isArray(request.items),operation=batch?'media.batch':'media.generate';
+  let taskIds:string[]=[];
+  let acquired!:(tasks:MediaTask[])=>void,rejected!:(error:unknown)=>void;
+  const acquisition=new Promise<MediaTask[]>((resolve,reject)=>{acquired=resolve;rejected=reject;});
+  const pauseOwned=async()=>{await Promise.all(taskIds.map(taskId=>hub.call('media.pause',{taskId},context)));};
   const jobId=ctx.jobs.start({kind:'video',owner:exec.agent!.id,label:'生成媒体 · '+String(request.projectId),run(job){
     const done=(async():Promise<JobOutcome>=>{
       try{
-        controller.signal.throwIfAborted();let task=await hub.call<MediaTask>('media.generate',request,context);taskId=task.id;acquired(task);
+        controller.signal.throwIfAborted();
+        let tasks=batch?(await hub.call<{tasks:MediaTask[]}>(operation,request,context)).tasks:[await hub.call<MediaTask>(operation,request,context)];
+        taskIds=tasks.map(task=>task.id);acquired(tasks);
         if(controller.signal.aborted)await pauseOwned();
-        while(!['ready','complete','failed','cancelled','unknown'].includes(task.phase)&&task.observation==='active'){
-          job.updateProgress(`${Math.round(task.progress*100)}% · ${task.message}`);
-          await pause(controller.signal);task=await hub.call<MediaTask>('media.get',{taskId},context);
+        const active=(task:MediaTask)=>!['ready','complete','failed','cancelled','unknown'].includes(task.phase)&&task.observation==='active';
+        while(tasks.some(active)){
+          job.updateProgress(batch?`${tasks.filter(task=>!active(task)).length} / ${tasks.length}`:`${Math.round(tasks[0]!.progress*100)}% · ${tasks[0]!.message}`);
+          await pause(controller.signal);
+          tasks=await Promise.all(tasks.map(task=>active(task)?hub.call<MediaTask>('media.get',{taskId:task.id},context):task));
         }
-        const value={kind:'video-studio',operation:'media.generate',projectId:task.projectId,taskId:task.id,jobId:job.id,task};job.append(JSON.stringify(value)+'\n');
-        if(task.phase==='failed')return {status:'failed',detail:task.message,result:JSON.stringify(value)};
-        if(controller.signal.aborted||task.phase==='cancelled')return {status:'killed',detail:task.message,result:JSON.stringify(value)};
-        return {status:'completed',detail:task.message,result:JSON.stringify(value)};
+        const task=tasks[0]!,value={kind:'video-studio',operation,projectId:task.projectId,jobId:job.id,...(batch?{taskIds,tasks}:{taskId:task.id,task})};
+        job.append(JSON.stringify(value)+'\n');
+        const detail=batch?tasks.map(item=>item.id+' · '+item.message).join('\n'):task.message;
+        if(controller.signal.aborted||tasks.every(item=>item.phase==='cancelled'))return {status:'killed',detail,result:JSON.stringify(value)};
+        if(tasks.some(item=>item.phase==='failed'))return {status:'failed',detail,result:JSON.stringify(value)};
+        return {status:'completed',detail,result:JSON.stringify(value)};
       }catch(error){
         rejected(error);if(controller.signal.aborted)await pauseOwned().catch(()=>{});
         return {status:controller.signal.aborted?'killed':'failed',detail:controller.signal.aborted?'已停止本地等待；云端可能仍在执行，请用 video_media get 查询或 cancel 请求云端取消':error instanceof Error?error.message:String(error)};
@@ -112,8 +120,8 @@ async function startMedia(ctx:HostContext,hub:ProjectHub,request:Input,exec:Tool
     })();
     return {done,cancel(reason){controller.abort(new Error(reason??'用户停止等待'));void pauseOwned().catch(()=>{});}};
   }});
-  const task=await acquisition;
-  return json({kind:'video-studio',operation:'media.generate',projectId:task.projectId,taskId:task.id,jobId,status:task.phase,message:'DSH job_kill 只停止本地等待；video_media cancel 请求云端取消'});
+  const tasks=await acquisition,task=tasks[0]!;
+  return json({kind:'video-studio',operation,projectId:task.projectId,...(batch?{taskIds:tasks.map(item=>item.id)}:{taskId:task.id}),jobId,status:task.phase,message:'DSH job_kill 只停止本地等待；video_media cancel 请求云端取消'});
 }
 
 /** Model-facing tools accept the current conversation model's decisions and code; they do not start a second chat. */
@@ -143,15 +151,15 @@ export function createSessionTools(ctx:HostContext,hub:ProjectHub):ToolDefinitio
         if(['run','apply'].includes(args.action)&&!Number.isSafeInteger(args.expectedRevision))throw new Error('请先读取工程并提供 expectedRevision');
         const value=await hub.call('workflows.'+args.action,{...args,projectId:located.projectId,textRoute:{provider:exec.agent!.options.provider,model:exec.agent!.options.model}},{callerSessionId:sessionId});return json({kind:'video-studio',projectId:located.projectId,workflow:value});}}),
     defineTool({name:'video_media',description:'使用工作台已配置的生图/生视频模型生成候选素材，或查询、恢复、停止等待、请求云端取消和采用结果。generate 先注册 DSH 后台 Job，返回稳定 taskId；job_kill 仅停止本地等待，不保证云端取消。retry 仅恢复查询/获取结果，不重新计费提交。apply 必须提供当前 expectedRevision，失败时保留候选素材。仅使用模型注册 ID，不接收接口 URL、密钥、请求头或文件路径。',
-      parameters:{action:{type:'string',enum:['capabilities','generate','list','get','cancel','pause','retry','apply'],required:true},projectId:projectParameter,taskId:{type:'string'},shotId:{type:'string'},expectedRevision:{type:'integer'},operation:{type:'string',enum:['text-to-image','text-to-video','image-to-video']},prompt:{type:'string'},modelId:{type:'string'},connectionId:{type:'string'},imageAssetIds:{type:'array',items:{type:'string'}},referenceRoles:{type:'array',items:{type:'string'},description:'与图片逐项对应的用途；先查 capabilities，不支持时不得偷偷改成普通参考'},requiresAudio:{type:'boolean',description:'要求实际产物有原生音轨；未知能力或无声结果拒绝采用'},clientRequestId:{type:'string',description:'同一步骤使用稳定 ID，重试不得用新 ID 偷偷重复付费'},allowImageUpload:{type:'boolean',description:'只有用户明确允许本次上传所选图片时才为 true'},parameters:{type:'object',additionalProperties:true}},output,
+      parameters:{action:{type:'string',enum:['capabilities','generate','batch','list','get','cancel','pause','retry','apply'],required:true},projectId:projectParameter,taskId:{type:'string'},shotId:{type:'string'},expectedRevision:{type:'integer'},operation:{type:'string',enum:[...MEDIA_OPERATIONS]},prompt:{type:'string'},modelId:{type:'string'},connectionId:{type:'string'},imageAssetIds:{type:'array',items:{type:'string'}},videoAssetId:{type:'string'},audioAssetId:{type:'string'},uploadConsentId:{type:'string',description:'只能由用户在工作台确认生成'},batchId:{type:'string'},items:{type:'array',items:{type:'object',additionalProperties:true}},referenceRoles:{type:'array',items:{type:'string'},description:'与图片逐项对应的用途；先查 capabilities，不支持时不得偷偷改成普通参考'},requiresAudio:{type:'boolean',description:'要求实际产物有原生音轨；未知能力或无声结果拒绝采用'},clientRequestId:{type:'string',description:'同一步骤使用稳定 ID，重试不得用新 ID 偷偷重复付费'},allowImageUpload:{type:'boolean',description:'只有用户明确允许本次上传所选图片时才为 true'},parameters:{type:'object',additionalProperties:true}},output,
       async execute(args,exec){
         const sessionId=owner(exec),context={callerSessionId:sessionId};exec.signal.throwIfAborted();
-        if(args.action==='generate'||args.action==='list'||args.action==='capabilities'){
+        if(['generate','batch','list','capabilities'].includes(args.action)){
           const located=await hub.resolveProject({...args,signal:exec.signal},sessionId);
           if(args.action==='capabilities')return json({kind:'video-studio',projectId:located.projectId,capabilities:await hub.call('media.capabilities',{...args,projectId:located.projectId},context)});
           if(args.action==='list')return json({kind:'video-studio',projectId:located.projectId,...await hub.call<Input>('media.list',{projectId:located.projectId},context)});
           if(!Number.isSafeInteger(args.expectedRevision))throw new Error('生成媒体需要 expectedRevision，请先读取工程');
-          return startMedia(ctx,hub,{projectId:located.projectId,expectedRevision:args.expectedRevision,operation:args.operation,prompt:args.prompt,modelId:args.modelId,connectionId:args.connectionId,shotId:args.shotId,imageAssetIds:args.imageAssetIds,allowImageUpload:args.allowImageUpload,parameters:args.parameters,referenceRoles:args.referenceRoles,requiresAudio:args.requiresAudio,clientRequestId:args.clientRequestId},exec);
+          return startMedia(ctx,hub,args.action==='batch'?{projectId:located.projectId,expectedRevision:args.expectedRevision,batchId:args.batchId,items:args.items}:{...args,projectId:located.projectId},exec);
         }
         if(!['get','cancel','pause','retry','apply'].includes(args.action))throw new Error('媒体任务操作无效');
         const task=await hub.call<MediaTask>('media.'+args.action,{taskId:args.taskId,...(args.projectId?{projectId:args.projectId}:{}),expectedRevision:args.expectedRevision},context);

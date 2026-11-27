@@ -72,6 +72,24 @@ export function findBrowserExecutable(options:ToolEnvironmentOptions={}):string 
   return [...new Set(candidates)].find(file=>isExecutable(file,platform))??'';
 }
 
+export function findBlenderExecutable(options:ToolEnvironmentOptions={}):string {
+  const {platform,paths,environment,directories,isExecutable}=context(options);
+  const candidates=directories.map(folder=>paths.join(folder,platform==='win32'?'blender.exe':'blender'));
+  if(platform==='win32'){
+    const roots=['PROGRAMFILES','PROGRAMFILES(X86)','LOCALAPPDATA'].map(environment).filter(Boolean);
+    for(const version of ['5.2','5.1','5.0','4.5','4.4','4.3','4.2','4.1','4.0','3.6']){
+      for(const root of roots)candidates.push(paths.join(root,'Blender Foundation',`Blender ${version}`,'blender.exe'));
+    }
+  }else if(platform==='darwin'){
+    const home=environment('HOME');
+    for(const root of ['/Applications',...(home?[paths.join(home,'Applications')]:[])])candidates.push(paths.join(root,'Blender.app','Contents','MacOS','Blender'));
+    candidates.push('/opt/homebrew/bin/blender','/usr/local/bin/blender');
+  }else if(platform==='linux'){
+    candidates.push('/usr/local/bin/blender','/usr/bin/blender','/snap/bin/blender','/opt/blender/blender');
+  }
+  return [...new Set(candidates)].find(file=>isExecutable(file,platform))??'';
+}
+
 export function inspectToolEnvironment(settings:Partial<EnvironmentSettings>={},options:ToolEnvironmentOptions={}):EnvironmentInfo {
   const {platform,isExecutable}=context(options);
   // Explicit paths are retained even when invalid, so the environment page can
@@ -79,9 +97,11 @@ export function inspectToolEnvironment(settings:Partial<EnvironmentSettings>={},
   const browserPath=settings.browserPath||findBrowserExecutable(options);
   const ffmpegPath=settings.ffmpegPath||findToolExecutable('ffmpeg',options);
   const ffprobePath=settings.ffprobePath||findToolExecutable('ffprobe',options);
-  return {browserPath,ffmpegPath,ffprobePath,...(settings.maxVideoBytes!==undefined?{maxVideoBytes:settings.maxVideoBytes}:{}),
+  const blenderPath=settings.blenderPath||findBlenderExecutable(options);
+  return {browserPath,ffmpegPath,ffprobePath,blenderPath,...(settings.maxVideoBytes!==undefined?{maxVideoBytes:settings.maxVideoBytes}:{}),
     browserAvailable:!!browserPath&&isExecutable(browserPath,platform),
     ffmpegAvailable:!!ffmpegPath&&isExecutable(ffmpegPath,platform),
     ffprobeAvailable:!!ffprobePath&&isExecutable(ffprobePath,platform),
+    blenderAvailable:!!blenderPath&&isExecutable(blenderPath,platform),
     platform,localSpeechAvailable:platform==='darwin'&&isExecutable('/usr/bin/say',platform)};
 }

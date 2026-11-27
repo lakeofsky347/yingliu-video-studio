@@ -25,6 +25,7 @@ export const PROTOCOL_CATALOG: readonly ProtocolInfo[] = [
   {id:'volc-video', kind:'video', label:'火山方舟 Seedance', vendor:'火山引擎', summary:'POST /contents/generations/tasks。Base URL 含 /api/v3。', baseUrl:'https://ark.cn-beijing.volces.com/api/v3', modelDiscovery:'volc'},
   {id:'dashscope-video', kind:'video', label:'百炼万相', vendor:'阿里云', summary:'异步 video-synthesis。国际站把域名换成 dashscope-intl.aliyuncs.com。', baseUrl:'https://dashscope.aliyuncs.com/api/v1', modelDiscovery:'dashscope'},
   {id:'gemini-video', kind:'video', label:'Gemini Veo', vendor:'Google', summary:'POST /models/{model}:predictLongRunning，再查询返回的 operation。', baseUrl:'https://generativelanguage.googleapis.com/v1beta', modelDiscovery:'gemini'},
+  {id:'replicate-lipsync',kind:'video',label:'Replicate 口型同步',vendor:'Replicate',summary:'视频与配音口型同步。模型 ID 使用 sync/lipsync-2。',baseUrl:'https://api.replicate.com/v1'},
   {id:'speech', kind:'speech', label:'OpenAI Speech', vendor:'OpenAI 兼容', summary:'配音。POST /audio/speech。', baseUrl:'https://api.openai.com/v1', modelDiscovery:'openai'},
 ];
 

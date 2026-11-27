@@ -1,5 +1,5 @@
 import type { ModelProtocol, ResolvedModel } from './contracts.ts';
-import type { MediaOperation } from '../jobs/contracts.ts';
+import { hasImageInputs,mediaOutput,type MediaOperation } from '../jobs/contracts.ts';
 
 export type MediaReferenceRole = 'reference' | 'first_frame' | 'last_frame' | 'character' | 'style' | 'layout';
 export interface MediaReferenceInput { type:'image'|'video'|'audio'; dataUrl?:string; role?:string }
@@ -10,6 +10,7 @@ export interface MediaCapabilityRequest {
   imageAssetIds?:readonly string[];
   inputs?:readonly MediaReferenceInput[];
   referenceRoles?:readonly string[];
+  videoAssetId?:string;audioAssetId?:string;
   /** A requirement, not a provider toggle. Unknown native audio support fails closed. */
   requiresAudio?:boolean;
 }
@@ -20,7 +21,7 @@ export interface MediaCapabilities {
   duration?:{integer:boolean;min:number;max:number;values?:number[]};
   aspectRatios?:string[];
   sizes?:string[];
-  audio:{input:false;output:'unknown'|'native';controllable:false};
+  audio:{input:boolean;output:'unknown'|'native';controllable:false};
   verification:{level:'adapter-contract'|'documentation-checked';modelRecognized:boolean;realProviderTested:false;checkedAt:string;sources:string[];notes:string[]};
   recovery:{lookupByClientRequestId:boolean;automaticResubmit:false};
 }
@@ -36,9 +37,13 @@ const VOLC_DOC='https://docs.volcengine.com/docs/ark/video-generation-tutorial?l
 const WAN_DOC='https://help.aliyun.com/en/model-studio/legacy-wan-text-to-video-api-reference';
 const VEO_DOC='https://ai.google.dev/gemini-api/docs/veo';
 const WAN_SIZES={low:['832x480','480x832','624x624'],medium:['1280x720','720x1280','960x960','1088x832','832x1088'],high:['1920x1080','1080x1920','1440x1440','1632x1248','1248x1632']};
+const FIRST_LAST_SEEDANCE='doubao-seedance-2-5-260628';
+const GEMINI_COMPOSE_MODELS=new Set(['gemini-2.5-flash-image','gemini-3-pro-image-preview','gemini-3.1-flash-image']);
 function declaredCapabilities(cap:MediaCapabilities,resolved:ResolvedModel):MediaCapabilities {
-  cap.operations=cap.operations.filter(op=>resolved.model.inputModalities.includes('text')&&resolved.model.outputModalities.includes(op==='text-to-image'?'image':'video')&&(op!=='image-to-video'||resolved.model.inputModalities.includes('image')));
-  if(!cap.operations.includes('image-to-video')){cap.references.max=0;cap.references.roles=[];}
+  const input=resolved.model.inputModalities;
+  cap.operations=cap.operations.filter(op=>resolved.model.outputModalities.includes(mediaOutput(op))&&
+    (op==='lip-sync-video'?input.includes('video')&&input.includes('audio'):input.includes('text')&&(!hasImageInputs(op)||input.includes('image'))));
+  if(!cap.operations.some(hasImageInputs)){cap.references.max=0;cap.references.roles=[];}
   return cap;
 }
 
@@ -47,7 +52,19 @@ export function getMediaCapabilities(resolved:ResolvedModel):MediaCapabilities {
   const {protocol}=resolved.connection,model=resolved.model.model;
   const result:MediaCapabilities={protocol,model,operations:[],references:{max:0,roles:[],defaultRole:'first_frame'},parameters:[],audio:{input:false,output:'unknown',controllable:false},verification:{level:'adapter-contract',modelRecognized:false,realProviderTested:false,checkedAt:'2026-11-06',sources:[],notes:['仅声明适配器可编码的请求；未验证当前账号、地区、端点或真实生成质量。']},recovery:{lookupByClientRequestId:protocol==='video-gateway',automaticResubmit:false}};
   if(protocol==='images'||protocol==='gemini-image'){
-    result.operations=['text-to-image'];result.parameters=protocol==='images'?[...IMAGE_PARAMETERS]:[];return declaredCapabilities(result,resolved);
+    result.operations=['text-to-image'];result.parameters=protocol==='images'?[...IMAGE_PARAMETERS]:[];
+    if(protocol==='gemini-image'&&GEMINI_COMPOSE_MODELS.has(model)){
+      result.operations.push('image-compose');result.references={max:3,roles:['reference'],defaultRole:'reference'};
+      result.verification.sources=['https://ai.google.dev/gemini-api/docs/image-generation'];
+    }
+    return declaredCapabilities(result,resolved);
+  }
+  if(protocol==='replicate-lipsync'){
+    if(model==='sync/lipsync-2'){
+      result.operations=['lip-sync-video'];result.audio={input:true,output:'native',controllable:false};
+      result.verification.sources=['https://replicate.com/sync/lipsync-2'];
+    }
+    return declaredCapabilities(result,resolved);
   }
   if(!['video-gateway','openai-videos','kling-video','minimax-video','volc-video','dashscope-video','gemini-video'].includes(protocol))return result;
   result.operations=['text-to-video','image-to-video'];
@@ -81,7 +98,11 @@ export function getMediaCapabilities(resolved:ResolvedModel):MediaCapabilities {
       result.aspectRatios=['16:9','4:3','1:1','3:4','9:16','21:9','adaptive'];
       result.verification.modelRecognized=true;result.verification.level='documentation-checked';
     }
-    result.verification.notes.push('durationSeconds、aspectRatio、seed 映射为 duration、ratio、seed；未实现多图、首尾帧或音频控制。');
+    if(model===FIRST_LAST_SEEDANCE){
+      result.operations.push('first-last-frame-video');
+      result.references.max=2;result.references.roles.push('last_frame');
+      result.verification.sources.push('https://docs.volcengine.com/docs/ark/seedance-2-5');
+    }
   }
   if(protocol==='gemini-video'){
     result.aspectRatios=['16:9','9:16'];
@@ -116,22 +137,35 @@ export function validateMediaRequest(resolved:ResolvedModel,request:MediaCapabil
   const cap=getMediaCapabilities(resolved),fail=(message:string):never=>{throw new MediaCapabilityError(message);};
   if(!resolved.connection.enabled||!resolved.model.enabled||resolved.model.connectionId!==resolved.connection.id)fail('模型连接已停用或与模型不匹配');
   if(!cap.operations.includes(request.operation))fail('所选模型/协议不支持此生成操作：'+request.operation);
-  const output=request.operation==='text-to-image'?'image':'video';
-  if(!resolved.model.outputModalities.includes(output)||!resolved.model.inputModalities.includes('text'))fail('所选模型未声明所需文字输入或媒体输出能力');
+  const output=mediaOutput(request.operation);
   if(request.inputs!==undefined&&!Array.isArray(request.inputs)||request.imageAssetIds!==undefined&&!Array.isArray(request.imageAssetIds))fail('参考素材列表无效');
   if(request.imageAssetIds&&(request.imageAssetIds.some(id=>typeof id!=='string'||!id)||new Set(request.imageAssetIds).size!==request.imageAssetIds.length))fail('参考资产 ID 必须有效且不重复');
-  const count=request.inputs?.length??request.imageAssetIds?.length??0;
-  if(request.inputs&&request.imageAssetIds&&request.inputs.length!==request.imageAssetIds.length)fail('参考素材数量与资产列表不一致');
-  if(count>cap.references.max)fail('当前适配器最多支持 '+cap.references.max+' 张参考图片；不会只取首图');
-  if(request.operation==='image-to-video'&&(!count||!resolved.model.inputModalities.includes('image')))fail('图生视频需要参考图片及模型图片输入能力');
-  if(request.operation!=='image-to-video'&&count)fail('此操作不支持参考图片');
+  const lipSync=request.operation==='lip-sync-video';
+  const count=lipSync?request.imageAssetIds?.length??0:request.inputs?.length??request.imageAssetIds?.length??0;
+  if(lipSync){
+    if(count||request.referenceRoles?.length)fail('口型同步仅接受视频和配音');
+    if(request.inputs){
+      if(request.inputs.length!==2||request.inputs[0]?.type!=='video'||request.inputs[1]?.type!=='audio'||
+        !/^data:video\/mp4;base64,[A-Za-z0-9+/]+={0,2}$/.test(request.inputs[0].dataUrl??'')||
+        !/^data:audio\/wav;base64,[A-Za-z0-9+/]+={0,2}$/.test(request.inputs[1].dataUrl??''))fail('口型同步需要有效的 MP4 视频和 WAV 配音');
+    }else if(!request.videoAssetId||!request.audioAssetId||request.videoAssetId===request.audioAssetId)fail('口型同步需要选择视频与配音');
+  }else if(request.videoAssetId!==undefined||request.audioAssetId!==undefined)fail('此操作不支持视频或音频参考');
+  if(!lipSync&&request.inputs&&request.imageAssetIds&&request.inputs.length!==request.imageAssetIds.length)fail('参考素材数量与资产列表不一致');
+  const max=request.operation==='image-to-video'&&cap.protocol!=='video-gateway'?1:cap.references.max;
+  if(count>max)fail('当前适配器最多支持 '+max+' 张参考图片；不会只取首图');
+  if(hasImageInputs(request.operation)&&!count)fail('请选择参考图片');
+  if(!hasImageInputs(request.operation)&&count)fail('此操作不支持参考图片');
+  if(request.operation==='image-compose'&&count<2)fail('多图融合需要至少两张参考图片');
+  if(request.operation==='first-last-frame-video'&&count!==2)fail('首尾帧生成需要恰好两张参考图片');
   if(request.referenceRoles!==undefined&&(!Array.isArray(request.referenceRoles)||request.referenceRoles.length!==count))fail('参考图片角色必须与图片逐项对应');
   for(let i=0;i<count;i++){
     const input=request.inputs?.[i];
     if(request.inputs&&(!input||typeof input!=='object'||input.type!=='image'))fail('当前适配器只支持有效的图片参考输入，不支持视频或音频参考');
     if(input?.role&&request.referenceRoles?.[i]&&input.role!==request.referenceRoles[i])fail('参考图片角色声明冲突');
     const role=input?.role??request.referenceRoles?.[i]??cap.references.defaultRole;
-    if(typeof role!=='string'||!cap.references.roles.includes(role as MediaReferenceRole))fail('当前适配器不支持参考角色：'+String(role));
+    if(typeof role!=='string'||!cap.references.roles.includes(role as MediaReferenceRole)||
+      request.operation==='first-last-frame-video'&&role!==(i===0?'first_frame':'last_frame')||
+      request.operation==='image-to-video'&&cap.protocol!=='video-gateway'&&role!=='first_frame')fail('当前适配器不支持参考角色：'+String(role));
     if(input&&(typeof input.dataUrl!=='string'||!/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(input.dataUrl)))fail('参考图片必须是 PNG、JPEG 或 WebP Data URL');
   }
   if(request.requiresAudio!==undefined&&typeof request.requiresAudio!=='boolean')fail('音频要求须为开关');
@@ -161,7 +195,7 @@ export function validateMediaRequest(resolved:ResolvedModel,request:MediaCapabil
   if(cap.sizes&&p.width!==undefined&&!cap.sizes.includes(p.width+'x'+p.height))fail('分辨率不在当前模型支持范围');
   if(cap.protocol==='openai-videos'&&p.aspectRatio!==undefined&&p.width!==undefined){const [w,h]=String(p.aspectRatio).split(':').map(Number);if(Number(p.width)*h! !==Number(p.height)*w!)fail('画幅与明确分辨率冲突，请只指定一致的尺寸');}
   if(cap.protocol==='kling-video'&&request.operation==='image-to-video'&&p.aspectRatio!==undefined)fail('当前可灵图生视频适配器未验证画幅控制，请由首帧确定画幅');
-  if(cap.protocol==='volc-video'&&cap.model==='doubao-seedance-2-5-260628'&&request.operation==='image-to-video'&&p.aspectRatio!==undefined&&p.aspectRatio!=='adaptive')fail('Seedance 2.5 首帧生视频只支持 adaptive 画幅');
+  if(cap.protocol==='volc-video'&&cap.model===FIRST_LAST_SEEDANCE&&hasImageInputs(request.operation)&&p.aspectRatio!==undefined&&p.aspectRatio!=='adaptive')fail('Seedance 2.5 首帧生视频只支持 adaptive 画幅');
   if(cap.protocol==='dashscope-video'&&p.seed!==undefined&&(Number(p.seed)<0||Number(p.seed)>2147483647))fail('万相 seed 须为 0–2147483647');
   return cap;
 }

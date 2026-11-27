@@ -9,7 +9,7 @@ import { modelSecrets } from './platform.ts';
 import { ModelRegistry } from '../models/registry.ts';
 import type { ConnectionInput,ModelInput,ModelRole } from '../models/contracts.ts';
 import { MediaTaskService } from '../jobs/media-tasks.ts';
-import type { MediaRequest,MediaTask } from '../jobs/contracts.ts';
+import { mediaOutput,type MediaRequest,type MediaTask } from '../jobs/contracts.ts';
 import { WorkflowService } from '../workflows/service.ts';
 import type { WorkflowRequest } from '../workflows/contracts.ts';
 import {getMediaCapabilities} from '../models/capabilities.ts';
@@ -58,6 +58,7 @@ export class ProjectHub {
       authorizeOperation:async(id,operation,shotId,fingerprint)=>(await this.service(id)).authorizeMediaOperation(operation,shotId,fingerprint),
       submitAuthorized:async(id,operation,shotId,fingerprint,submit)=>(await this.service(id)).submitAuthorizedMedia(operation,shotId,fingerprint,submit),
       readImage:async(id,assetId,shotId)=>(await this.service(id)).readMediaImage(assetId,shotId),
+      readLipSyncAsset:async(id,assetId,kind,shotId)=>(await this.service(id)).readLipSyncAsset(assetId,kind,shotId),
       validateArtifact:async(path,mime,id,signal)=>(await this.service(id)).validateMediaArtifact(path,mime,signal),
       applyResult:async input=>{const service=await this.service(input.projectId),result=await service.applyMediaResult(input);await this.remember(await service.snapshot());return result;},
     });
@@ -331,19 +332,26 @@ export class ProjectHub {
   }
   private async mediaRoute(endpoint:string,data:Input,context:CallContext):Promise<unknown>{
     let task:MediaTask|undefined;
-    if(!['media.generate','media.list','media.capabilities'].includes(endpoint)){if(typeof data.taskId!=='string')throw new Error('缺少媒体任务 ID');task=await this.media.get(data.taskId);if(data.projectId!==undefined&&data.projectId!==task.projectId)throw new Error('媒体任务不属于此工程');}
+    if(!['media.generate','media.batch','media.authorize-upload','media.list','media.capabilities'].includes(endpoint)){if(typeof data.taskId!=='string')throw new Error('缺少媒体任务 ID');task=await this.media.get(data.taskId);if(data.projectId!==undefined&&data.projectId!==task.projectId)throw new Error('媒体任务不属于此工程');}
     const projectId=task?.projectId??(typeof data.projectId==='string'?data.projectId:context.callerSessionId?(await this.sessionRouting(context.callerSessionId)).projectId:this.index.selected);
     if(!projectId)throw new Error('请先选择媒体任务所属工程');await this.assertMediaAccess(projectId,context.callerSessionId);
     await this.service(projectId);
     if(endpoint==='media.list')return {tasks:await this.media.list(projectId)};
-    if(endpoint==='media.capabilities')return getMediaCapabilities(await this.models.resolve({role:data.operation==='text-to-image'?'image':'video',...(typeof data.modelId==='string'?{modelId:data.modelId}:{}),...(typeof data.connectionId==='string'?{connectionId:data.connectionId}:{})}));
-    if(endpoint==='media.generate'){
-      const request:MediaRequest={projectId,expectedRevision:data.expectedRevision as number,operation:data.operation as MediaRequest['operation'],prompt:data.prompt as string,
-        ...(typeof data.shotId==='string'?{shotId:data.shotId}:{}),...(typeof data.modelId==='string'?{modelId:data.modelId}:{}),...(typeof data.connectionId==='string'?{connectionId:data.connectionId}:{}),
-        ...(data.imageAssetIds!==undefined?{imageAssetIds:data.imageAssetIds as string[]}:{}),allowImageUpload:data.allowImageUpload===true,
-        ...(data.referenceRoles!==undefined?{referenceRoles:data.referenceRoles as string[]}:{}),...(data.requiresAudio!==undefined?{requiresAudio:data.requiresAudio as boolean}:{}),...(typeof data.clientRequestId==='string'?{clientRequestId:data.clientRequestId}:{}),
-        ...(data.parameters!==undefined?{parameters:record(data.parameters) as MediaRequest['parameters']}:{}),...(context.callerSessionId?{ownerSessionId:context.callerSessionId}:{})};
-      return this.media.generate(request);
+    if(endpoint==='media.capabilities')return getMediaCapabilities(await this.models.resolve({role:mediaOutput(data.operation as MediaRequest['operation']),...(typeof data.modelId==='string'?{modelId:data.modelId}:{}),...(typeof data.connectionId==='string'?{connectionId:data.connectionId}:{})}));
+    const request=(item:Input):MediaRequest=>({projectId,expectedRevision:data.expectedRevision as number,operation:item.operation as MediaRequest['operation'],prompt:item.prompt as string,
+      ...(typeof item.shotId==='string'?{shotId:item.shotId}:{}),...(typeof item.modelId==='string'?{modelId:item.modelId}:{}),...(typeof item.connectionId==='string'?{connectionId:item.connectionId}:{}),
+      ...(item.imageAssetIds!==undefined?{imageAssetIds:item.imageAssetIds as string[]}:{}),allowImageUpload:item.allowImageUpload===true,
+      ...(item.referenceRoles!==undefined?{referenceRoles:item.referenceRoles as string[]}:{}),...(item.requiresAudio!==undefined?{requiresAudio:item.requiresAudio as boolean}:{}),...(typeof item.clientRequestId==='string'?{clientRequestId:item.clientRequestId}:{}),
+      ...(typeof item.videoAssetId==='string'?{videoAssetId:item.videoAssetId}:{}),...(typeof item.audioAssetId==='string'?{audioAssetId:item.audioAssetId}:{}),...(typeof item.uploadConsentId==='string'?{uploadConsentId:item.uploadConsentId}:{}),
+      ...(item.parameters!==undefined?{parameters:record(item.parameters) as MediaRequest['parameters']}:{}),...(context.callerSessionId?{ownerSessionId:context.callerSessionId}:{})});
+    if(endpoint==='media.generate')return this.media.generate(request(data));
+    if(endpoint==='media.authorize-upload'){
+      if(context.callerSessionId)throw new Error('请在工作台确认要上传的素材及接收服务');
+      return this.media.authorizeUpload(request(data));
+    }
+    if(endpoint==='media.batch'){
+      if(!Array.isArray(data.items)||data.items.length>8)throw new Error('一批需要选择同一工程中的 1–8 个不同镜头');
+      return {tasks:await this.media.generateBatch(String(data.batchId??''),data.items.map(item=>request(record(item))))};
     }
     if(endpoint==='media.get')return task;
     if(endpoint==='media.pause')return this.media.pause(task!.id);
@@ -407,7 +415,7 @@ export class ProjectHub {
           ...(directorPlan.continuityLog?{continuityLog:directorPlan.continuityLog.filter(entry=>ids.has(entry.shotId))}:{})};
       }
       const request:WorkflowRequest={projectId,expectedRevision:data.expectedRevision as number,prompt:data.prompt as string,visual:data.visual as WorkflowRequest['visual'],narration:data.narration===true,review:data.review===true,allowImageUpload:data.allowImageUpload===true,
-        ...(data.filmKind!==undefined?{filmKind:data.filmKind as WorkflowRequest['filmKind']}:{}),...(data.audioStrategy!==undefined?{audioStrategy:data.audioStrategy as WorkflowRequest['audioStrategy']}:{}),...(directorPlan!==undefined?{directorPlan}:{}),
+        ...(data.filmKind!==undefined?{filmKind:data.filmKind as WorkflowRequest['filmKind']}:{}),...(data.audioStrategy!==undefined?{audioStrategy:data.audioStrategy as WorkflowRequest['audioStrategy']}:{}),...(directorPlan!==undefined?{directorPlan}:{}),...(directorApproval?{directorApproval}:{}),
         ...(data.shotIds!==undefined?{shotIds:data.shotIds as string[]}:{}),...(data.imageAssetIds!==undefined?{imageAssetIds:data.imageAssetIds as string[]}:{}),...(data.maxTasks!==undefined?{maxTasks:data.maxTasks as number}:{}),...(data.maxCost!==undefined?{maxCost:data.maxCost as number}:{}),
         textRoute:{provider:String(route.provider??''),model:String(route.model??'')},...(context.callerSessionId?{ownerSessionId:context.callerSessionId}:{})};
       if(!request.textRoute!.provider||!request.textRoute!.model)throw new Error('请在工作台选择 DSH 创作模型');return this.workflows.run(request);
@@ -487,7 +495,9 @@ export class ProjectHub {
         return {ok:true,value:await this.decorate(await this.service(),this.selectedSession)};
       }
       const service=await this.service(id);
-      if(endpoint.startsWith('director.document.')||endpoint.startsWith('quality.')||endpoint.startsWith('review.')||endpoint==='subtitles.export'||endpoint==='audio.sfx'){
+      if(endpoint.startsWith('previz.')&&context.callerSessionId&&endpoint!=='previz.get')throw new Error('请在工作台渲染或确认白模预演');
+      if(endpoint==='environment'&&data.blenderPath!==undefined&&context.callerSessionId)throw new Error('请在工作台配置 Blender');
+      if(endpoint.startsWith('director.document.')||endpoint.startsWith('quality.')||endpoint.startsWith('review.')||endpoint.startsWith('previz.')||endpoint==='subtitles.export'||endpoint==='audio.sfx'){
         const projectId=(await service.snapshot()).project?.id;if(!projectId)throw new Error('请先选择工程');await this.assertMediaAccess(projectId,context.callerSessionId);
         if(endpoint==='director.document.approve'&&context.callerSessionId)throw Object.assign(new Error('工程导演计划须由用户在工作台审阅后批准，智能体不能代签'),{code:'DIRECTOR_APPROVAL_REQUIRED'});
       }
@@ -505,8 +515,10 @@ export class ProjectHub {
         this.focus={...(typeof data.shotId==='string'?{shotId:data.shotId}:{}),...(typeof data.frame==='number'?{frame:Math.max(0,Math.floor(data.frame))}:{})};
         return {ok:true,value:await this.decorate(service,sessionId)};
       }
-      const result=await service.rpc(endpoint,endpoint.startsWith('review.')||endpoint==='project.pack'?{...data,signal:context.signal}:data);if(!result.ok)return result;
+      const result=await service.rpc(endpoint,endpoint.startsWith('review.')||endpoint==='project.pack'||endpoint==='previz.render'?{...data,signal:context.signal}:data);if(!result.ok)return result;
       if(['source','inspect','thumbnails','history','tasks','jobs','quality.check','quality.last','review.frames','review.cuts','subtitles.export','project.pack'].includes(endpoint))return result;
+      if(endpoint==='previz.get'||endpoint==='previz.cancel')return result;
+      if(endpoint.startsWith('director.document.')||endpoint.startsWith('previz.')){await this.remember(await service.snapshot());return result;}
       if(endpoint==='catalog')this.providers=(result.value as StudioSnapshot).providers;
       if(endpoint==='tts'){const snapshot=result.value as StudioSnapshot;this.tts=snapshot.tts;this.ttsConfigured=snapshot.ttsConfigured;}
       await this.remember(await service.snapshot());return {ok:true,value:await this.decorate(endpoint==='rename'&&id!==this.index.selected?await this.service():service,sessionId)};

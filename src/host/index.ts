@@ -14,7 +14,8 @@ export function apply(ctx:HostContext,config:{baseDirectory?:string}={}):void{
     'models.list','models.discover','models.connection.save','models.connection.remove','models.model.save','models.model.remove','models.role.bind','models.check',
     'director.document.get','director.document.save','director.document.approve','quality.check','quality.last','audio.sfx','thumbnails','review.frames','review.cuts','subtitles.export','project.pack','project.unpack',
     'production.set','director.rules','director.validate','director.compile','director.patch',
-    'media.capabilities','media.generate','media.list','media.get','media.cancel','media.pause','media.retry','media.apply','video.clip.save','video.clip.remove','video.clip.extract',
+    'previz.get','previz.render','previz.approve','previz.cancel',
+    'media.capabilities','media.generate','media.authorize-upload','media.batch','media.list','media.get','media.cancel','media.pause','media.retry','media.apply','video.clip.save','video.clip.remove','video.clip.extract',
     'workflows.run','workflows.list','workflows.get','workflows.preview','workflows.pause','workflows.retry','workflows.apply']){
     const method=`video-studio/${endpoint}`;
     ctx.effect(()=>ctx.connection.fetch.register({path:`/api/${method}`,methods:['POST'],requestBody:'buffered',async fetch(request){

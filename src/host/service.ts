@@ -1,7 +1,7 @@
 import {defaultTtsSettings,validateTtsSettings} from '../shared/tts-capability.ts';
 import {createHash,randomUUID} from 'node:crypto';
-import {readFile,writeFile,mkdir,readdir,rename,open,rm} from 'node:fs/promises';
-import {resolve,join,relative} from 'node:path';
+import {readFile,mkdir,readdir,rename,open,rm} from 'node:fs/promises';
+import {resolve,join,relative,isAbsolute} from 'node:path';
 import {homedir} from 'node:os';
 import {createProject,compileSpec,defaultSceneSource,updateShot,updateTarget,validateProject,reorderShots} from '../core/index.ts';
 import {formatAss,formatSrt,projectSubtitles} from '../core/subtitles.ts';
@@ -19,10 +19,14 @@ import {inspectGeneratedMedia,readProjectImage} from '../media/inspect.ts';
 import {deconstructReferenceVideo} from '../media/deconstruct.ts';
 import {applyProductionPolicy,assertProductionOperation,assertProductionComposition,productionPolicyFingerprint,productionMode,defaultProductionPolicy,assetOrigin,usesVideoVisual,usesCodeVisual} from '../core/production-policy.ts';
 import type {ProductionPolicy} from '../shared/types.ts';
-import type {MediaOperation} from '../jobs/contracts.ts';
+import {mediaOutput,type MediaOperation} from '../jobs/contracts.ts';
+import {mediaSignature} from '../jobs/download.ts';
 import {writeDurableFile} from '../shared/durable-file.ts';
 import {taskFailure,sanitizeTaskFailure} from '../shared/task-diagnostic.ts';
 import {readDirectorDocument,readPreviousDirectorApproval,saveDirectorDocument,approveDirectorDocument,validateProjectDirectorPlan} from '../director/document.ts';
+import {approvedPrevizScope,matchingPrevizRecord,PREVIZ_EXTENSION,previewAssets,projectPrevizRecords} from '../director/previz.ts';
+import {previzAssetIds,type PrevizRecord,type PrevizScope,type PrevizStatus} from '../shared/previz.ts';
+import {renderBlenderPreviz} from './blender.ts';
 import {localQualityFrames,localExportQuality,localQualityHash,type LocalQualityReport,type LocalQualityFrame} from '../workflows/local-quality.ts';
 import {synthesizeLocalSfx} from '../media/local-sfx.ts';
 import {syncDirectory} from './directory-sync.ts';
@@ -52,6 +56,7 @@ export class StudioService {
   private static speechSettingsQueues=new Map<string,Promise<void>>();
   private project:VideoProject|null=null;private root:string|null=null;
   private task:RecordedTask|null=null;private controller?:AbortController;private job?:Promise<void>;
+  private previzRun?:{projectId:string;shotId:string;controller:AbortController;result:Promise<PrevizRecord>};
   private commands:Promise<unknown>=Promise.resolve();
   private providers:ProviderGroup[]=[];private previewUrl:string|null=null;private previewRevision:number|null=null;private assetBaseUrl:string|null=null;
   private settings:EnvironmentSettings;private initialized:Promise<void>;private disposed=false;
@@ -81,7 +86,7 @@ export class StudioService {
   async inspectMediaProject(){await this.initialized;const {project}=this.required();return {revision:project.revision,shotIds:project.shots.map(shot=>shot.id)};}
   async authorizeMediaOperation(operation:MediaOperation,shotId?:string,expectedFingerprint?:string):Promise<string>{
     await this.initialized;const {project}=this.required();
-    assertProductionOperation(project,operation==='text-to-image'?'image':'video',shotId?[shotId]:undefined);
+    assertProductionOperation(project,mediaOutput(operation),shotId?[shotId]:undefined);
     const fingerprint=productionPolicyFingerprint(project);
     if(expectedFingerprint!==undefined&&expectedFingerprint!==fingerprint)throw Object.assign(new Error('制作模式或许可已变化，旧任务不能继续提交或自动采用'),{code:'PRODUCTION_POLICY_CHANGED',submissionUncertain:false});
     return fingerprint;
@@ -108,6 +113,36 @@ export class StudioService {
     });
   }
   async readMediaImage(assetId:string,shotId?:string){await this.initialized;const {root,project}=this.required();return readProjectImage(root,project,assetId,shotId);}
+  async readLipSyncAsset(assetId:string,kind:'video'|'audio',shotId?:string){
+    await this.initialized;
+    const {root,project}=this.required(),asset=project.assets.find(item=>item.id===assetId&&item.kind===kind);
+    if(!asset?.path)throw new Error('口型同步素材不属于当前工程');
+    if(shotId){
+      const shot=project.shots.find(item=>item.id===shotId);
+      const attached=shot?.assetIds.includes(assetId)||shot?.referenceIds.includes(assetId)||
+        project.videoClips?.some(clip=>clip.shotId===shotId&&clip.assetId===assetId)||
+        project.audioClips?.some(clip=>(!clip.shotId||clip.shotId===shotId)&&clip.assetId===assetId);
+      if(!shot||!attached)throw new Error('口型同步素材未绑定到本轮镜头');
+    }
+    const file=await open(await projectPath(root,asset.path),'r');
+    const limit=32*1024*1024;
+    try{
+      const info=await file.stat();
+      if(!info.isFile()||info.size<12||info.size>limit)throw new Error('口型同步素材大小超出限制');
+      const bytes=Buffer.alloc(info.size+1);
+      let length=0;
+      while(length<bytes.length){
+        const {bytesRead}=await file.read(bytes,length,bytes.length-length,length);
+        if(!bytesRead)break;
+        length+=bytesRead;
+      }
+      if(length!==info.size)throw new Error('口型同步素材在读取期间发生变化');
+      const mime=kind==='video'&&mediaSignature(bytes)==='video/mp4'?'video/mp4'
+        :kind==='audio'&&bytes.toString('ascii',0,4)==='RIFF'&&bytes.toString('ascii',8,12)==='WAVE'?'audio/wav':undefined;
+      if(!mime)throw new Error('口型同步需要 MP4 视频和 WAV 配音');
+      return {bytes:bytes.subarray(0,length),mime};
+    }finally{await file.close();}
+  }
   async validateMediaArtifact(path:string,mimeType:string,signal?:AbortSignal){await this.initialized;return inspectGeneratedMedia(path,mimeType,this.settings,signal);}
   async applyMediaResult(input:Parameters<MediaProjectPort['applyResult']>[0]):Promise<{assetIds:string[];revision:number}>{
     await this.initialized;
@@ -519,9 +554,89 @@ export class StudioService {
     if(!checked.ok)throw renderCheckError(checked,checked.errors.map(e=>e.shotId?`镜头 ${e.shotId} 帧 ${e.frame??'?'}：${e.message}`:e.message).join('\n'));
     await this.enqueue(()=>{signal.throwIfAborted();this.assertRevision({expectedRevision:checkedProject.revision});return this.store.markSourceGood(root,shot);});
   }
+  private async previzHashes(root:string,assets:VideoProject['assets'],signal?:AbortSignal):Promise<PrevizRecord['mediaHashes']>{
+    return Promise.all(assets.map(async asset=>{
+      const main=await hashMediaFile(await projectPath(root,asset.path!),signal);
+      const original=asset.originalPath?await hashMediaFile(await projectPath(root,asset.originalPath),signal):undefined;
+      return {main,...(original?{original}:{})};
+    }));
+  }
+  private async getPrevizStatus(shotId:string):Promise<PrevizStatus>{
+    const {root,project}=this.required(),scope=approvedPrevizScope(project,shotId);
+    const record=scope&&matchingPrevizRecord(project,scope);
+    const rendering=this.previzRun?.projectId===project.id&&this.previzRun.shotId===shotId;
+    if(!record)return {scope,record:null,rendering};
+    const hashes=await this.previzHashes(root,previewAssets(project,record)!).catch(()=>null);
+    return {scope,record:hashes&&JSON.stringify(hashes)===JSON.stringify(record.mediaHashes)?record:null,rendering};
+  }
+  private assertPrevizScope(scope:PrevizScope|null,data:Partial<PrevizScope>):asserts scope is PrevizScope{
+    if(!scope)throw new Error('请先批准包含该镜头的导演计划');
+    if(scope.documentHash!==data.documentHash||scope.documentVersion!==data.documentVersion)throw Object.assign(new Error('导演计划已变化，请重新选择镜头'),{code:'REVISION_CONFLICT'});
+  }
+  private async runPreviz(data:Partial<PrevizScope>&{projectId?:string;expectedRevision?:number;spec?:unknown;signal?:AbortSignal}):Promise<PrevizRecord>{
+    const job=await this.enqueue(async()=>{
+      if(this.disposed)throw new Error('插件服务已停止');
+      if(this.previzRun)throw new Error('本工程已有白模预演正在渲染');
+      this.assertIdle();this.assertRevision(data,true);
+      const {root,project}=this.required();
+      if(data.projectId!==project.id)throw new Error('预演工程不匹配');
+      const scope=approvedPrevizScope(project,data.shotId??'');
+      this.assertPrevizScope(scope,data);
+      const controller=new AbortController();
+      const signal=data.signal instanceof AbortSignal?AbortSignal.any([data.signal,controller.signal]):controller.signal;
+      const settings={...this.settings};
+      const result=renderBlenderPreviz(data.spec,settings,signal).then(rendered=>this.enqueue(async()=>{
+        signal.throwIfAborted();
+        this.assertIdle();this.assertRevision(data,true);
+        const current=this.required();
+        if(current.root!==root||current.project.id!==project.id)throw new Error('预演工程不匹配');
+        this.assertPrevizScope(approvedPrevizScope(current.project,scope.shotId),scope);
+        const next=structuredClone(current.project),imported:VideoProject['assets']=[];
+        const label=next.shots.find(shot=>shot.id===scope.shotId)!.title.slice(0,100);
+        const add=async(bytes:Uint8Array,mime:string,name:string)=>{
+          signal.throwIfAborted();
+          const asset=await this.store.importAsset(root,{mime,name:label+' · '+name,dataBase64:Buffer.from(bytes).toString('base64')},settings,signal);
+          imported.push(asset);
+          asset.provenance={origin:'code_render',usage:'reference_only'};
+          next.assets.push(asset);
+          next.graph.positions[asset.id]=[60,80+(next.assets.length-1)*180];
+          return asset.id;
+        };
+        try{
+          const imageAssetId=await add(rendered.keyframePng,'image/png','白模关键帧.png');
+          const depthAssetId=rendered.depthPng?await add(rendered.depthPng,'image/png','深度参考.png'):undefined;
+          const videoAssetId=rendered.videoMp4?await add(rendered.videoMp4,'video/mp4','白模预演.mp4'):undefined;
+          const mediaHashes=await this.previzHashes(root,imported,signal);
+          const record:PrevizRecord={...scope,id:randomUUID(),projectId:project.id,imageAssetId,depthAssetId,videoAssetId,mediaHashes,
+            width:rendered.width,height:rendered.height,fps:rendered.fps,frameCount:rendered.frameCount,renderedAt:new Date().toISOString()};
+          next.extensions[PREVIZ_EXTENSION]=[...projectPrevizRecords(next).filter(item=>item.shotId!==scope.shotId),record];
+          signal.throwIfAborted();
+          await this.persist(next,{},'Blender 白模预演');
+          return record;
+        }catch(error){
+          const paths=imported.flatMap(asset=>[asset.path,asset.originalPath]).filter((path):path is string=>!!path);
+          await Promise.allSettled(paths.map(async path=>rm(await projectPath(root,path),{force:true})));
+          throw error;
+        }
+      }));
+      this.previzRun={projectId:project.id,shotId:scope.shotId,controller,result};
+      return this.previzRun;
+    });
+    try{return await job.result;}finally{if(this.previzRun===job)this.previzRun=undefined;}
+  }
   async rpc(endpoint:string,payload:unknown):Promise<RpcResult>{
     await this.initialized;
     if(endpoint==='cancel'){this.controller?.abort(new Error('用户已取消'));return {ok:true,value:await this.snapshot()};}
+    if(endpoint==='previz.cancel'){
+      const {projectId,shotId}=(payload??{}) as {projectId?:string;shotId?:string};
+      const run=this.previzRun;
+      if(run&&run.projectId===projectId&&run.shotId===shotId)run.controller.abort(new Error('Blender 预演已取消'));
+      return {ok:true,value:null};
+    }
+    if(endpoint==='previz.render'){
+      try{return {ok:true,value:await this.runPreviz((payload??{}) as Parameters<StudioService['runPreviz']>[0])};}
+      catch(error){return {ok:false,error:{code:error instanceof Error&&'code' in error?String(error.code):'PREVIZ_FAILED',message:error instanceof Error?error.message:String(error)}};}
+    }
     return this.enqueue(()=>this.performRpc(endpoint,payload));
   }
   private async performRpc(endpoint:string,payload:unknown):Promise<RpcResult>{
@@ -590,6 +705,19 @@ export class StudioService {
           await this.persist(next,{},saving?'保存工程导演计划':'批准工程导演计划');
           return {ok:true,value:{document,previousApprovedDocument}};
         }
+        case 'previz.get':return {ok:true,value:await this.getPrevizStatus(String(data.shotId??''))};
+        case 'previz.approve':{
+          this.assertIdle();this.assertRevision(data,true);
+          const {project}=this.required();
+          if(data.projectId!==project.id)throw new Error('预演工程不匹配');
+          const {scope,record}=await this.getPrevizStatus(String(data.shotId??''));
+          this.assertPrevizScope(scope,data);
+          if(!record||record.id!==data.renderId||JSON.stringify(previzAssetIds(record))!==JSON.stringify(data.assetIds))throw Object.assign(new Error('预演产物已变化，请重新审阅'),{code:'REVISION_CONFLICT'});
+          if(record.approvedAt)return {ok:true,value:record};
+          const next=structuredClone(project),approved={...record,approvedAt:new Date().toISOString()};
+          next.extensions[PREVIZ_EXTENSION]=projectPrevizRecords(next).map(item=>item.id===record.id?approved:item);
+          await this.persist(next,{},'确认镜头预演');
+          return {ok:true,value:approved};
         }
         case 'quality.check':{this.assertIdle();return {ok:true,value:await this.checkLocalQuality(structuredClone(this.required().project))};}
         case 'quality.last':{
@@ -686,12 +814,29 @@ export class StudioService {
           return this.performRpc(task.request.endpoint,{...task.request.payload,expectedRevision:data.expectedRevision,_retryOf:task.id});
         }
         case 'cancel':this.controller?.abort(new Error('用户已取消'));break;
-        case 'environment':this.assertIdle();if(data.maxVideoBytes!==undefined){if(!Number.isSafeInteger(data.maxVideoBytes)||data.maxVideoBytes<1||data.maxVideoBytes>512*1024*1024)throw new Error('单个视频文件上限须为 1 字节至 512 MiB');this.settings.maxVideoBytes=data.maxVideoBytes;}for(const key of ['browserPath','ffmpegPath','ffprobePath'] as const)if(data[key]!==undefined){if(typeof data[key]!=='string')throw new Error('执行文件路径须为字符串');this.settings[key]=data[key];}await mkdir(this.baseDirectory,{recursive:true});await writeFile(join(this.baseDirectory,'environment.json'),JSON.stringify(this.settings,null,2));break;
+        case 'environment':{
+          this.assertIdle();
+          const settings={...this.settings};
+          if(data.maxVideoBytes!==undefined){
+            if(!Number.isSafeInteger(data.maxVideoBytes)||data.maxVideoBytes<1||data.maxVideoBytes>512*1024*1024)throw new Error('单个视频文件上限须为 1 字节至 512 MiB');
+            settings.maxVideoBytes=data.maxVideoBytes;
+          }
+          for(const key of ['browserPath','ffmpegPath','ffprobePath','blenderPath'] as const){
+            const value=data[key];
+            if(value===undefined)continue;
+            if(typeof value!=='string')throw new Error('执行文件路径须为字符串');
+            if(key==='blenderPath'&&value&&!isAbsolute(value))throw new Error('Blender 路径须为空或使用绝对路径');
+            settings[key]=value;
+          }
+          await writeDurableFile(join(this.baseDirectory,'environment.json'),JSON.stringify(settings,null,2));
+          this.settings=settings;
+          break;
+        }
         case 'reveal':{await this.fileOpener.open(this.required().root,data.path==null?undefined:String(data.path));break;}
         default:throw new Error('未找到插件操作');
       }
       return {ok:true,value:await this.snapshot()};
     }catch(error){return {ok:false,error:{code:error instanceof Error&&'code' in error?String(error.code):'STUDIO_ERROR',message:error instanceof Error?error.message:String(error)}};}
   }
-  async dispose(){this.disposed=true;this.controller?.abort(new Error('插件已停止'));await this.fileOpener.close();await this.commands;await this.job;await this.commands;await this.speech.close();await this.renderer.close();}
+  async dispose(){this.disposed=true;const stopped=new Error('插件已停止');this.controller?.abort(stopped);this.previzRun?.controller.abort(stopped);await this.fileOpener.close();await this.commands;await this.job;await this.previzRun?.result.catch(()=>{});await this.commands;await this.speech.close();await this.renderer.close();}
 }
