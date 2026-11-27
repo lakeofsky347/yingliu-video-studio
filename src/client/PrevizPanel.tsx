@@ -110,7 +110,7 @@ export function PrevizPanel({controller,project,selectedShot,environment,busy,as
       </Field>
       <details className="vs-media-advanced">
         <summary>{t('编辑场景参数')}</summary>
-        <Field label={t('白模场景 JSON')} hint={t('用 camera 设置机位、焦距和运镜，用 objects 设置角色、走位和几何布景。深度参考按物体距离着色。')}>
+        <Field label={t('白模场景 JSON')} hint={t('用 camera 设置机位、焦距和运镜，用 objects 设置角色、走位和几何布景。深度图按每个像素可见表面的远近着色。')}>
           <textarea rows={11} maxLength={100000} spellCheck={false} value={scene} disabled={disabled} onChange={event=>setScene(event.target.value)}/>
         </Field>
         <button type="button" disabled={disabled} onClick={()=>setScene(initialScene)}>{t('恢复示例场景')}</button>

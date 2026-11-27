@@ -634,7 +634,7 @@ export const clientMainEnglish: Record<string, string> = {
   "白模关键帧与预演视频": "Whitebox keyframe and preview video",
   "编辑场景参数": "Edit scene parameters",
   "白模场景 JSON": "Whitebox scene JSON",
-  "用 camera 设置机位、焦距和运镜，用 objects 设置角色、走位和几何布景。深度参考按物体距离着色。": "Set camera placement, focal length, and travel in camera. Set actors, blocking, and scenery in objects. The depth reference shades objects by distance.",
+  "用 camera 设置机位、焦距和运镜，用 objects 设置角色、走位和几何布景。深度图按每个像素可见表面的远近着色。": "Set camera placement, focal length, and travel in camera. Set actors, blocking, and scenery in objects. The depth map encodes the distance of the visible surface at each pixel.",
   "恢复示例场景": "Reset example scene",
   "渲染白模预演": "Render previsualization",
   "正在渲染白模预演…": "Rendering previsualization…",

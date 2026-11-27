@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {mkdtemp,rm,writeFile} from 'node:fs/promises';
+import {mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,win32} from 'node:path';
+import {inflateSync} from 'node:zlib';
 import {createProject} from '../src/core/index.ts';
 import {approveDirectorDocument,saveDirectorDocument} from '../src/director/document.ts';
 import {DIRECTOR_RULESET_VERSION,type DirectorDocument,type DirectorPlan} from '../src/director/index.ts';
@@ -93,6 +94,17 @@ test('host renders, stores and confirms a real Blender previsualization for the 
     const saved=(await current()),assets=saved.project!.assets.filter(asset=>previzAssetIds(rendered).includes(asset.id));
     assert.deepEqual(assets.map(asset=>asset.kind),['image','image','video']);
     assert.ok(assets.every(asset=>asset.provenance?.origin==='code_render'&&asset.provenance.usage==='reference_only'));
+    const depth=await readFile(join(saved.root!,assets[1]!.path!));
+    assert.deepEqual([...depth.subarray(24,26)],[16,0]);
+    const chunks:Buffer[]=[];
+    for(let offset=8;offset+12<=depth.length;){
+      const length=depth.readUInt32BE(offset);
+      if(depth.toString('ascii',offset+4,offset+8)==='IDAT')chunks.push(depth.subarray(offset+8,offset+8+length));
+      offset+=length+12;
+    }
+    const pixels=inflateSync(Buffer.concat(chunks)),width=depth.readUInt32BE(16),levels=new Set<number>();
+    for(let offset=0;offset<pixels.length;offset+=2*width+1)for(let column=0;column<width;column++)levels.add(pixels.readUInt16BE(offset+1+2*column));
+    assert.ok(levels.size>32,'the ground and objects have a per-pixel depth gradient');
     assert.equal(saved.project!.videoClips?.length??0,0);
     assert.ok(saved.project!.shots.every(item=>item.assetIds.every(id=>!previzAssetIds(rendered).includes(id))));
     const approval={...scope,expectedRevision:saved.project!.revision,renderId:rendered.id};

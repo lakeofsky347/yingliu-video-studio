@@ -1,5 +1,6 @@
-/* Builds a whitebox scene, camera animation and optional object-distance matte from validated JSON. */
-export const PREVIZ_TEMPLATE_PY = `import json, math, os, sys, bpy
+/* Builds a whitebox scene, camera animation and optional per-pixel geometric depth from validated JSON. */
+export const PREVIZ_TEMPLATE_PY = `import json, math, os, struct, sys, zlib, bpy
+from array import array
 from mathutils import Quaternion, Vector
 def parse_spec():
     argv = sys.argv
@@ -99,29 +100,48 @@ def setup_lights(preset):
         add_l("Key","AREA",(5,-5,6),380.0,(math.radians(52),0,math.radians(42)),4.0)
         add_l("Fill","AREA",(-6,-4,4),160.0,(math.radians(60),0,math.radians(-48)),5.0)
         add_l("Rim","AREA",(0,6,5),220.0,(math.radians(-50),0,math.radians(180)),4.0)
-def render_depth_pass(sc, cam_pos, ground_obj, out_path):
+def render_depth_pass(sc, out_path):
     sc.frame_set(1)
-    old_engine = sc.render.engine; sc.render.engine = "BLENDER_WORKBENCH"
-    old_light = sc.display.shading.light; old_color = sc.display.shading.color_type; old_shadows = sc.display.shading.show_shadows
-    old_bg = tuple(sc.world.color)
-    meshes = [o for o in sc.objects if o.type == "MESH"]
-    dists = []
-    for o in meshes:
-        if o == ground_obj: continue
-        mw = o.matrix_world.translation
-        d = math.sqrt((mw.x - cam_pos[0])**2 + (mw.y - cam_pos[1])**2 + (mw.z - cam_pos[2])**2)
-        dists.append((o, d))
-    near = max(0.5, min([d for _, d in dists], default=2.0) - 0.8)
-    far = max(near + 3.0, max([d for _, d in dists], default=8.0) + 2.5)
-    for o, d in dists:
-        v = max(0.14, min(0.96, 1.0 - (d - near) / (far - near)))
-        o.color = (v, v, v, 1.0)
-    ground_obj.color = (0.09, 0.09, 0.09, 1.0)
-    sc.world.color = (0.02, 0.02, 0.02)
-    sc.display.shading.light = "FLAT"; sc.display.shading.color_type = "OBJECT"; sc.display.shading.show_shadows = False
-    sc.frame_set(1); sc.render.filepath = out_path; bpy.ops.render.render(write_still=True)
-    sc.display.shading.light = old_light; sc.display.shading.color_type = old_color; sc.display.shading.show_shadows = old_shadows
-    sc.world.color = old_bg; sc.render.engine = old_engine
+    camera = sc.camera
+    world = camera.matrix_world
+    origin = world.translation
+    rotation = world.to_quaternion()
+    forward = rotation @ Vector((0, 0, -1))
+    corners = camera.data.view_frame(scene=sc)
+    left, right = min(v.x for v in corners), max(v.x for v in corners)
+    bottom, top = min(v.y for v in corners), max(v.y for v in corners)
+    z = corners[0].z
+    width, height = sc.render.resolution_x, sc.render.resolution_y
+    dx, dy = (right - left) / width, (top - bottom) / height
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    near_clip, far_clip = camera.data.clip_start, camera.data.clip_end
+    depths = array("f")
+    closest, farthest = far_clip, near_clip
+    for y in range(height):
+        cam_y = top - (y + 0.5) * dy
+        for x in range(width):
+            direction = (rotation @ Vector((left + (x + 0.5) * dx, cam_y, z))).normalized()
+            towards_image = direction.dot(forward)
+            start = origin + direction * (near_clip / towards_image)
+            hit = sc.ray_cast(depsgraph, start, direction, distance=(far_clip - near_clip) / towards_image)
+            depth = (hit[1] - origin).dot(forward) if hit[0] else 0.0
+            depths.append(depth)
+            if depth > 0:
+                closest, farthest = min(closest, depth), max(farthest, depth)
+    span = max(0.0001, farthest - closest)
+    rows = bytearray((2 * width + 1) * height)
+    for y in range(height):
+        for x in range(width):
+            depth = depths[y * width + x]
+            level = 0 if depth <= 0 else 1 + round(65534 * max(0.0, min(1.0, (farthest - depth) / span)))
+            struct.pack_into(">H", rows, y * (2 * width + 1) + 1 + x * 2, level)
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    with open(out_path, "wb") as out:
+        out.write(bytes((137, 80, 78, 71, 13, 10, 26, 10)))
+        out.write(chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 16, 0, 0, 0, 0)))
+        out.write(chunk(b"IDAT", zlib.compress(rows)))
+        out.write(chunk(b"IEND", b""))
 def main():
     spec = parse_spec(); out_dir = spec["outputDir"]; os.makedirs(out_dir, exist_ok=True)
     bpy.ops.wm.read_factory_settings(use_empty=True); sc = bpy.context.scene
@@ -163,6 +183,6 @@ def main():
             with open(f1,"rb") as a, open(kp,"wb") as b: b.write(a.read())
     else:
         sc.frame_set(1); sc.render.filepath = kp; bpy.ops.render.render(write_still=True)
-    if spec.get("emitDepth", True): render_depth_pass(sc, sp, ground_obj, dp)
+    if spec.get("emitDepth", True): render_depth_pass(sc, dp)
 if __name__ == "__main__": main()
 `;
