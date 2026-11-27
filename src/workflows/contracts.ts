@@ -8,6 +8,8 @@ export interface WorkflowRequest {
   allowImageUpload:boolean;imageAssetIds?:string[];maxTasks?:number;maxCost?:number;
   textRoute?:{provider:string;model:string};ownerSessionId?:string;
   filmKind?:FilmKind;audioStrategy?:AudioStrategy;directorPlan?:DirectorPlan;
+  /** Set by the host when a workflow uses the project's currently approved plan. */
+  directorApproval?:{version:number;hash:string};
 }
 export interface WorkflowModelCall {
   id?:string;requestKey?:string;submissionUncertain?:boolean;

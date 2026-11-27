@@ -5,8 +5,10 @@ import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import type { JobOutcome } from '@deepseek-ai/dsh-jobs';
 import type { StudioSnapshot } from '../shared/types.ts';
 import type { MediaTask } from '../jobs/contracts.ts';
+import type { DirectorDocument } from '../director/contracts.ts';
 import type { HostContext } from './platform.ts';
 import { ProjectHub, type ProjectRouting } from './project-hub.ts';
+import {directorReadSections,isPagedRead,pagedDirector,pagedProject,projectReadSections} from './tool-pages.ts';
 
 declare module '@deepseek-ai/dsh-jobs/view' {interface JobKindMap { video:'video' }}
 type Input=Record<string,unknown>;
@@ -23,6 +25,7 @@ function importRequestId(exec:ToolRunContext,input:unknown,index:number,provided
   return 'dsh-import-'+createHash('sha256').update(JSON.stringify([owner(exec),exec.callId,input,index])).digest('hex');
 }
 function routeMeta(routing:ProjectRouting):Input{return {...routing,sessionId:routing.ownerSessionId??routing.callerSessionId};}
+const pageParameters={offset:{type:'integer',description:'分页起点，从 0 开始；后续使用 nextOffset'},limit:{type:'integer',description:'每页最多条数，1–60'},textOffset:{type:'integer',description:'超长条目续读位置，使用 nextTextOffset'},shotIds:{type:'array',items:{type:'string'},description:'镜头栏目中按稳定 ID 读取特定镜头'}} as const;
 function receipt(snapshot:StudioSnapshot,extra:Input={}):Record<string,JsonValue>{
   const project=snapshot.project;if(!project)throw new Error('视频工程尚未创建');
   return json({kind:'video-studio',projectId:project.id,title:project.title,revision:project.revision,root:snapshot.root,target:project.target,
@@ -116,13 +119,21 @@ async function startMedia(ctx:HostContext,hub:ProjectHub,request:Input,exec:Tool
 /** Model-facing tools accept the current conversation model's decisions and code; they do not start a second chat. */
 export function createSessionTools(ctx:HostContext,hub:ProjectHub):ToolDefinition[]{
   return [
-    defineTool({name:'video_director',description:'读取导演规则，校验/编译/局部修改结构化导演计划，或读取和保存工程的导演文档。document_save 须携带当前工程 expectedRevision 和文档 expectedVersion；只保存草案，不批准计划、不更改制作模式、不提交生成费用。计划批准由用户在工作台完成。',
-      parameters:{action:{type:'string',enum:['rules','validate','compile','patch','document_get','document_save'],required:true},projectId:projectParameter,plan:{type:'object',additionalProperties:true},expectedRevision:{type:'integer'},expectedVersion:{type:'integer'},shotId:{type:'string'},changes:{type:'object',additionalProperties:true}},output,
+    defineTool({name:'video_director',description:'读取导演规则，校验/编译/局部修改结构化导演计划，或读取和保存工程的导演文档。百镜计划用 document_get + section 分页读取；previousApproved 只查看历史版本。document_save 须携带当前工程 expectedRevision 和文档 expectedVersion；只保存草案。计划批准由用户在工作台完成。',
+      parameters:{action:{type:'string',enum:['rules','validate','compile','patch','document_get','document_save'],required:true},projectId:projectParameter,plan:{type:'object',additionalProperties:true},expectedRevision:{type:'integer'},expectedVersion:{type:'integer'},expectedHash:{type:'string',description:'分页时用前页哈希固定同一计划内容'},shotId:{type:'string'},changes:{type:'object',additionalProperties:true},
+        section:{type:'string',enum:[...directorReadSections]},documentVersion:{type:'string',enum:['current','previousApproved']},...pageParameters},output,
       async execute(args,exec){exec.signal.throwIfAborted();const sessionId=owner(exec);
         if(args.action==='document_get'||args.action==='document_save'){
           if(args.action==='document_save'){requiredRevision(args.expectedRevision);if(!Number.isSafeInteger(args.expectedVersion)||Number(args.expectedVersion)<0)throw new Error('保存导演文档需要 expectedVersion，请先 document_get');}
           const located=await hub.resolveProject({...args,signal:exec.signal},sessionId),endpoint=args.action==='document_get'?'director.document.get':'director.document.save';
-          return json({kind:'video-director',projectId:located.projectId,...await hub.call<Input>(endpoint,{...args,projectId:located.projectId},{callerSessionId:sessionId})});
+          const value=await hub.call<{document?:DirectorDocument;previousApprovedDocument?:DirectorDocument}>(endpoint,{...args,projectId:located.projectId},{callerSessionId:sessionId});
+          if(args.action==='document_get'&&(isPagedRead(args)||args.documentVersion!==undefined)){
+            const document=args.documentVersion==='previousApproved'?value.previousApprovedDocument:value.document;
+            return json({kind:'video-director',projectId:located.projectId,documentVersion:args.documentVersion??'current',...pagedDirector(document,args)});
+          }
+          const previous=value.previousApprovedDocument;
+          const previousApprovedDocument=previous?{version:previous.version,hash:previous.hash,approvedAt:previous.approvedAt}:undefined;
+          return json({kind:'video-director',projectId:located.projectId,document:value.document,previousApprovedDocument});
         }
         if(!['rules','validate','compile','patch'].includes(args.action))throw new Error('导演工具不能批准计划或执行此操作');
         return json({kind:'video-director',...await hub.call<Input>('director.'+args.action,args,{callerSessionId:sessionId})});}}),
@@ -146,12 +157,17 @@ export function createSessionTools(ctx:HostContext,hub:ProjectHub):ToolDefinitio
         const task=await hub.call<MediaTask>('media.'+args.action,{taskId:args.taskId,...(args.projectId?{projectId:args.projectId}:{}),expectedRevision:args.expectedRevision},context);
         return json({kind:'video-studio',operation:'media.'+args.action,projectId:task.projectId,taskId:task.id,task});
       }}),
-    defineTool({name:'video_project',description:'在当前 DSH 会话创建、打开、绑定或查看视频工程。先读取 productionPolicy：工具新建或旧工程迁移后模式尚未确认时，请用户在工作台原制作要求面板确认代码动画或模型视频；不要自行推定混合许可或尝试改写策略。对话模型负责导演决策，在已授权范围内通过 video_update 提交分镜和源码；插件负责保存、渲染和检查。用户可随时从工具卡片打开工作台看镜头与帧。',
-      parameters:{action:{type:'string',enum:['create','open','get','list','bind'],required:true},projectId:projectParameter,forceNew:{type:'boolean',description:'子代理已继承工程时，默认 create 返回该工程，防止团队重复创建；明确需要独立工程时设为 true。'},path:{type:'string',description:'open 时的本地工程目录'},title:{type:'string'},topic:{type:'string'},targetDuration:{type:'number'},target:{type:'object',additionalProperties:true,description:'输出 width、height、fps:{num,den}、音频模式等；可在之后更新。'}},output,
+    defineTool({name:'video_project',description:'在当前 DSH 会话创建、打开、绑定或查看视频工程。大型工程用 get + section 按摘要、镜头或素材分页。先读取 productionPolicy：工具新建或旧工程迁移后模式尚未确认时，请用户在工作台原制作要求面板确认代码动画或模型视频；不要自行推定混合许可或尝试改写策略。对话模型负责导演决策，在已授权范围内通过 video_update 提交分镜和源码；插件负责保存、渲染和检查。用户可随时从工具卡片打开工作台看镜头与帧。',
+      parameters:{action:{type:'string',enum:['create','open','get','list','bind'],required:true},projectId:projectParameter,forceNew:{type:'boolean',description:'子代理已继承工程时，默认 create 返回该工程，防止团队重复创建；明确需要独立工程时设为 true。'},path:{type:'string',description:'open 时的本地工程目录'},title:{type:'string'},topic:{type:'string'},targetDuration:{type:'number'},target:{type:'object',additionalProperties:true,description:'输出 width、height、fps:{num,den}、音频模式等；可在之后更新。'},
+        section:{type:'string',enum:[...projectReadSections]},expectedRevision:{type:'integer',description:'可用上一页 revision 固定读取快照'},...pageParameters},output,
       async execute(args,exec){
         const sessionId=owner(exec);exec.signal.throwIfAborted();
         if(args.action==='list'){const routed=await hub.sessionRouting(sessionId,exec.signal);return json({...await hub.call<Input>('list',{sessionId}),...routeMeta(routed.routing),projectId:routed.projectId});}
-        if(args.action==='get'){const located=await hub.resolveProject({...args,signal:exec.signal},sessionId);return receipt(located.snapshot,routeMeta(located.routing));}
+        if(args.action==='get'){
+          const located=await hub.resolveProject({...args,signal:exec.signal},sessionId);
+          if(isPagedRead(args))return json({kind:'video-studio',...pagedProject(located.snapshot.project!,args),...routeMeta(located.routing)});
+          return receipt(located.snapshot,routeMeta(located.routing));
+        }
         if(args.action==='create'&&!args.forceNew){
           try{const inherited=await hub.resolveProject({signal:exec.signal},sessionId);if(inherited.routing.ownerSessionId!==sessionId)return receipt(inherited.snapshot,{...routeMeta(inherited.routing),reusedInheritedProject:true});}
           catch(error){if(!(error instanceof Error&&'code' in error&&error.code==='PROJECT_UNBOUND'))throw error;}

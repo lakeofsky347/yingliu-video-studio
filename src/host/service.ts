@@ -8,6 +8,7 @@ import {formatAss,formatSrt,projectSubtitles} from '../core/subtitles.ts';
 import type {VideoProject,StudioSnapshot,TaskState,EnvironmentSettings,ProviderGroup,RpcResult,SceneSource,Shot,ModelRoute,TtsSettings,AudioClip,VideoClip} from '../shared/types.ts';
 import type {HostContext} from './platform.ts';
 import {ProjectStore,projectPath,validateStoredProject,validateSources} from './store.ts';
+import {exportProjectArchive,importProjectArchive} from './project-archive.ts';
 import {VideoRenderer,detectEnvironment,renderCheckError} from './renderer.ts';
 import {DshSceneGenerator,parseSceneSource,normalizeStoryboard} from './generator.ts';
 import {SpeechSynthesizer,extractVideoAudio} from './audio.ts';
@@ -21,7 +22,7 @@ import type {ProductionPolicy} from '../shared/types.ts';
 import type {MediaOperation} from '../jobs/contracts.ts';
 import {writeDurableFile} from '../shared/durable-file.ts';
 import {taskFailure,sanitizeTaskFailure} from '../shared/task-diagnostic.ts';
-import {readDirectorDocument,saveDirectorDocument,approveDirectorDocument,validateProjectDirectorPlan} from '../director/document.ts';
+import {readDirectorDocument,readPreviousDirectorApproval,saveDirectorDocument,approveDirectorDocument,validateProjectDirectorPlan} from '../director/document.ts';
 import {localQualityFrames,localExportQuality,localQualityHash,type LocalQualityReport,type LocalQualityFrame} from '../workflows/local-quality.ts';
 import {synthesizeLocalSfx} from '../media/local-sfx.ts';
 import {syncDirectory} from './directory-sync.ts';
@@ -250,7 +251,7 @@ export class StudioService {
   /** Edits may change content, never the host's authority or the origin of an existing file. */
   private assertPublicProjectUpdate(current:VideoProject,next:VideoProject):void{
     if(next.schemaVersion!==current.schemaVersion||productionPolicyFingerprint(current)!==productionPolicyFingerprint(next))throw new Error('普通保存不能更改制作模式、许可或工程格式');
-    for(const key of ['mediaApplications','workflowApplications','workflowInitializations','importApplications','directorDocument'])if(JSON.stringify(current.extensions[key])!==JSON.stringify(next.extensions[key]))throw new Error('普通编辑不能伪造媒体任务或协作采用回执');
+    for(const key of ['mediaApplications','workflowApplications','workflowInitializations','importApplications','directorDocument','directorApprovedDocument','previzApprovals'])if(JSON.stringify(current.extensions[key])!==JSON.stringify(next.extensions[key]))throw new Error('普通编辑不能伪造媒体任务或协作采用回执');
     for(const asset of next.assets){
       const previous=current.assets.find(item=>item.id===asset.id);
       if(!previous){if(asset.kind!=='text'||asset.path||asset.originalPath||asset.generation||asset.provenance)throw new Error('新媒体必须通过导入或候选采用入口写入');continue;}
@@ -534,7 +535,7 @@ export class StudioService {
         case 'current':break;
         case 'create':{
           this.assertIdle();let project:VideoProject;
-          if(data.project){project=structuredClone(data.project);validateStoredProject(project);validateSources(project,data.sources??[]);for(const item of data.sources??[])parseSceneSource(JSON.stringify(item.source));project=applyProductionPolicy(project,defaultProductionPolicy());for(const asset of project.assets){delete asset.generation;asset.provenance={origin:'unknown',usage:asset.provenance?.usage==='reference_only'?'reference_only':'production'};}project.outputs=[];for(const key of ['mediaApplications','workflowApplications','workflowInitializations','importApplications','directorDocument'])delete project.extensions[key];}
+          if(data.project){project=structuredClone(data.project);validateStoredProject(project);validateSources(project,data.sources??[]);for(const item of data.sources??[])parseSceneSource(JSON.stringify(item.source));project=applyProductionPolicy(project,defaultProductionPolicy());for(const asset of project.assets){delete asset.generation;asset.provenance={origin:'unknown',usage:asset.provenance?.usage==='reference_only'?'reference_only':'production'};}project.outputs=[];for(const key of ['mediaApplications','workflowApplications','workflowInitializations','importApplications','directorDocument','directorApprovedDocument','previzApprovals'])delete project.extensions[key];}
           else{
             project=createProject(String(data.title||''),String(data.topic||''),data.productionMode==='code_animation'||data.productionMode==='model_video'?data.productionMode:'unresolved',data.uiLocale==='en'?'en':'zh');if(data.target)project=updateTarget(project,data.target);if(data.targetDuration!==undefined)project.targetDuration=Number(data.targetDuration);
             if(data.videoStyle&&typeof data.videoStyle==='object'&&typeof data.videoStyle.name==='string'&&typeof data.videoStyle.prompt==='string')project.videoStyle=structuredClone(data.videoStyle);
@@ -545,6 +546,16 @@ export class StudioService {
           if(!data.project)for(const shot of this.project.shots)await this.store.markSourceGood(this.root,shot).catch(()=>{});await this.refreshAfterCommit();break;
         }
         case 'open':{this.assertIdle();const root=resolve(String(data.path)),project=await this.store.open(root);this.root=root;this.project=project;this.task=null;await this.recoverTask();await this.refreshAfterCommit();break;}
+        case 'project.unpack':{
+          this.assertIdle();
+          const created=await importProjectArchive(this.store,String(data.path??''),data.signal);
+          this.root=created.root;this.project=created.project;this.task=null;await this.refreshAfterCommit();break;
+        }
+        case 'project.pack':{
+          this.assertRevision(data,true);
+          const {root,project}=this.required();
+          return {ok:true,value:await exportProjectArchive(this.store,root,project,data.signal)};
+        }
         case 'save':{if(this.task?.status==='running'&&this.task.kind!=='export')this.assertIdle();const {project}=this.required();if(!data.project||data.project.id!==project.id)throw new Error('项目已切换，请刷新后重试');const next=structuredClone(data.project) as VideoProject;this.assertPublicProjectUpdate(project,next);this.fitAudio(next);await this.persist({...next,outputs:project.outputs}, {},'保存工程');break;}
         case 'apply':await this.apply(data);break;
         case 'import':{this.assertIdle();await this.importLocal(data,false);break;}
@@ -561,10 +572,24 @@ export class StudioService {
           else throw new Error('音频操作无效');break;
         }
         case 'audio.sfx':{this.assertIdle();const bytes=synthesizeLocalSfx(data.spec);await this.importLocal({...data,mime:'audio/wav',name:String(data.name||'本地音效')+'.wav',dataBase64:Buffer.from(bytes).toString('base64'),role:'sfx'},true);break;}
-        case 'director.document.get':return {ok:true,value:{document:readDirectorDocument(this.required().project)}};
+        case 'director.document.get':{
+          const {project}=this.required();
+          return {ok:true,value:{document:readDirectorDocument(project),previousApprovedDocument:readPreviousDirectorApproval(project)}};
+        }
         case 'director.document.save':case 'director.document.approve':{
-          this.assertIdle();const next=structuredClone(this.required().project),document=endpoint.endsWith('.save')?saveDirectorDocument(next,data.plan,{expectedVersion:data.expectedVersion}):approveDirectorDocument(next,{expectedVersion:data.expectedVersion,expectedHash:data.expectedHash});
-          next.extensions.directorDocument=document;await this.persist(next,{},endpoint.endsWith('.save')?'保存工程导演计划':'批准工程导演计划');return {ok:true,value:{document}};
+          this.assertIdle();
+          const {project}=this.required(),next=structuredClone(project),saving=endpoint.endsWith('.save');
+          const document=saving?saveDirectorDocument(project,data.plan,{expectedVersion:data.expectedVersion}):approveDirectorDocument(project,{expectedVersion:data.expectedVersion,expectedHash:data.expectedHash});
+          if(saving){
+            const prior=readDirectorDocument(project);
+            if(prior?.status==='approved')next.extensions.directorApprovedDocument=prior;
+            delete next.extensions.previzApprovals;
+          }
+          next.extensions.directorDocument=document;
+          const previousApprovedDocument=readPreviousDirectorApproval(next);
+          await this.persist(next,{},saving?'保存工程导演计划':'批准工程导演计划');
+          return {ok:true,value:{document,previousApprovedDocument}};
+        }
         }
         case 'quality.check':{this.assertIdle();return {ok:true,value:await this.checkLocalQuality(structuredClone(this.required().project))};}
         case 'quality.last':{

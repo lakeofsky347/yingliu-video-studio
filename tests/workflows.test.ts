@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {createProject,defaultSceneSource} from '../src/core/index.ts';
 import {defaultProductionPolicy} from '../src/core/production-policy.ts';
+import {approveDirectorDocument,saveDirectorDocument} from '../src/director/document.ts';
 import {WorkflowService} from '../src/workflows/service.ts';
 import type {WorkflowPort,WorkflowRecord,WorkflowRequest,WorkflowCandidate} from '../src/workflows/contracts.ts';
 import type {Asset,SceneSource,StudioSnapshot,VideoProject} from '../src/shared/types.ts';
@@ -266,6 +267,28 @@ test('supplied validated director plan skips the director model and enters the a
   const f=await fixture(t,1),id=f.project.shots[0]!.id;
   const directorPlan={version:1 as const,ruleSetVersion:'2026-11-06.1',filmKind:'explainer' as const,characters:[],storyBeats:[],worldLayouts:[],identityMap:[],shots:[{shotId:id,title:'科学解释',visualPrompt:'用两个圆说明关系',durationSeconds:1,narration:'',audioStrategy:'silent' as const,performance:[],dialogue:[],events:[],references:[],acceptance:[]}]};
   const started=await f.service.run(f.request({directorPlan,maxTasks:1})),done=await settled(f.service,started.id);assert.equal(done.status,'complete',done.error);assert.equal(f.calls.director,0);assert.equal(f.calls.scene.get(id),1);assert.equal(done.usage.externalCalls,1);assert.equal(done.directorPlan?.filmKind,'explainer');
+});
+
+test('a workflow bound to an approved director plan cannot commit under a new draft',async t=>{
+  const f=await fixture(t,1),project=f.project,id=project.shots[0]!.id;
+  const plan={version:1 as const,ruleSetVersion:'2026-11-06.1',filmKind:'general' as const,characters:[],storyBeats:[],worldLayouts:[],identityMap:[],shots:[{shotId:id,title:'画面',visualPrompt:'固定的构图',durationSeconds:1,narration:'',audioStrategy:'silent' as const,performance:[],dialogue:[],events:[],references:[],acceptance:[]}]};
+  const first=saveDirectorDocument(project,plan,{expectedVersion:0});
+  project.extensions.directorDocument=first;
+  const approved=approveDirectorDocument(project,{expectedVersion:first.version,expectedHash:first.hash});
+  project.extensions.directorDocument=approved;
+  f.project=project;
+  f.hooks.scene=async()=>{
+    const changed=f.project;
+    changed.extensions.directorDocument=saveDirectorDocument(changed,{...plan,logline:'新草稿'},{expectedVersion:approved.version});
+    changed.extensions.directorApprovedDocument=approved;
+    changed.revision++;
+    f.project=changed;
+  };
+  const started=await f.service.run(f.request({directorPlan:plan,directorApproval:{version:approved.version,hash:approved.hash},maxTasks:1}));
+  const done=await settled(f.service,started.id);
+  assert.equal(done.status,'failed');
+  assert.match(done.error!,/导演批准已变化/);
+  assert.equal(f.calls.commit.length,0);
 });
 
 test('actual reference-only outputs are rejected by quality before entering production',async t=>{

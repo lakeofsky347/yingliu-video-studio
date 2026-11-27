@@ -114,7 +114,7 @@ export class ProjectStore {
     const full='project' in input?input:undefined;
     const brief=input as {title?:string;topic?:string};
     const project:VideoProject=migrateProject(full?full.project:'schemaVersion' in input?input:createProject(brief.title??'未命名视频',brief.topic??''));
-    for(const key of ['importApplications','mediaApplications','workflowApplications','workflowInitializations'])delete project.extensions[key];
+    for(const key of ['importApplications','mediaApplications','workflowApplications','workflowInitializations','directorApprovedDocument','previzApprovals'])delete project.extensions[key];
     const document=project.extensions.directorDocument as any;if(document){document.status='draft';delete document.approvedAt;}
     project.revision=0;project.createdAt=new Date().toISOString();project.updatedAt=project.createdAt;
     validateStoredProject(project);
@@ -297,7 +297,7 @@ export class ProjectStore {
     const state=await this.ensureState(root);if(!state)throw new Error('未找到工程');const current=await this.version(root,state.current),project=structuredClone(current.project);
     project.id='film_'+randomUUID().replaceAll('-','');project.title=title?.trim()||project.title+'（副本）';project.outputs=[];project.sessionIds=[];delete project.extensions.sessionIds;
     if(project.productionPolicy?.mode==='hybrid'){project.productionPolicy=defaultProductionPolicy();for(const shot of project.shots)shot.visual={kind:'unresolved'};}
-    for(const key of ['importApplications','mediaApplications','workflowApplications','workflowInitializations'])delete project.extensions[key];
+    for(const key of ['importApplications','mediaApplications','workflowApplications','workflowInitializations','directorApprovedDocument','previzApprovals'])delete project.extensions[key];
     const document=project.extensions.directorDocument as any;if(document){document.status='draft';delete document.approvedAt;}
     project.revision=0;project.createdAt=new Date().toISOString();project.updatedAt=project.createdAt;validateStoredProject(project);
     const slug=project.title.replace(/[^\p{L}\p{N}_-]+/gu,'-').replace(/^-|-$/g,'').slice(0,50)||'video';

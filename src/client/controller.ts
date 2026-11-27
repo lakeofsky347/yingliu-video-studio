@@ -208,13 +208,13 @@ export class StudioController {
         }
         if(!Number.isSafeInteger(revision))throw new StudioRequestError('修改需要已确认的 expectedRevision，请先读取最新工程。','REVISION_REQUIRED');
       }
-      const request=['create','open','focus'].includes(endpoint)?payload:{projectId:targetId,...payload as object,...(revision!==undefined?{expectedRevision:revision}:{})};
+      const request=['create','open','focus','project.unpack'].includes(endpoint)?payload:{projectId:targetId,...payload as object,...(revision!==undefined?{expectedRevision:revision}:{})};
       const snapshot=await this.api.call<StudioSnapshot>(endpoint,request);
       // Renaming a library row must not replace another project's visible editor or drafts.
       if(endpoint!=='rename'||targetId===this.state.snapshot?.project?.id)this.accept(snapshot,false,['saveSource','restoreSource','import','rename'].includes(endpoint));
       await this.refreshHistory();
-      if(['create','rename','duplicate','archive','restore'].includes(endpoint))await this.refreshProjects();
-      if(['create','open','focus','duplicate'].includes(endpoint))this.showStudio();
+      if(['create','rename','duplicate','archive','restore','project.unpack'].includes(endpoint))await this.refreshProjects();
+      if(['create','open','focus','duplicate','project.unpack'].includes(endpoint))this.showStudio();
       this.update({notice,conflict:false,error:''});return true;
     }catch(e){this.update({error:message(e),...(isConflict(e)?{conflict:true}:{})});return false;}finally{this.update({pending:false});}
   }

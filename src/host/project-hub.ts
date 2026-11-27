@@ -397,8 +397,15 @@ export class ProjectHub {
     }
     if(endpoint==='workflows.run'){
       const route=record(data.textRoute),document=readDirectorDocument((await(await this.service(projectId)).snapshot()).project!);
-      let directorPlan=data.directorPlan as WorkflowRequest['directorPlan'];if(directorPlan===undefined&&document?.status==='approved')directorPlan=structuredClone(document.plan);
-      if(directorPlan&&Array.isArray(data.shotIds)){const ids=new Set(data.shotIds);directorPlan={...directorPlan,shots:directorPlan.shots.filter(shot=>ids.has(shot.shotId)),storyBeats:directorPlan.storyBeats.map(beat=>({...beat,shotIds:beat.shotIds.filter(id=>ids.has(id))})).filter(beat=>beat.shotIds.length)};}
+      let directorPlan=data.directorPlan as WorkflowRequest['directorPlan'];
+      const directorApproval=directorPlan===undefined&&document?.status==='approved'?{version:document.version,hash:document.hash}:undefined;
+      if(directorApproval&&document)directorPlan=structuredClone(document.plan);
+      if(directorPlan&&Array.isArray(data.shotIds)){
+        const checked=validateDirectorPlan(directorPlan);if(!checked.ok)throw new Error(checked.errors.join('\n'));
+        const ids=new Set(data.shotIds);
+        directorPlan={...directorPlan,shots:directorPlan.shots.filter(shot=>ids.has(shot.shotId)),storyBeats:directorPlan.storyBeats.map(beat=>({...beat,shotIds:beat.shotIds.filter(id=>ids.has(id))})).filter(beat=>beat.shotIds.length),
+          ...(directorPlan.continuityLog?{continuityLog:directorPlan.continuityLog.filter(entry=>ids.has(entry.shotId))}:{})};
+      }
       const request:WorkflowRequest={projectId,expectedRevision:data.expectedRevision as number,prompt:data.prompt as string,visual:data.visual as WorkflowRequest['visual'],narration:data.narration===true,review:data.review===true,allowImageUpload:data.allowImageUpload===true,
         ...(data.filmKind!==undefined?{filmKind:data.filmKind as WorkflowRequest['filmKind']}:{}),...(data.audioStrategy!==undefined?{audioStrategy:data.audioStrategy as WorkflowRequest['audioStrategy']}:{}),...(directorPlan!==undefined?{directorPlan}:{}),
         ...(data.shotIds!==undefined?{shotIds:data.shotIds as string[]}:{}),...(data.imageAssetIds!==undefined?{imageAssetIds:data.imageAssetIds as string[]}:{}),...(data.maxTasks!==undefined?{maxTasks:data.maxTasks as number}:{}),...(data.maxCost!==undefined?{maxCost:data.maxCost as number}:{}),
@@ -408,7 +415,7 @@ export class ProjectHub {
     throw new Error('未知协作制作操作');
   }
   async route(endpoint:string,payload:unknown,context:CallContext={}):Promise<RpcResult>{
-    if(['create','open','duplicate','archive','restore','bind','bindSession','unbindSession','focus'].includes(endpoint)){
+    if(['create','open','duplicate','archive','restore','bind','bindSession','unbindSession','focus','project.unpack'].includes(endpoint)){
       const result=this.openings.then(()=>this.performRoute(endpoint,payload,context));this.openings=result.then(()=>undefined,()=>undefined);return result;
     }
     return this.performRoute(endpoint,payload,context);
@@ -453,7 +460,8 @@ export class ProjectHub {
         const original=await this.service(id),copied=resultValue<{root:string;project:VideoProject}>(await original.rpc('duplicate',data)),service=this.makeService();
         try{const snapshot=resultValue<StudioSnapshot>(await service.rpc('open',{path:copied.root}));this.services.set(snapshot.project!.id,service);await this.remember(snapshot);if(data.select!==false)await this.selectProject(snapshot.project!.id);return {ok:true,value:await this.decorate(service)};}catch(error){await service.dispose();throw error;}
       }
-      if(endpoint==='create'||endpoint==='open'){
+      if(endpoint==='create'||endpoint==='open'||endpoint==='project.unpack'){
+        if(endpoint==='project.unpack'&&context.callerSessionId)throw new Error('请在工作台选择要导入的本地工程包');
         if(endpoint==='create'&&context.callerSessionId)delete data.productionMode;
         if(endpoint==='create'&&typeof projectInput.id==='string'&&this.index.projects.some(item=>item.id===projectInput.id))throw new Error('工程 ID 已存在，请复制工程或生成新 ID');
         if(endpoint==='open'&&typeof data.path==='string'){
@@ -462,7 +470,7 @@ export class ProjectHub {
         }
         const service=this.makeService();
         try{
-          const snapshot=resultValue<StudioSnapshot>(await service.rpc(endpoint,data));
+          const snapshot=resultValue<StudioSnapshot>(await service.rpc(endpoint,endpoint==='project.unpack'?{path:data.path,signal:context.signal}:data));
           if(!snapshot.project)throw new Error('创建或打开工程失败');
           const previous=this.services.get(snapshot.project.id);if(previous)throw new Error('该工程已打开，请使用 projectId 选择工程');
           this.services.set(snapshot.project.id,service);await this.remember(await service.snapshot());
@@ -470,6 +478,7 @@ export class ProjectHub {
           return {ok:true,value:await this.decorate(service,sessionId)};
         }catch(error){const failed=await service.snapshot();if(failed.project)this.services.delete(failed.project.id);await service.dispose();throw error;}
       }
+      if(endpoint==='project.pack'&&context.callerSessionId)throw new Error('请在工作台保存本地工程包');
       if(endpoint==='current'&&sessionId&&!id){
         const empty=await this.bootstrap.snapshot();return {ok:true,value:{...empty,project:null,root:null,previewUrl:null,previewRevision:null,assetBaseUrl:null,task:null,sessionId,focus:undefined,bindings:structuredClone(this.index.bindings),relatedSessionIds:[],currentSessionIds:[],projects:this.index.projects.filter(item=>!item.archived)}};
       }
@@ -496,7 +505,8 @@ export class ProjectHub {
         this.focus={...(typeof data.shotId==='string'?{shotId:data.shotId}:{}),...(typeof data.frame==='number'?{frame:Math.max(0,Math.floor(data.frame))}:{})};
         return {ok:true,value:await this.decorate(service,sessionId)};
       }
-      if(endpoint.startsWith('director.document.')){await this.remember(await service.snapshot());return result;}
+      const result=await service.rpc(endpoint,endpoint.startsWith('review.')||endpoint==='project.pack'?{...data,signal:context.signal}:data);if(!result.ok)return result;
+      if(['source','inspect','thumbnails','history','tasks','jobs','quality.check','quality.last','review.frames','review.cuts','subtitles.export','project.pack'].includes(endpoint))return result;
       if(endpoint==='catalog')this.providers=(result.value as StudioSnapshot).providers;
       if(endpoint==='tts'){const snapshot=result.value as StudioSnapshot;this.tts=snapshot.tts;this.ttsConfigured=snapshot.ttsConfigured;}
       await this.remember(await service.snapshot());return {ok:true,value:await this.decorate(endpoint==='rename'&&id!==this.index.selected?await this.service():service,sessionId)};

@@ -5,7 +5,8 @@ import { writeDurableFile } from '../shared/durable-file.ts';
 import { safeRelativeProjectPath } from '../core/project-paths.ts';
 import { defaultSceneSource, validateProject } from '../core/index.ts';
 import {assertProductionOperation,productionPolicyFingerprint,productionMode} from '../core/production-policy.ts';
-import {DIRECTOR_RULESET_VERSION,DIRECTOR_RULES,directorShotContext,requiresNativeAudio,validateDirectorPlan,type TrustedReview,type QualityReport} from '../director/index.ts';
+import {DIRECTOR_RULESET_VERSION,DIRECTOR_RULES,DIRECTOR_SHOT_LIMIT,REFERENCE_PURPOSES,directorShotContext,requiresNativeAudio,validateDirectorPlan,type TrustedReview,type QualityReport} from '../director/index.ts';
+import {readDirectorDocument} from '../director/document.ts';
 import {makeDirectorPlan,compiledPlans,type ShotPlan} from './director-plan.ts';
 import {candidateQuality,candidateHash,decide,frameQuality} from './quality.ts';
 import { normalizeStoryboard, parseModelJson, parseSceneSource } from '../host/generator.ts';
@@ -34,6 +35,12 @@ export interface WorkflowServiceOptions {
   onPersistPhase?:(event:WorkflowPersistenceEvent)=>Promise<void>|void;
 }
 const message=(error:unknown)=>error instanceof Error?error.message:String(error);
+const INITIAL_DIRECTOR_SHOT_LIMIT=12;
+function directorApprovalMatches(project:VideoProject,binding:WorkflowRequest['directorApproval']):void {
+  if(!binding)return;
+  const document=readDirectorDocument(project);
+  if(document?.status!=='approved'||document.version!==binding.version||document.hash!==binding.hash)throw Object.assign(new Error('本轮使用的导演批准已变化，请按当前计划新建制作'),{code:'DIRECTOR_APPROVAL_CHANGED',submissionUncertain:false});
+}
 function delay(signal:AbortSignal):Promise<void>{return new Promise((accept,reject)=>{const timer=setTimeout(()=>{signal.removeEventListener('abort',stop);accept();},250);const stop=()=>{clearTimeout(timer);reject(signal.reason);};signal.addEventListener('abort',stop,{once:true});if(signal.aborted)stop();});}
 /** Mirror the host's voice fitting before review so the reviewed timeline is the committed one. */
 function fitCandidateAudio(project:VideoProject){
@@ -124,6 +131,7 @@ export class WorkflowService {
     assertProductionOperation(latest,record.request.visual,record.request.shotIds?.length?record.request.shotIds:undefined);
     if(record.request.visual==='image')assertProductionOperation(latest,'code',record.request.shotIds?.length?record.request.shotIds:undefined);
     if(record.policyFingerprint!==productionPolicyFingerprint(latest))throw new Error('制作模式或许可已变化；本轮不能继续调用或采用，请按当前模式新建制作');
+    directorApprovalMatches(latest,record.request.directorApproval);
   }
   private async reserveCall(record:StoredWorkflow){
     await this.assertPolicy(record);
@@ -177,6 +185,7 @@ export class WorkflowService {
     await this.drainProjectTerminals(input.projectId);this.assertOpen();
     this.assertProjectIdle(input.projectId);
     const snapshot=await this.port.snapshot(input.projectId);this.assertOpen();if(!snapshot.project||snapshot.project.revision!==input.expectedRevision)throw Object.assign(new Error('工程版本已变化，请刷新后制作'),{code:'REVISION_CONFLICT'});
+    directorApprovalMatches(snapshot.project,input.directorApproval);
     assertProductionOperation(snapshot.project,input.visual,input.shotIds?.length?input.shotIds:undefined);
     if(input.visual==='image')assertProductionOperation(snapshot.project,'code',input.shotIds?.length?input.shotIds:undefined);
     if(input.imageAssetIds?.some(id=>!snapshot.project!.assets.some(a=>a.id===id&&a.kind==='image')))throw new Error('本轮图片参考不存在或类型不受支持');
@@ -234,7 +243,8 @@ export class WorkflowService {
   /** Invalid model output remains retryable; never durably cache a plan that cannot be adopted. */
   private validateDirectorOutput(record:StoredWorkflow,project:VideoProject,selected:VideoProject['shots'],output:string){
     const value=parseModelJson(output);
-    if(!Array.isArray(value.shots)||value.shots.length<1||value.shots.length>12)throw new Error('导演须返回 1–12 个镜头计划');
+    const limit=selected.length?DIRECTOR_SHOT_LIMIT:INITIAL_DIRECTOR_SHOT_LIMIT;
+    if(!Array.isArray(value.shots)||value.shots.length<1||value.shots.length>limit)throw new Error(`导演须返回 1–${limit} 个镜头计划`);
     if(!project.shots.length){
       const next=structuredClone(project);next.shots=normalizeStoryboard(value,next);
       next.shots.forEach(shot=>{shot.referenceIds=[...new Set([...shot.referenceIds,...(record.request.imageAssetIds??[])])];});
@@ -252,13 +262,16 @@ export class WorkflowService {
     const snapshot=await this.port.snapshot(record.projectId),project=snapshot.project!;
     if(project.revision!==record.startRevision)throw Object.assign(new Error('工程在规划前发生变化，请从当前版本新建制作'),{code:'REVISION_CONFLICT'});
     const selected=record.request.shotIds?.length?project.shots.filter(shot=>record.request.shotIds!.includes(shot.id)):project.shots;
+    if(selected.length>DIRECTOR_SHOT_LIMIT)throw new Error(`本轮所选镜头超过 ${DIRECTOR_SHOT_LIMIT}，请按场次选择镜头`);
     this.checkTaskBudget(record,selected.length||1);
     const step=this.step(record,'plan');this.beginStep(step);await this.persist(record);
-    const prompt=JSON.stringify({request:record.request.prompt,project:{title:project.title,topic:project.topic,targetDuration:project.targetDuration,target:project.target},shots:selected,filmKind:record.request.filmKind??'general',audioStrategy:record.request.audioStrategy??(record.request.visual==='video'?'native':record.request.narration?'external':'silent'),rules:DIRECTOR_RULES,ruleSetVersion:DIRECTOR_RULESET_VERSION,structuredFields:{characters:[{id:'C1',name:'名字',identity:'固定身份',objective:'人物真正想达成的目标'}],worldLayouts:[{id:'room',description:'世界拓扑，仅全局定义一次',anchors:[{id:'door',position:[0,0,0]}]}],identityMap:[{characterId:'C1',assetId:'已授权角色参考资产ID'}],storyBeats:[{id:'b1',function:'叙事功能',change:'这一拍改变了什么',shotIds:['选定镜头ID']}],shotOptionalFields:{performance:[{id:'p1',characterId:'C1',start:0,end:1,objective:'目的',visibleAction:'可观察动作',trigger:'触发词',voice:'声音动作',endState:'结束状态'}],dialogue:[{id:'d1',characterId:'C1',start:0,end:1,text:'精确台词',cue:'触发事件',listenerReaction:'听者反应',intentional:{truncation:false,repetition:false,overlapWith:[]}}],events:[{id:'e1',start:0,end:1,segmentId:'segment-1',worldLayoutId:'room',camera:'景别和镜头',screenPositions:[{characterId:'C1',x:.5,y:.5,facing:'朝向'}],relationships:[],action:'当前动作'}],references:[{assetId:'已授权图片ID',purpose:'identity|style|world_layout|blocking|camera|motion',usage:'reference_only'}],acceptance:[{id:'c1',category:'visual|identity|space|timing|dialogue|audio',severity:'hard|advisory',description:'可观察验收条件'}]}},authorizedImageAssetIds:record.request.imageAssetIds??[],output:selected.length?{shots:[{shotId:'必须使用给定镜头ID',prompt:'该镜头画面制作要求',narration:'旁白文字'}]}:{shots:[{shotId:'本轮唯一临时ID，例如 draft-1；storyBeats.shotIds 引用此ID',title:'镜头标题',intent:'目标',durationSeconds:6,params:{text:'屏幕标题'},prompt:'画面制作要求',narration:'旁白文字'}]},instruction:'输出严格JSON，只安排选定镜头。空工程生成1–12个镜头，每个镜头提供唯一临时 shotId；storyBeats 只引用这些 ID，宿主将统一映射为真实镜头 ID。按片型组织，不强套六拍。可在顶层返回 characters/worldLayouts/identityMap/storyBeats，每镜头返回 performance/dialogue/events/references/acceptance 的结构化约束；未提供的内容不会被假定已验证。参考只可使用授权 imageAssetIds，绝不拼入成片。不要输出API地址或凭据。'});
+    const prompt=JSON.stringify({request:record.request.prompt,project:{title:project.title,topic:project.topic,targetDuration:project.targetDuration,target:project.target},shots:selected,filmKind:record.request.filmKind??'general',audioStrategy:record.request.audioStrategy??(record.request.visual==='video'?'native':record.request.narration?'external':'silent'),rules:DIRECTOR_RULES,ruleSetVersion:DIRECTOR_RULESET_VERSION,structuredFields:{locations:[{id:'set',name:'场景名称',description:'稳定的场景构成',worldLayoutId:'room'}],props:[{id:'prop',name:'关键道具',description:'外观与用途'}],continuityLog:[{shotId:'本轮镜头 ID',axis180:'镜头轴线',wardrobeState:'服装状态',lightingMatch:'光线衔接'}],characters:[{id:'C1',name:'名字',identity:'固定身份',objective:'人物真正想达成的目标'}],worldLayouts:[{id:'room',description:'世界拓扑，仅全局定义一次',anchors:[{id:'door',position:[0,0,0]}]}],identityMap:[{characterId:'C1',assetId:'已授权角色参考资产ID'}],storyBeats:[{id:'b1',function:'叙事功能',change:'这一拍改变了什么',shotIds:['选定镜头ID']}],shotOptionalFields:{locationId:'set',propIds:['prop'],shotType:'景别',camera:'机位和运镜',continueFromPrevious:false,performance:[{id:'p1',characterId:'C1',start:0,end:1,objective:'目的',visibleAction:'可观察动作',trigger:'触发词',voice:'声音动作',endState:'结束状态'}],dialogue:[{id:'d1',characterId:'C1',start:0,end:1,text:'精确台词',cue:'触发事件',listenerReaction:'听者反应',intentional:{truncation:false,repetition:false,overlapWith:[]}}],events:[{id:'e1',start:0,end:1,segmentId:'segment-1',worldLayoutId:'room',camera:'景别和镜头',screenPositions:[{characterId:'C1',x:.5,y:.5,facing:'朝向'}],relationships:[],action:'当前动作'}],references:[{assetId:'已授权图片ID',purpose:REFERENCE_PURPOSES.join('|'),usage:'reference_only'}],acceptance:[{id:'c1',category:'visual|identity|space|timing|dialogue|audio',severity:'hard|advisory',description:'可观察验收条件'}]}},authorizedImageAssetIds:record.request.imageAssetIds??[],output:selected.length?{shots:[{shotId:'必须使用给定镜头ID',prompt:'该镜头画面制作要求',narration:'旁白文字'}]}:{shots:[{shotId:'本轮唯一临时ID，例如 draft-1；storyBeats.shotIds 引用此ID',title:'镜头标题',intent:'目标',durationSeconds:6,params:{text:'屏幕标题'},prompt:'画面制作要求',narration:'旁白文字'}]},instruction:'输出严格JSON，只安排选定镜头。空工程生成1–12个镜头，每个镜头提供唯一临时 shotId；storyBeats 只引用这些 ID，宿主将统一映射为真实镜头 ID。按片型组织，不强套六拍。可在顶层返回 characters/worldLayouts/identityMap/storyBeats/locations/props/continuityLog，每镜头可声明所属场景、道具、接镜，以及 performance/dialogue/events/references/acceptance 的结构化约束；未提供的内容不会被假定已验证。参考只可使用授权 imageAssetIds，绝不拼入成片。不要输出API地址或凭据。'});
     const value=record.request.directorPlan?{...structuredClone(record.request.directorPlan),shots:record.request.directorPlan.shots.map(s=>({...s,prompt:s.visualPrompt}))}:parseModelJson(await this.text(record,step,'director',prompt,signal,undefined,output=>this.validateDirectorOutput(record,project,selected,output)));signal.throwIfAborted();
-    if(!Array.isArray(value.shots)||value.shots.length<1||value.shots.length>12)throw new Error('导演须返回 1–12 个镜头计划');
+    const limit=selected.length||record.request.directorPlan?DIRECTOR_SHOT_LIMIT:INITIAL_DIRECTOR_SHOT_LIMIT;
+    if(!Array.isArray(value.shots)||value.shots.length<1||value.shots.length>limit)throw new Error(`导演须返回 1–${limit} 个镜头计划`);
     if(!project.shots.length){
       const next=structuredClone(project);next.shots=normalizeStoryboard(value,next);next.shots.forEach(shot=>{shot.referenceIds=[...new Set([...shot.referenceIds,...(record.request.imageAssetIds??[])])];shot.visual={kind:record.request.visual==='video'?'model_video':productionMode(next)==='model_video'?'model_video':'code'};});next.shotOrder=next.shots.map(shot=>shot.id);delete next.extensions.graphEdges;next.shots.forEach((shot,index)=>{next.graph.positions[shot.id]=[420+index*340,160];});
+      if(next.subtitles){const shotIds=new Set(next.shotOrder);next.subtitles=next.subtitles.filter(cue=>cue.shotId===undefined||shotIds.has(cue.shotId));}
       const plan=next.shots.map((shot,index)=>({shotId:shot.id,prompt:String(value.shots[index]?.prompt??shot.intent??record.request.prompt),narration:String(value.shots[index]?.narration??shot.narration??'')}));
       next.extensions.workflowInitializations={...(next.extensions.workflowInitializations as object??{}),[record.id]:{revision:record.startRevision+1}};
       record.directorPlan=makeDirectorPlan(value,next,plan,record.request);const prepared=record.request.visual==='code'?plan:compiledPlans(record.directorPlan);

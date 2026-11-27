@@ -5,11 +5,13 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {StudioService} from '../src/host/service.ts';
 import {ProjectHub} from '../src/host/project-hub.ts';
+import {createSessionTools} from '../src/host/session-tools.ts';
 import {VideoRenderer} from '../src/host/renderer.ts';
-import {DIRECTOR_RULESET_VERSION,type DirectorDocument,type DirectorPlan} from '../src/director/index.ts';
+import {DIRECTOR_RULESET_VERSION,DIRECTOR_SHOT_LIMIT,compileDirectorShot,type DirectorDocument,type DirectorPlan} from '../src/director/index.ts';
 import type {StudioSnapshot,VideoProject} from '../src/shared/types.ts';
 import type {HostContext} from '../src/host/platform.ts';
 import type {LocalQualityReport} from '../src/workflows/local-quality.ts';
+import type {ToolRunContext} from '@deepseek-ai/dsh-tools';
 
 const context:HostContext={llm:{listProviders:()=>[],listModels:async()=>[],async *stream(){throw new Error('Local feature tests must not call a provider');}},connection:{fetch:{register:()=>async()=>{}}},effect:()=>{}};
 function localRenderer(t:TestContext){
@@ -47,6 +49,66 @@ test('DSH session can save a plan but cannot impersonate trusted plan approval',
     await assert.rejects(hub.call('director.document.approve',{projectId:project.id,expectedRevision:current.project!.revision,expectedVersion:saved.document.version,expectedHash:saved.document.hash},{callerSessionId:'director-owner'}),{code:'DIRECTOR_APPROVAL_REQUIRED'});
     const approved=await hub.call<{document:DirectorDocument}>('director.document.approve',{projectId:project.id,expectedRevision:current.project!.revision,expectedVersion:saved.document.version,expectedHash:saved.document.hash});assert.equal(approved.document.status,'approved');
     await assert.rejects(hub.call('director.document.get',{projectId:project.id},{callerSessionId:'unrelated-session'}),/关联|权限|工程/);
+  }finally{await hub.dispose();await rm(base,{recursive:true,force:true});}
+});
+
+test('120-shot DSH planning supports bounded and targeted reads with approval history kept separate',async t=>{
+  localRenderer(t);
+  const base=await mkdtemp(join(tmpdir(),'local-director-serial-')),hub=new ProjectHub(context,{baseDirectory:base}),sessionId='long-film';
+  const tools=createSessionTools(context,hub);
+  const invoke=async(name:string,args:object)=>{
+    const execution:ToolRunContext={name,callId:'fixture',rootCallId:'fixture',arguments:{},token:Symbol(),agent:{id:sessionId,options:{provider:'fixture',model:'fixture'}},signal:new AbortController().signal};
+    return await tools.find(tool=>tool.name===name)!.execute(args,execution) as Record<string,any>;
+  };
+  try{
+    const created=await hub.call<StudioSnapshot>('create',{title:'长片结构',productionMode:'code_animation',sessionId},{callerSessionId:sessionId});
+    const template=created.project!.shots[0]!;
+    const shots=Array.from({length:DIRECTOR_SHOT_LIMIT},(_,index)=>({...template,id:`long-${index+1}`,title:`镜头 ${index+1}`,sourcePath:`shots/long-${index+1}`}));
+    const expanded=await hub.call<StudioSnapshot>('apply',{projectId:created.project!.id,expectedRevision:created.project!.revision,shots});
+    const project=expanded.project!;
+    const start=await invoke('video_project',{action:'get',section:'shots',limit:4});
+    assert.equal(start.shotCount,DIRECTOR_SHOT_LIMIT);
+    assert.deepEqual(start.items.map((row:{id:string})=>row.id),shots.slice(0,4).map(shot=>shot.id));
+    assert.equal(start.items[0].sourcePath,undefined);
+    const next=await invoke('video_project',{action:'get',section:'shots',offset:start.pagination.nextOffset,limit:4,expectedRevision:start.revision});
+    assert.equal(next.items[0].id,shots[4]!.id);
+    const legacy=await invoke('video_project',{action:'get'});
+    assert.equal(legacy.shots.length,DIRECTOR_SHOT_LIMIT);
+
+    const plan=planFor(project),first=plan.shots[0]!;
+    plan.locations=[{id:'set',name:'长廊',description:'固定长廊，暖光'}];
+    plan.props=[{id:'key',name:'钥匙',description:'铜制',ownerCharacterId:'host'}];
+    plan.continuityLog=[{shotId:first.shotId,axis180:'西侧轴线',notes:'左手持钥匙'}];
+    Object.assign(first,{locationId:'set',propIds:['key'],camera:'缓推',visualPrompt:'字'.repeat(11000)});
+    const saved=await invoke('video_director',{action:'document_save',expectedRevision:project.revision,expectedVersion:0,plan});
+    let current=await hub.call<StudioSnapshot>('current',{projectId:project.id});
+    const approved=await hub.call<{document:DirectorDocument}>('director.document.approve',{projectId:project.id,expectedRevision:current.project!.revision,expectedVersion:saved.document.version,expectedHash:saved.document.hash});
+    const compiled=JSON.parse(compileDirectorShot(approved.document.plan,first.shotId).prompt);
+    assert.equal(compiled.location.name,'长廊');
+    assert.equal(compiled.props[0].name,'钥匙');
+    assert.equal(compiled.continuity.axis180,'西侧轴线');
+
+    const page=await invoke('video_director',{action:'document_get',section:'shots',limit:4});
+    assert.equal(page.pagination.total,DIRECTOR_SHOT_LIMIT);
+    assert.ok(page.fragment.text.length<=8000);
+    const tail=await invoke('video_director',{action:'document_get',section:'shots',limit:4,textOffset:page.pagination.nextTextOffset,expectedVersion:page.documentHeader.version});
+    assert.equal(JSON.parse(page.fragment.text+tail.fragment.text).visualPrompt,first.visualPrompt);
+    assert.equal(tail.pagination.nextOffset,1);
+    const specific=await invoke('video_director',{action:'document_get',section:'shots',shotIds:[shots.at(-1)!.id]});
+    assert.equal(specific.items[0].shotId,shots.at(-1)!.id);
+
+    current=await hub.call<StudioSnapshot>('current',{projectId:project.id});
+    const revision=await invoke('video_director',{action:'document_save',expectedRevision:current.project!.revision,expectedVersion:approved.document.version,plan:{...plan,logline:'新稿'}});
+    assert.equal(revision.document.status,'draft');
+    assert.equal(revision.previousApprovedDocument.hash,approved.document.hash);
+    const previous=await invoke('video_director',{action:'document_get',section:'summary',documentVersion:'previousApproved'});
+    assert.equal(previous.documentHeader.hash,approved.document.hash);
+    assert.equal(previous.documentVersion,'previousApproved');
+    const service=(await hub.resolveProject({projectId:project.id})).service;
+    const head=await service.snapshot();
+    const duplicate=await call<{project:VideoProject}>(service,'duplicate',{expectedRevision:head.project!.revision});
+    assert.equal(duplicate.project.extensions.directorApprovedDocument,undefined);
+    assert.equal((duplicate.project.extensions.directorDocument as DirectorDocument).status,'draft');
   }finally{await hub.dispose();await rm(base,{recursive:true,force:true});}
 });
 
