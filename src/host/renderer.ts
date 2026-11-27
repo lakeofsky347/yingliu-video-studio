@@ -478,10 +478,10 @@ export class VideoRenderer {
       if(hash(result.buffer)!==expected.get(frame))errors.push({shotId:result.shotId,frame,message:'Frame is not repeatable after a cold page reload',failure:{category:'FRAME_NOT_REPEATABLE',operation:'render_seek'}});
     }
   }
-  async export(root:string,project:VideoProject,settings:EnvironmentSettings,signal:AbortSignal,onProgress:(progress:number,message:string)=>void):Promise<ExportResult> {
+  async export(root:string,project:VideoProject,settings:EnvironmentSettings,signal:AbortSignal,onProgress:(progress:number,message:string)=>void,timelinePreparation?:{directory:string;splitFrames:number[]}):Promise<ExportResult> {
     aborted(signal);assertProductionComposition(project,{forExport:true});const env=detectEnvironment(settings);
     if(!env.browserAvailable||!env.ffmpegAvailable||!env.ffprobeAvailable)throw new Error('Export needs existing Chrome/Chromium, FFmpeg and FFprobe. Configure missing paths.');
-    const id=randomUUID(),outputRoot=await projectPath(root,'exports/'+id),snapshotRoot=path.join(outputRoot,'snapshot');
+    const id=randomUUID(),outputRoot=await projectPath(root,timelinePreparation?.directory??'exports/'+id),snapshotRoot=path.join(outputRoot,'snapshot');
     const inputHashes:{path:string;sha256:string}[]=[],errors:RenderIssue[]=[],frames:FrameCapture[]=[];
     let connection:Awaited<ReturnType<VideoRenderer['openPage']>>|undefined,encoder:ChildProcess|undefined;
     const mp4Path=path.join(outputRoot,'video.mp4'),logPath=path.join(outputRoot,'ffmpeg.log');let log='',audioMix:AudioMix|null=null;
@@ -515,7 +515,9 @@ export class VideoRenderer {
       // PNG is fed one frame at a time. FFmpeg's automatic frame-thread decoder can
       // otherwise retain many full-resolution images and oversubscribe the machine.
       const encoderThreads=String(Math.max(1,Math.min(4,os.availableParallelism())));
-      encoder=spawn(env.ffmpegPath,['-hide_banner','-loglevel','warning','-y','-filter_threads','1','-f','image2pipe','-vcodec','png','-threads','1','-probesize','32','-analyzeduration','0','-fpsprobesize','0','-framerate',spec.target.fps.num+'/'+spec.target.fps.den,'-i','pipe:0',...audioArgs,'-c:v','libx264','-threads',encoderThreads,'-preset','medium','-crf',crf,'-pix_fmt','yuv420p','-movflags','+faststart',mp4Path],{stdio:['pipe','ignore','pipe']});this.children.add(encoder);
+      // Exchange shots must split on exact frame boundaries without carrying a B-frame across cuts.
+      const splitFrames=timelinePreparation?.splitFrames??[],splitArgs=splitFrames.length?['-bf','0','-force_key_frames','expr:'+splitFrames.map(frame=>`eq(n,${frame})`).join('+')]:[];
+      encoder=spawn(env.ffmpegPath,['-hide_banner','-loglevel','warning','-y','-filter_threads','1','-f','image2pipe','-vcodec','png','-threads','1','-probesize','32','-analyzeduration','0','-fpsprobesize','0','-framerate',spec.target.fps.num+'/'+spec.target.fps.den,'-i','pipe:0',...audioArgs,'-c:v','libx264','-threads',encoderThreads,'-preset','medium','-crf',crf,...splitArgs,'-pix_fmt','yuv420p','-movflags','+faststart',mp4Path],{stdio:['pipe','ignore','pipe']});this.children.add(encoder);
       encoder.stderr?.on('data',chunk=>{log+=String(chunk);if(log.length>2_000_000)log=log.slice(-2_000_000);});
       encoder.stdin?.on('error',()=>{});
       encoderResult=new Promise<void>((resolve,reject)=>{
@@ -541,6 +543,7 @@ export class VideoRenderer {
       await this.verifySeek(connection.page,spec,frames,errors,signal);if(errors.length)throw new Error(errors.map(error=>error.message).join('; '));
       onProgress(0.94,'核对视频规格、帧数与音轨');const qa=await this.mediaQa(mp4Path,spec,env,signal,!!audioMix);
       const result:ExportResult={id,path:mp4Path,url:undefined,createdAt:new Date().toISOString(),revision:project.revision,width:spec.target.width,height:spec.target.height,frameCount:spec.durationFrames,duration:spec.durationSeconds,qa:{...qa,silent:!audioMix,quality:spec.target.quality??'standard',crf:Number(crf),audioPlan:audioMix?.plan,arbitrarySeek:'PASS',coldReload:'PASS',inputHashes,frames,browser:connection.browser.version(),snapshotRoot,logPath}};
+      if(timelinePreparation){onProgress(1,'时间轴画面已准备');return result;}
       await fs.writeFile(path.join(outputRoot,'result.json'),json(result));
       await this.store.recordExportProvenance(mp4Path,project,id);
       result.url=(await this.server(root,'assets')).origin+'/exports/'+id+'/video.mp4';onProgress(1,'视频导出完成');return result;
