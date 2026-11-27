@@ -11,12 +11,12 @@ import {createCodeProject} from './fixtures/production.ts';
 import {DIRECTOR_RULESET_VERSION} from '../src/director/index.ts';
 
 const env=detectEnvironment();
-async function fixture(mode:'director'|'director-constraints'|'workflow'|'workflow-preview'|'corrupt',run:(page:Page)=>Promise<void>){
+async function fixture(mode:'director'|'director-constraints'|'workflow'|'workflow-preview'|'workflow-approved'|'corrupt',run:(page:Page)=>Promise<void>){
   const directory=path.resolve('artifacts/stabilization-20261115/client-fixture-'+randomUUID());await fs.mkdir(directory,{recursive:true});
   let browser:Awaited<ReturnType<typeof chromium.launch>>|undefined;
   const server=createServer(async(req,res)=>{res.setHeader('Content-Type',req.url==='/fixture.js'?'text/javascript':'text/html');res.end(req.url==='/fixture.js'?await fs.readFile(path.join(directory,'fixture.js')):'<!doctype html><meta charset="utf-8"><div id="root"></div><script type="module" src="/fixture.js"></script>');});
   try{
-    const project=createCodeProject('工程 A');project.shots=project.shots.slice(0,1);project.shotOrder=project.shots.map(shot=>shot.id);
+    const project=createCodeProject('工程 A');if(mode!=='workflow-approved')project.shots=project.shots.slice(0,1);project.shotOrder=project.shots.map(shot=>shot.id);
     const other=createCodeProject('工程 B');
     const plan={version:1,ruleSetVersion:DIRECTOR_RULESET_VERSION,filmKind:'general',characters:[],worldLayouts:[],identityMap:[],storyBeats:[],shots:project.shots.map(shot=>({shotId:shot.id,title:shot.title,visualPrompt:'保护本地编辑',narration:'',durationSeconds:shot.durationFrames/30,audioStrategy:'silent',performance:[],dialogue:[],events:[],references:[],acceptance:[]}))};
     const entry=path.join(directory,'fixture.tsx');
@@ -26,6 +26,7 @@ async function fixture(mode:'director'|'director-constraints'|'workflow'|'workfl
       const initial=${JSON.stringify(project)},other=${JSON.stringify(other)},plan=${JSON.stringify(plan)};
       const record={id:'old-workflow',projectId:initial.id,request:{prompt:'OLD_PROJECT_RECORD'},status:'complete',createdAt:new Date().toISOString(),message:'OLD_PROJECT_RECORD',steps:[],usage:{cost:null,generatedTasks:0}};
       ${mode==='director-constraints'?`plan.characters=[{id:'speaker',name:'对白角色',identity:'保留对白'},{id:'identity',name:'身份角色',identity:'保留身份图'}];plan.identityMap=[{characterId:'identity',assetId:'portrait'}];plan.shots[0].dialogue=[{id:'line',characterId:'speaker',start:0,end:1,text:'精确台词'}];`:''}
+      ${mode==='workflow-approved'?`plan.locations=[{id:'corridor',name:'长廊',description:'固定长廊'}];plan.shots[0].locationId='corridor';plan.shots[1].locationId='corridor';initial.extensions.directorDocument={schemaVersion:1,version:2,hash:'a'.repeat(64),status:'approved',updatedAt:new Date().toISOString(),approvedAt:new Date().toISOString(),plan};window.fixtureShotIds=initial.shotOrder;`:''}
       ${mode==='workflow-preview'?`record.status='awaiting-apply';record.qualityReport={version:1,candidateHash:'a'.repeat(64),decision:'needs-review',checks:[{id:'dialogue',category:'dialogue',severity:'hard',status:'unchecked',message:'对白时序需审看'}]};`:''}
       const state={snapshot:{project:initial},pending:false,route:{provider:'fixture',model:'fixture'}};window.calls=[];window.errors=[];window.holdA=false;
       addEventListener('error',event=>window.errors.push(event.message));
@@ -66,6 +67,28 @@ test('late workflow refresh from an old project never repopulates the new projec
     await page.evaluate(()=>{(window as any).resolvedA=true;(window as any).resolveA();});await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
     assert.equal(await page.getByText('OLD_PROJECT_RECORD',{exact:true}).count(),0,'old project task data must be ignored after the project changes');
     assert.equal(await page.getByText('流程状态已刷新。',{exact:true}).count(),0,'old project success messages must not leak into the current project');
+  });
+});
+
+test('workbench sends scene and multiple-shot scopes without overriding the host-approved plan',{skip:!env.browserAvailable,timeout:60_000},async()=>{
+  await fixture('workflow-approved',async page=>{
+    await page.getByLabel('协作制作要求',{exact:true}).fill('仅制作本轮所选镜头');
+    const scope=page.getByLabel('协作制作范围',{exact:true}),start=page.getByRole('button',{name:'开始协作制作',exact:true});
+    const shotIds=await page.evaluate(()=>(window as any).fixtureShotIds as string[]);
+    const runPayloads=()=>page.evaluate(()=>(window as any).calls.filter((entry:any)=>entry.endpoint==='workflows.run').map((entry:any)=>entry.payload));
+    await scope.selectOption('scene');
+    assert.equal(await start.isDisabled(),true);
+    await page.getByLabel('选择协作场景',{exact:true}).selectOption('corridor');
+    await start.click();
+    assert.deepEqual((await runPayloads())[0].shotIds,shotIds.slice(0,2));
+    assert.equal((await runPayloads())[0].directorPlan,undefined);
+    await scope.selectOption('shots');
+    const shots=page.getByRole('group',{name:'选择协作镜头'}).getByRole('checkbox');
+    await shots.nth(0).check();
+    await shots.nth(2).check();
+    await start.click();
+    assert.deepEqual((await runPayloads())[1].shotIds,[shotIds[0],shotIds[2]]);
+    assert.equal((await runPayloads())[1].directorPlan,undefined);
   });
 });
 

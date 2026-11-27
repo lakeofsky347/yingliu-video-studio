@@ -117,6 +117,7 @@ test('the timeline exchange panel sends the saved revision, shows progress and o
     await panel.getByText(/43%.*正在准备分角色音频/).waitFor();
     await page.evaluate(()=>void (window as any).harnessCompleteTimeline());
     await panel.getByText('OTIO · FCPXML · CMX3600 EDL').waitFor();
+    assert.equal(await panel.getByRole('status').count(),0,'The bundle must not appear beside stale running progress');
     const capture=process.env.YINGLIU_CAPTURE_TIMELINE_SCREENSHOT;
     if(capture){await fs.mkdir(path.dirname(capture),{recursive:true});await panel.screenshot({path:capture,animations:'disabled'});}
     await panel.getByRole('button',{name:'打开交换包 ↗',exact:true}).click();

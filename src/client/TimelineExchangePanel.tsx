@@ -35,7 +35,7 @@ export function TimelineExchangePanel({project,controller}:{project:VideoProject
     {latest?.status==='failed'&&<p className="vs-inline-error" role="alert">{systemMessage(latest.error??latest.message)}</p>}
     {latest?.status==='cancelled'&&<p role="status">{t("时间轴交换已取消")}</p>}
     {readError&&<p className="vs-inline-error" role="alert">{systemMessage(readError)}</p>}
-    {outputs.map(task=><article key={task.id} className="vs-export-record">
+    {outputs.filter(task=>task.id!==active?.id).map(task=><article key={task.id} className="vs-export-record">
       <div>
         <strong>{t("时间轴交换包 · v{revision}",{revision:task.revision??''})}</strong>
         <p>{task.timelineExchange.formats.map(format=>formatNames[format]).join(' · ')}</p>
